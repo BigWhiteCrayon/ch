@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist-evals"
+  },
+  "include": ["evals", "src"],
+  "exclude": ["src/renderer.ts", "src/renderer/**"]
+}

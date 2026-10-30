@@ -1,0 +1,2913 @@
+:root {
+  --bg: #ffffff;
+  --panel: #f3f4f6;
+  --border: #e0e2e7;
+  --text: #1c1e21;
+  --muted: #6b7280;
+  --accent: #7e22ce;
+  /* The second accent: yellow, for what needs a look (a reply held up, a question) and for small decoration */
+  --warn: #eab308;
+  --bubble: #eceef2;
+  /* What the app asked for itself, in the slot a user's message sits in:
+     grey rather than the accent, and a shade further from the background
+     than a reply, so the two are not read as the same thing. Further from
+     the background means darker here and lighter in the dark theme below;
+     a grey darker than the reply there is a grey that has vanished. */
+  --asked-by-app: #dadde4;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1c1f;
+    --panel: #232529;
+    --border: #34373d;
+    --text: #e7e8ea;
+    --muted: #9aa0aa;
+    --accent: #a855f7;
+    --warn: #facc15;
+    --bubble: #2c2f35;
+    --asked-by-app: #3a3e46;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: var(--warn);
+  color: #1c1e21;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  font:
+    14px/1.45 -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Sidebar */
+
+/* The threads and the chat, side by side below the window's own top bar */
+#shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+#sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+
+.controls {
+  margin: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#new-thread,
+#open-settings {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#new-thread:hover,
+#open-settings:hover {
+  border-color: var(--accent);
+}
+
+#new-thread {
+  margin-top: 8px;
+}
+
+#thread-list {
+  flex: 1;
+  margin: 0;
+  padding: 0 8px 8px;
+  list-style: none;
+  overflow-y: auto;
+}
+
+#thread-list li.thread {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#thread-list li.thread:hover,
+#thread-list li.thread.active {
+  background: var(--bubble);
+}
+
+/* The disclaimer closing a group whose older threads have been archived */
+#thread-list li.archived {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* The arrow that shows and hides the subagents under a workspace or a thread.
+   It sits below the thing it belongs to, and when they are hidden it says what
+   is going on behind it rather than hiding the fact. */
+#thread-list li.agents {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 20px;
+  font-size: 11px;
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#thread-list li.agents:hover {
+  color: var(--text);
+  background: var(--bubble);
+}
+
+#thread-list li.agents .arrow {
+  flex: none;
+  width: 10px;
+  font-size: 9px;
+}
+
+#thread-list li.agents .label {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* A workspace's own work is the workspace's, so its arrow carries its colour */
+#thread-list li.workspace-agents {
+  color: var(--accent);
+}
+
+#thread-list li.workspace-agents .status.working {
+  background: var(--accent);
+}
+
+/* A thread's subagents sit a step further in than the thread itself */
+#thread-list li.thread-agents {
+  padding-left: 22px;
+}
+
+/* A thread branched off another one, listed with them (see threadRows). Still a thread, so it keeps a thread's
+   row and is only set in and made smaller to read as belonging to the one above. */
+#thread-list li.thread.offshoot {
+  padding: 5px 8px 5px 22px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#thread-list li.thread.offshoot:hover,
+#thread-list li.thread.offshoot.active {
+  color: var(--text);
+}
+
+/* The subagents a thread set to work, indented under it (see subagentItem).
+   Smaller and quieter than a thread: they are its work, not its equal. */
+#thread-list li.subagent {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px 5px 22px;
+  font-size: 12px;
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#thread-list li.subagent:hover {
+  color: var(--text);
+  background: var(--bubble);
+}
+
+#thread-list li.subagent .name {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* What sort of subagent it is, after its name */
+#thread-list li.subagent .kind {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+/* One that did not finish, which is worth noticing */
+#thread-list .status.failed {
+  background: #b91c1c;
+}
+
+#thread-list li.group {
+  padding: 12px 8px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#thread-list li.group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+/* The drop-down arrow: down when open, right when collapsed */
+#thread-list li.group::before {
+  content: '▾';
+  flex: none;
+  width: 10px;
+}
+
+#thread-list li.group.collapsed::before {
+  content: '▸';
+}
+
+#thread-list li.group:hover {
+  color: var(--text);
+}
+
+#thread-list li.group .label {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#thread-list li.group :is(.add, .rename) {
+  flex: none;
+  padding: 0 4px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 4px;
+}
+
+#thread-list li.group :is(.add, .rename):hover {
+  color: var(--text);
+  background: var(--bubble);
+}
+
+#thread-list li.group .status {
+  margin-left: 4px;
+}
+
+#thread-list li.group:first-child {
+  padding-top: 4px;
+}
+
+/* A branch inside a workspace: indented under the workspace's heading, in the thread's own case and weight */
+#thread-list li.group.branch {
+  padding: 6px 8px 2px 16px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+#thread-list .status {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-right: 2px;
+  border-radius: 50%;
+}
+
+#thread-list .status.unread {
+  background: var(--accent);
+}
+
+/* Changes waiting to be written back to the workspace */
+#thread-list .status.changed {
+  background: #16a34a;
+}
+
+/* A reply held up until the user says whether a model may be used */
+#thread-list .status.approval {
+  background: var(--warn);
+}
+
+#thread-list .status.working {
+  background: var(--muted);
+  animation: working 1s ease-in-out infinite alternate;
+}
+
+/* The dots in a reply's bubble before its first words arrive: each rises and
+   swells in turn, so a wave passes along them */
+.waiting {
+  /* Kept as a containing block, so that anything placed inside the dots is
+     placed against them and not against the window, where it would escape
+     the clipping of the pane it is in */
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 1.4em;
+  padding: 0 2px;
+}
+
+.waiting i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: wave 1.2s ease-in-out infinite;
+  animation-delay: var(--phase, 0ms);
+}
+
+.waiting i:nth-child(2) {
+  animation-delay: calc(var(--phase, 0ms) + 0.15s);
+}
+
+.waiting i:nth-child(3) {
+  animation-delay: calc(var(--phase, 0ms) + 0.3s);
+}
+
+@keyframes wave {
+  0%,
+  60%,
+  100% {
+    transform: translateY(3px) scale(0.75);
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-5px) scale(1.5);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .waiting i {
+    animation: none;
+  }
+}
+
+@keyframes working {
+  from {
+    opacity: 0.25;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+#thread-list .name {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#thread-list .delete,
+#thread-list .retry {
+  visibility: hidden;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+}
+
+#thread-list li:hover .delete,
+#thread-list li:hover .retry {
+  visibility: visible;
+}
+
+#thread-list .delete:hover:not(:disabled) {
+  color: #dc2626;
+}
+
+/* A thread being written into: there to see, but not to press */
+#thread-list .delete:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Sending a failed subagent out again, beside letting go of it */
+#thread-list .retry:hover {
+  color: var(--text);
+}
+
+/* The kind is pushed off a row that has buttons, not the name, which says
+   which piece of work it was */
+#thread-list li.subagent:hover .kind {
+  display: none;
+}
+
+/* Chat */
+
+main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The window's own title bar. The frame is gone (see titleBarStyle in
+   main.ts), so this is it: it spans the window and it is what the user drags
+   the window by. It holds the two things that are about the app rather than
+   about a thread — searching the threads, and whether the app may leave this
+   computer. Anything in it that can be clicked has to say so, or the drag
+   region swallows the click. */
+#titlebar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  height: 38px;
+  padding: 0 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+}
+
+#titlebar :is(button, input, select, label) {
+  -webkit-app-region: no-drag;
+}
+
+/* What the last 30 days have cost, first in the bar. Plain text, so a drag that
+   starts on it still moves the window. */
+#cost-30d {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* On macOS the close, minimise and zoom buttons sit over the top-left of the
+   window, which is now this bar: its contents start to the right of them.
+   Everywhere else the window keeps its frame and there is nothing to avoid. */
+body[data-platform='darwin'] #titlebar {
+  padding-left: 84px;
+}
+
+/* The thread's own bar, below: what this thread is, what it has done, and
+   which model answers it */
+main > header {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.thread-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.thread-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+#thread-title {
+  flex: 1;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+#thread-workspace {
+  max-width: 40%;
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#thread-workspace:empty {
+  display: none;
+}
+
+/* The thread's token total, opening to a list by model */
+#thread-usage {
+  position: relative;
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#thread-usage summary {
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#thread-usage-models {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 5;
+  min-width: 260px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+#thread-usage-models div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 3px 0;
+  white-space: nowrap;
+}
+
+#thread-usage-models span {
+  color: var(--text);
+}
+
+/* How long the models have kept the user waiting, under a rule at the foot of
+   the panel: it is about all of them together, and reads as one more model if
+   it is left looking like one. */
+#thread-usage-models .waits {
+  margin-top: 3px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+
+/* What the models have got through, beside the offline switch: both are about
+   the app rather than about a thread, so both live up here. Drawn as the same
+   pill, since they are the same kind of thing. */
+#open-usage {
+  flex: none;
+  margin-left: auto;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+#open-usage:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* Keeping to this computer. On, it is the one coloured thing in the bar: which
+   models the app may use is worth seeing without opening a menu. The same
+   setting is in the app's menu, with a key to it (see menu.ts). */
+#offline,
+#fast {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  user-select: none;
+}
+
+#offline:hover,
+#fast:hover {
+  color: var(--text);
+}
+
+#offline.on,
+#fast.on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+#offline input,
+#fast input {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Searching the threads, above them. The results hang under the box rather
+   than taking over the window: a search is a way back into a thread, not a
+   place to be. They are wider than the sidebar, since a result has to show
+   what was asked and the part of the answer that matched. */
+#search {
+  position: relative;
+  flex: none;
+  padding: 8px;
+}
+
+#search-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+#search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+#search-results {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% - 2px);
+  left: 8px;
+  width: 380px;
+  max-height: 60vh;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+}
+
+#search-results[hidden] {
+  display: none;
+}
+
+#search-results .result {
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#search-results .result.on {
+  background: var(--bubble);
+}
+
+#search-results .result.none {
+  color: var(--muted);
+  cursor: default;
+}
+
+/* Which thread it was, and when */
+#search-results .where {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+#search-results .where .thread {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#search-results .where .when {
+  flex: none;
+  margin-left: auto;
+}
+
+/* What was asked, on one line, and the part of the answer that matched */
+#search-results .asked {
+  overflow: hidden;
+  font-size: 13px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#search-results .preview {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--muted);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* Where a search put the user: marked for a moment, so that arriving is
+   something they see rather than something they have to work out */
+@keyframes landed {
+  from {
+    background: var(--accent);
+  }
+}
+
+.message.landed {
+  animation: landed 1.4s ease-out;
+}
+
+#model {
+  max-width: 50%;
+  padding: 4px 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* A subagent's own pane reads exactly as the thread does, so the two share
+   everything below (see drawMessages) */
+:is(#messages, #agent-view) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+/* An id selector beats the browser's own [hidden] rule, so anything here that
+   sets display has to say this itself (as #message-menu does below). Without
+   it the hidden pane still takes its half of the room. */
+:is(#tabs, #messages, #agent-view)[hidden] {
+  display: none;
+}
+
+/* The tabs above a thread: the thread itself, then the subagents opened from
+   it. Only shown once there is something to open. */
+#tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 6px 8px 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+}
+
+#tabs .tab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 200px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#tabs .tab:hover {
+  color: var(--text);
+  background: var(--bubble);
+}
+
+#tabs .tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+#tabs .tab .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#tabs .tab .shut {
+  flex: none;
+  padding: 0 2px;
+  color: var(--muted);
+  border-radius: 3px;
+}
+
+#tabs .tab .shut:hover {
+  color: var(--text);
+  background: var(--border);
+}
+
+/* How the subagent in a tab is doing, without opening it */
+#tabs .tab .status {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+#tabs .tab .status.working {
+  animation: working 1s ease-in-out infinite alternate;
+}
+
+#tabs .tab .status.done {
+  background: #15803d;
+}
+
+#tabs .tab .status.failed {
+  background: #b91c1c;
+}
+
+/* Finished, but its report ran past the room it had and lost its end: not a
+   failure, and not a clean answer either (see subagentStatus) */
+#tabs .tab .status.cut {
+  background: #ca8a04;
+}
+
+/* How far along it says it is, filling clockwise. A disc rather than a hoop:
+   at 9px a hoop is a smudge. */
+#tabs .tab .status.ring {
+  width: 9px;
+  height: 9px;
+  background: none;
+  overflow: visible;
+}
+
+#tabs .tab .status.ring .track {
+  fill: var(--border);
+}
+
+#tabs .tab .status.ring .done {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 9;
+}
+
+:is(#messages, #agent-view) .empty {
+  margin: auto;
+  color: var(--muted);
+}
+
+.message {
+  max-width: 70%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--bubble);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The question put to the user in the thread: may a model above their approval level be used */
+.message.approval {
+  border: 1px solid var(--warn);
+  white-space: normal;
+}
+
+.message.approval p {
+  margin: 0 0 8px;
+}
+
+.message.approval .actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* The command a question about running one is asking about, on a line of its own: it is what is being agreed to,
+   so it is set apart from the sentence rather than folded into it */
+.message.approval .command code {
+  display: block;
+  padding: 6px 8px;
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+
+/* How long the question stands before the fallback is used on its own */
+.message.approval .deadline {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+/* A question the model put to the user in the thread: options to pick from, or their own words */
+.message.question {
+  border: 1px solid var(--warn);
+  white-space: normal;
+}
+
+.message.question p {
+  margin: 0 0 8px;
+}
+
+.message.question .options,
+.message.question .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.message.question .options {
+  margin-bottom: 8px;
+}
+
+.message.question .other {
+  flex: 1;
+  min-width: 160px;
+}
+
+/* The offer to have a model check the changes a reply left */
+.message.review {
+  white-space: normal;
+}
+
+.message.review p {
+  margin: 0 0 8px;
+}
+
+.message.review .actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* A reply written in Markdown: its own blocks set the spacing */
+.message.markdown {
+  white-space: normal;
+}
+
+.message.markdown > :first-child {
+  margin-top: 0;
+}
+
+.message.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.message.markdown :is(p, ul, ol, pre, table, blockquote) {
+  margin: 8px 0;
+}
+
+.message.markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin: 14px 0 6px;
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.message.markdown h1 {
+  font-size: 18px;
+}
+
+.message.markdown h2 {
+  font-size: 16px;
+}
+
+.message.markdown :is(ul, ol) {
+  padding-left: 22px;
+}
+
+.message.markdown li :is(ul, ol, pre) {
+  margin: 4px 0;
+}
+
+.message.markdown code {
+  padding: 1px 4px;
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.message.markdown pre {
+  padding: 8px 10px;
+  overflow-x: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.message.markdown pre code {
+  padding: 0;
+  white-space: pre;
+  background: none;
+  border: none;
+}
+
+/* A diagram the model drew (see diagram.ts): its own colours come from the theme */
+.message.markdown .diagram {
+  margin: 8px 0;
+  overflow-x: auto;
+  cursor: zoom-in;
+}
+
+/* Never shrunk to the bubble (no max-width): diagram.ts sets the size with DIAGRAM_SCALE and TARGET_WIDTH, so the
+   words stay legible and a wide diagram scrolls in .diagram instead */
+.diagram svg {
+  display: block;
+  height: auto;
+  font-size: 13px;
+}
+
+.diagram .node :is(rect, polygon, ellipse) {
+  fill: var(--bg);
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+
+.diagram text {
+  fill: var(--text);
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+
+.diagram .edge path {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+
+.diagram .edge polygon {
+  fill: var(--muted);
+}
+
+.diagram g.node,
+.diagram g.edge {
+  cursor: pointer;
+}
+
+.diagram g.node:hover :is(rect, polygon, ellipse),
+.diagram g.edge:hover path {
+  stroke: var(--warn);
+  stroke-width: 2.5;
+}
+
+.diagram .edge.dotted path {
+  stroke-dasharray: 4 3;
+}
+
+.diagram .edge.thick path {
+  stroke-width: 3;
+}
+
+/* The line behind the words, so a label stays readable where it sits on an arrow */
+.diagram .edge-label {
+  font-size: 12px;
+  paint-order: stroke;
+  stroke: var(--bubble);
+  stroke-width: 4px;
+}
+
+.message.markdown blockquote {
+  padding-left: 10px;
+  color: var(--muted);
+  border-left: 3px solid var(--warn);
+}
+
+.message.markdown table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.message.markdown :is(th, td) {
+  padding: 4px 8px;
+  text-align: left;
+  border: 1px solid var(--border);
+}
+
+.message.markdown th {
+  border-bottom: 2px solid var(--warn);
+}
+
+.message.markdown hr {
+  margin: 12px 0;
+  border: none;
+  border-top: 2px solid var(--warn);
+}
+
+.message.markdown a {
+  color: var(--accent);
+}
+
+.message.user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ...unless the app asked it: the task a subagent was given, or what a look at
+   the workspace was sent to do (see fromApp). Still in the user's place, since
+   that is whose turn it holds, but never in the colour of something typed. */
+.message.user.system {
+  background: var(--asked-by-app);
+  color: var(--text);
+}
+
+/* ...and over the words, whose goal they are. Small print: it is a label on
+   the bubble, not a line of it (see goalOf). */
+.message .caption {
+  margin-bottom: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.message.assistant {
+  align-self: flex-start;
+}
+
+.message.thought {
+  align-self: flex-start;
+  padding: 2px 12px;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* The thoughts and looking-around tool calls between two edits or subagents,
+   folded into one dropdown (see drawMessages). Shut until opened. */
+.message.work {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 2px 12px;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.message.work > details > summary {
+  cursor: pointer;
+}
+
+/* A step of a coding change that has nothing to open: just its name */
+.message.work > .step-name {
+  font-weight: 600;
+}
+
+/* The step still going on: its dropdown says so, with the waiting dots */
+.message.work.working > details > summary,
+.message.work.working > .step-name {
+  color: var(--accent);
+}
+
+/* The edits and subagents among what a step did: plain lines, not dropdowns,
+   in a colour of their own so they stand out from the looking around */
+.message.work > details > .message.event,
+.message.work > details > .message.event .open {
+  color: var(--text);
+}
+
+.message.work summary .waiting {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+/* What was done, indented under the dropdown's arrow */
+.message.work > details[open] > .message {
+  max-width: none;
+  margin-left: 12px;
+}
+
+/* A thought's or a summary's text, shown when its dropdown is opened */
+.message.summary pre,
+.message.usage pre {
+  font: inherit;
+}
+
+.message.thought pre {
+  margin: 2px 0 0;
+  font: inherit;
+  white-space: pre-wrap;
+}
+
+.message.note,
+.message.tool,
+.message.subagent {
+  align-self: flex-start;
+  padding: 2px 12px;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* A line in the thread that opens something: a subagent's own work, or the
+   reviewer dealing with a comment the user left. It is a button, but it reads
+   as part of the conversation rather than as a control. */
+.message .open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  color: var(--muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.message .open:hover:not(:disabled) {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.message .open:disabled {
+  cursor: default;
+}
+
+.message .open + .open {
+  margin-top: 4px;
+}
+
+/* The line under a review message's comments that opens the review page */
+.message .open-review {
+  display: block;
+  margin-top: 6px;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.message .open-review:hover {
+  text-decoration: underline;
+}
+
+/* The line under the error for a reply left alone that picks it up again */
+.message .continue {
+  display: block;
+  margin-top: 6px;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.message .continue:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.message .continue:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Rating how a message was classified: thumbs on the same line as its note,
+   faint until hovered */
+.message .feedback {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.message .feedback button {
+  padding: 0;
+  font: inherit;
+  line-height: 1;
+  background: none;
+  border: none;
+  cursor: pointer;
+  opacity: 0.5;
+}
+
+.message .feedback button:hover,
+.message .feedback button:focus-visible {
+  opacity: 1;
+}
+
+#feedback-problems {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* A subagent's own account of its work, shown when its dropdown is opened */
+.message.subagent pre {
+  margin: 2px 0 0;
+  font: inherit;
+  white-space: pre-wrap;
+}
+
+.message:is(.tool, .note, .thought) summary {
+  cursor: pointer;
+}
+
+.message:is(.tool, .note, .thought) details[open] {
+  padding-bottom: 4px;
+}
+
+.message:is(.tool, .note) .label {
+  margin-top: 6px;
+  font-weight: 600;
+}
+
+/* What a written file changed: added lines green, removed lines red */
+.message.tool pre.diff .add {
+  color: #15803d;
+}
+
+.message.tool pre.diff .del {
+  color: #b91c1c;
+}
+
+.message:is(.tool, .note) pre {
+  max-height: 240px;
+  margin: 2px 0 0;
+  padding: 6px 8px;
+  overflow: auto;
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  white-space: pre-wrap;
+  color: var(--text);
+  background: var(--bubble);
+  border-radius: 6px;
+}
+
+.message:is(.tool, .assistant) .tool-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 2px 0 0;
+  border-radius: 6px;
+  cursor: zoom-in;
+}
+
+/* A recorded clip, in the reply that recorded it. No zoom-in cursor and no
+   click to enlarge, unlike a screenshot: the click belongs to the player's own
+   controls (see zoom.ts, which matches images alone). */
+.message.assistant .tool-video {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 2px 0 0;
+  border-radius: 6px;
+  background: #000;
+}
+
+.message.error {
+  align-self: flex-start;
+  background: none;
+  border: 1px solid #dc2626;
+  color: #dc2626;
+}
+
+/* Hidden where there is nobody to write to: a subagent's tab, and a thread the
+   app started for itself (see render). A display of its own beats the
+   browser's [hidden], so it has to say so itself. */
+#composer[hidden] {
+  display: none;
+}
+
+#composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+#input {
+  flex: 1;
+  max-height: 160px;
+  padding: 8px 10px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: none;
+  outline: none;
+}
+
+#input:focus {
+  border-color: var(--accent);
+}
+
+/* A suggested reply (Tab fills it in) is the placeholder, made darker than the
+   usual one so that it reads as something to take rather than a label */
+#input.suggesting::placeholder {
+  color: var(--text);
+  opacity: 0.55;
+}
+
+#composer button {
+  padding: 0 16px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+}
+
+#quote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+}
+
+#quote[hidden] {
+  display: none;
+}
+
+#quote-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#quote-clear {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+#quote-button,
+#quote-thread-button {
+  position: fixed;
+  z-index: 50;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#quote-button[hidden],
+#quote-thread-button[hidden] {
+  display: none;
+}
+
+/* Settings */
+
+#open-settings {
+  margin: 8px 12px 12px;
+  padding: 6px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+}
+
+#open-settings:hover {
+  background: var(--bubble);
+  color: var(--text);
+}
+
+/* Settings page layout with left-side navigation */
+/* Settings: a column of sections on the left, the one being read on the right.
+   Built from the same pieces as the rest of the app — the panel colour of the
+   sidebar, the bubble colour for what is selected, and the dialogs' own
+   labels, inputs and buttons (see the :is(#settings, ...) rules below). */
+#settings {
+  width: min(720px, 92vw);
+  height: min(560px, 84vh);
+  padding: 0;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+#settings-form {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+}
+
+/* The sections there are, as a list down the side */
+.settings-nav {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 12px;
+  width: 180px;
+  padding: 16px 12px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+
+.settings-nav h2 {
+  padding: 0 8px;
+}
+
+#settings-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Named twice over, to beat the dialogs' own rule for a button: these are a
+   list of places to go, not things to press */
+#settings #settings-tabs button {
+  padding: 7px 10px;
+  text-align: left;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+}
+
+#settings #settings-tabs button:hover {
+  color: var(--text);
+  background: var(--bubble);
+}
+
+#settings #settings-tabs button[aria-selected='true'] {
+  color: var(--text);
+  background: var(--bubble);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* Whatever that section holds, with room to scroll */
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.settings-content > .hint {
+  margin: 0 0 12px;
+}
+
+.settings-content .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+#settings-status {
+  margin-top: auto;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#new-thread-dialog,
+#rename-workspace-dialog {
+  width: 460px;
+}
+
+/* The thread's changes to its workspace, waiting to be written back */
+#thread-changes {
+  flex: none;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bubble);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#thread-changes:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#changes-dialog {
+  width: min(760px, 90vw);
+}
+
+/* What a workspace and a thread are keeping, on a right-click in the sidebar.
+   Laid out like the dropdowns in a thread, since it is the same material. */
+:is(#workspace-dialog, #thread-dialog) .hint {
+  overflow-wrap: anywhere;
+}
+
+:is(#workspace-dialog-body, #thread-dialog-body) {
+  max-height: 55vh;
+  overflow-y: auto;
+}
+
+:is(#workspace-dialog-body, #thread-dialog-body) .label {
+  margin-top: 10px;
+  font-weight: 600;
+}
+
+:is(#workspace-dialog-body, #thread-dialog-body) .label:first-child {
+  margin-top: 0;
+}
+
+:is(#workspace-dialog-body, #thread-dialog-body) pre {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  white-space: pre-wrap;
+  color: var(--text);
+  background: var(--bubble);
+  border-radius: 6px;
+}
+
+:is(#workspace-dialog-body, #thread-dialog-body) pre.diff .add {
+  color: #15803d;
+}
+
+:is(#workspace-dialog-body, #thread-dialog-body) pre.diff .del {
+  color: #b91c1c;
+}
+
+/* The notes behind the workspace's own note: one per thing somebody working
+   here worked out, searched rather than read through (see harness/notes.ts).
+   There can be hundreds, so the list scrolls on its own and the note above it
+   stays in view. */
+#workspace-notes {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+#workspace-notes .label {
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+#workspace-notes-query {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+#workspace-notes-query:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+#workspace-notes-list {
+  max-height: 38vh;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+
+#workspace-notes-list .hint {
+  margin: 0;
+  color: var(--muted);
+}
+
+.note + .note {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+/* What the note is about, and the one thing the user can do to it: throw it
+   away. The button keeps to the thread list's manners — out of the way until
+   the note is pointed at, and red under the pointer, a note being as
+   unrecoverable as a thread. */
+.note-head {
+  display: flex;
+  align-items: start;
+  gap: 4px;
+}
+
+.note-subject {
+  flex: 1;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.note .delete {
+  visibility: hidden;
+  flex: none;
+  padding: 0 4px;
+  font: inherit;
+  line-height: 1.2;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.note:hover .delete,
+.note .delete:focus-visible {
+  visibility: visible;
+}
+
+.note .delete:hover:not(:disabled) {
+  color: #dc2626;
+}
+
+/* One already on its way out: there to see, not to press again */
+.note .delete:disabled {
+  visibility: visible;
+  opacity: 0.4;
+  cursor: default;
+}
+
+.note-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* A note whose files have moved on since it was written: still worth reading,
+   no longer worth trusting on its own (see notes.check) */
+.note-stale {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #a16207;
+  overflow-wrap: anywhere;
+}
+
+.note pre {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  white-space: pre-wrap;
+  color: var(--text);
+  background: var(--bubble);
+  border-radius: 6px;
+}
+
+#changes-files {
+  max-height: 55vh;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+#changes-files details {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+#changes-files summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+#changes-files .status {
+  display: inline-block;
+  min-width: 68px;
+  color: var(--muted);
+}
+
+#changes-files .comments {
+  color: var(--accent);
+}
+
+/* A file's diff, a line to a row; a line can be clicked to comment on it */
+#changes-files .diff {
+  margin: 6px 0;
+  padding: 6px 0;
+  max-height: 420px;
+  overflow: auto;
+  font-size: 12px;
+  background: var(--bubble);
+  border-radius: 6px;
+}
+
+#changes-files .row {
+  display: flex;
+  gap: 8px;
+  padding: 0 8px;
+  white-space: pre;
+}
+
+#changes-files .row:not(.hunk) {
+  cursor: pointer;
+}
+
+#changes-files .row:not(.hunk):hover {
+  outline: 1px solid var(--accent);
+}
+
+#changes-files .row .number {
+  flex: none;
+  width: 36px;
+  text-align: right;
+  color: var(--muted);
+  user-select: none;
+}
+
+#changes-files .row.add code {
+  color: #15803d;
+}
+
+#changes-files .row.del code {
+  color: #b91c1c;
+}
+
+#changes-files .row.hunk code {
+  color: var(--muted);
+}
+
+/* A comment under the line it is about, with the replies to it */
+#changes-files .comment,
+#changes-files .comment-form {
+  margin: 4px 8px 6px 52px;
+  padding: 8px 10px;
+  font-family: inherit;
+  white-space: normal;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+#changes-files .entry {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#changes-files .entry strong {
+  flex: none;
+}
+
+#changes-files .entry.assistant strong {
+  color: var(--accent);
+}
+
+#changes-files .entry span {
+  flex: 1;
+}
+
+#changes-files .entry small {
+  flex: none;
+  color: var(--muted);
+}
+
+/* How far the reviewer dealing with a comment has got */
+#changes-files .comment .progress {
+  padding: 2px 0;
+  color: var(--muted);
+}
+
+#changes-files .comment button.reply,
+#changes-files .comment button.remove {
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+#changes-files .comment-form textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+#changes-files .comment-form .actions {
+  margin-top: 6px;
+}
+
+#changes-files .outdated {
+  margin: 8px 8px 4px;
+  color: var(--muted);
+}
+
+#changes-files .was {
+  display: block;
+  margin: 0 8px;
+  white-space: pre;
+  color: var(--muted);
+}
+
+#changes-branch {
+  margin: 10px 0 0;
+}
+
+#changes-branch-status {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+#changes-branch .actions {
+  margin-top: 6px;
+}
+
+#changes-status {
+  margin: 10px 0 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#changes-status:empty {
+  display: none;
+}
+
+#changes-dialog button:disabled {
+  opacity: 0.5;
+}
+
+#rename-workspace-path {
+  overflow-wrap: anywhere;
+}
+
+#recent-workspaces {
+  flex: 1;
+  min-width: 0;
+}
+
+#new-thread-dialog button:disabled {
+  opacity: 0.5;
+}
+
+:is(
+  #settings,
+  #usage,
+  #new-thread-dialog,
+  #rename-workspace-dialog,
+  #changes-dialog,
+  #workspace-dialog,
+  #thread-dialog,
+  #setup-dialog,
+  #notice-dialog
+)::backdrop {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+:is(
+    #settings,
+    #usage,
+    #new-thread-dialog,
+    #rename-workspace-dialog,
+    #changes-dialog,
+    #workspace-dialog,
+    #thread-dialog,
+    #setup-dialog,
+    #notice-dialog
+  )
+  h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+:is(#settings, #usage, #new-thread-dialog, #rename-workspace-dialog, #changes-dialog, #setup-dialog, #notice-dialog)
+  .hint {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+:is(#settings, #usage, #new-thread-dialog, #rename-workspace-dialog, #changes-dialog, #setup-dialog, #notice-dialog)
+  section
+  > label {
+  display: block;
+  margin: 10px 0 4px;
+  color: var(--muted);
+}
+
+:is(#settings, #usage, #new-thread-dialog, #rename-workspace-dialog, #changes-dialog, #setup-dialog, #notice-dialog)
+  input:not([type='checkbox']),
+:is(#settings, #usage, #new-thread-dialog, #rename-workspace-dialog, #changes-dialog, #setup-dialog, #notice-dialog)
+  select,
+:is(#settings, #usage, #new-thread-dialog, #rename-workspace-dialog, #changes-dialog, #setup-dialog, #notice-dialog)
+  button {
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+:is(#settings, #new-thread-dialog, #rename-workspace-dialog, #changes-dialog, #setup-dialog, #notice-dialog)
+  input:not([type='checkbox']) {
+  width: 100%;
+}
+
+/* The x in the top right of Settings and the token usage page. Named with the
+   dialog, to beat the dialogs' own rule for a button. */
+:is(#settings, #usage, #zoom-dialog) .dialog-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: none;
+}
+
+:is(#settings, #usage, #zoom-dialog) .dialog-close:hover {
+  color: var(--text);
+  background: var(--bubble);
+}
+
+/* The picture opened full size from a tool image or a diagram. The close button
+   sits over the top right corner, as it does on Settings. */
+#zoom-dialog {
+  width: min(90vw, 1200px);
+  height: 90vh;
+  padding: 0;
+}
+
+#zoom-dialog .dialog-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+#zoom-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+#zoom-body img,
+#zoom-body svg {
+  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+#zoom-body svg {
+  height: 100%;
+}
+
+/* Settings has no header to hold it, so it sits over the corner, with the
+   first lines of the page kept clear of it */
+#settings .dialog-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+#settings .settings-content > .hint {
+  margin-right: 28px;
+}
+
+:is(#settings, #new-thread-dialog, #rename-workspace-dialog, #changes-dialog, #setup-dialog, #notice-dialog) .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#settings .settings-group {
+  margin: 18px 0 8px;
+  padding-top: 14px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+}
+
+#settings .settings-group:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+#settings label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+#settings #theme-controls {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr auto;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+#settings #theme-controls label {
+  color: var(--muted);
+}
+
+#settings #theme-controls input[type='color'] {
+  width: 36px;
+  height: 28px;
+  padding: 2px;
+  cursor: pointer;
+}
+
+#settings #theme-reset {
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin-top: 4px;
+}
+
+/* A checkbox drawn as an on/off switch, wherever one is wanted */
+input.toggle,
+input.family-toggle {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 18px;
+  margin: 0;
+  border-radius: 9px;
+  background: var(--border);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+input.toggle::after,
+input.family-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+
+input.toggle:checked,
+input.family-toggle:checked {
+  background: var(--accent);
+}
+
+input.toggle:checked::after,
+input.family-toggle:checked::after {
+  transform: translateX(12px);
+}
+
+input.toggle:disabled,
+input.family-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Next to the model's name, on the same line */
+.model-list small.about,
+.model-list small.level {
+  flex: none;
+}
+
+.model-list {
+  max-height: 230px;
+  margin-top: 10px;
+  overflow-y: auto;
+  color: var(--muted);
+}
+
+.model-list .row {
+  padding: 3px 0;
+  color: var(--text);
+}
+
+.model-list small {
+  color: var(--muted);
+}
+
+#ollama-other {
+  margin-top: 8px;
+}
+
+.model-list span {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.model-list details.family {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.family-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  color: var(--text);
+  cursor: pointer;
+}
+
+/* A summary laid out as a flex row loses its marker, so it is drawn here */
+.family-head::before {
+  content: '▸';
+  flex: none;
+  color: var(--muted);
+}
+
+details.family[open] > .family-head::before {
+  content: '▾';
+}
+
+.family-models {
+  padding-left: 24px;
+}
+
+:is(#settings, #usage, #new-thread-dialog, #rename-workspace-dialog, #changes-dialog, #setup-dialog, #notice-dialog)
+  .actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+#settings-status {
+  flex: 1;
+  color: var(--muted);
+}
+
+:is(#settings, #new-thread-dialog, #rename-workspace-dialog, #changes-dialog, #setup-dialog, #notice-dialog)
+  button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+/* The right-click menu on a message */
+
+#message-menu {
+  position: fixed;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+#message-menu[hidden] {
+  display: none;
+}
+
+#message-menu button {
+  padding: 6px 10px;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: none;
+  border-radius: 5px;
+}
+
+#message-menu button:hover:not(:disabled) {
+  background: var(--bubble);
+}
+
+#message-menu button:disabled {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+/* The token usage page: what the models have got through and what it came to
+   (see drawUsage in renderer.ts). Laid out like Settings — its own page in a
+   dialog rather than a panel — since it is read rather than glanced at. */
+
+#usage {
+  width: min(880px, 94vw);
+  max-height: 88vh;
+  padding: 0;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+
+  /* The chart's colours are driven by inline custom properties set from JS.
+     Hue comes from the parent, saturation and lightness are here. Models are
+     told apart by hue family plus lightness, not by a checked colour-blind-safe
+     palette; the legend always shows the name beside the dot, so position does
+     its own job. */
+  --series-s: 65%;
+  --series-l: 50%;
+}
+
+@media (prefers-color-scheme: dark) {
+  #usage {
+    /* Dark theme values for saturation and lightness */
+    --series-s: 60%;
+    --series-l: 58%;
+  }
+}
+
+.usage-page {
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
+}
+
+.usage-page > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.usage-page > header h2 {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#usage-close {
+  flex: none;
+}
+
+.usage-content {
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.usage-content > section {
+  margin-top: 22px;
+}
+
+.usage-content .label {
+  font-weight: 600;
+}
+
+/* What the page shows: a range, and whether the bars are money or tokens */
+.chips {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bubble);
+  border-radius: 7px;
+}
+
+/* Named twice over to beat the dialogs' own rule for a button: these are a
+   switch between views, not things to press */
+#usage .chips button {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 5px;
+}
+
+#usage .chips button:hover {
+  color: var(--text);
+}
+
+#usage .chips button[aria-pressed='true'] {
+  color: var(--text);
+  background: var(--bg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+}
+
+/* The figures that should need no reading off the chart */
+#usage-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+/* The grid would otherwise show the tiles through their hidden attribute */
+#usage-tiles[hidden] {
+  display: none;
+}
+
+.usage-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.usage-tile .label {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.usage-tile .figure {
+  margin: 2px 0;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.usage-tile small {
+  color: var(--muted);
+}
+
+#usage #usage-earlier {
+  margin-top: 10px;
+}
+
+#usage-chart-label {
+  margin-bottom: 10px;
+}
+
+/* The chart: the scale down the left, and a column per day beside it */
+#usage-chart {
+  display: flex;
+  gap: 8px;
+}
+
+.chart-y {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  justify-content: space-between;
+  box-sizing: content-box;
+  /* The height of .chart-area, so each label lands on its gridline */
+  height: 148px;
+  padding: 8px 0;
+  text-align: right;
+  color: var(--muted);
+}
+
+/* Each label sits on its own gridline rather than between two of them */
+.chart-y small {
+  height: 0;
+  line-height: 0;
+  white-space: nowrap;
+}
+
+.chart-scroll {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.chart-plot {
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-area {
+  position: relative;
+  height: 148px;
+}
+
+/* Recessive: hairlines to read the bars against, not lines to look at */
+.chart-grid {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.chart-grid div {
+  border-top: 1px solid var(--border);
+}
+
+.chart-cols {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
+}
+
+/* The whole height takes the pointer, so a quiet day is still easy to aim at;
+   the padding is what leaves a gap between one day's bar and the next */
+.chart-col {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 1px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.chart-col:hover {
+  background: var(--bubble);
+}
+
+.chart-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  width: 100%;
+  height: 100%;
+  justify-content: flex-start;
+}
+
+.chart-stack .seg {
+  min-height: 2px;
+  box-sizing: border-box;
+}
+
+/* The top of the day's whole column is rounded; the joins between providers
+   are a hairline of the background, so two colours never touch */
+.chart-stack .seg:last-child {
+  border-radius: 3px 3px 0 0;
+}
+
+.chart-stack .seg:not(:last-child):not(:only-child) {
+  border-top: 2px solid var(--bg);
+}
+
+/* The dates, inside what scrolls so they stay over their own columns */
+.chart-x {
+  position: relative;
+  height: 16px;
+  margin-top: 4px;
+}
+
+.chart-x small {
+  position: absolute;
+  top: 0;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Which colour is which provider */
+#usage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 10px;
+  padding-left: var(--usage-axis-w, 48px);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#usage-legend[hidden] {
+  display: none;
+}
+
+/* A provider's colour, always beside its name and never standing in for it */
+#usage i {
+  display: inline-block;
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  vertical-align: baseline;
+  border-radius: 2px;
+}
+
+#usage i,
+.chart-stack .seg {
+  background: hsl(var(--series-hue) var(--series-s) calc(var(--series-l) + var(--series-shift) * 1%));
+}
+
+/* The same numbers as the chart, to be read rather than compared */
+#usage-breakdown table,
+#usage-purpose table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+}
+
+#usage-breakdown :is(th, td),
+#usage-purpose :is(th, td) {
+  padding: 5px 8px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--border);
+}
+
+#usage-breakdown th,
+#usage-purpose th {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+#usage-breakdown .figure,
+#usage-purpose .figure {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#usage-breakdown tr.provider td,
+#usage-purpose tr.provider td {
+  padding-top: 12px;
+  font-weight: 600;
+}
+
+/* A model's own line, indented under the provider it belongs to */
+#usage-breakdown tbody tr:not(.provider) td:first-child,
+#usage-purpose tbody tr:not(.provider) td:first-child {
+  padding-left: 23px;
+  color: var(--muted);
+}
+
+/* A line per day, opening to the models it went to */
+.usage-day {
+  border-bottom: 1px solid var(--border);
+}
+
+.usage-day > summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 6px 0;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-day .label {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.usage-day pre {
+  margin: 2px 0 6px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#usage #usage-days-section .hint {
+  margin-bottom: 8px;
+}
+
+/* What one day's column stands for, in full, following the pointer */
+#usage-tip {
+  position: fixed;
+  z-index: 20;
+  box-sizing: border-box;
+  max-width: 320px;
+  padding: 8px 10px;
+  pointer-events: none;
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+#usage-tip[hidden] {
+  display: none;
+}
+
+#usage-tip .label {
+  margin-bottom: 4px;
+  font-weight: 600;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+#usage-tip > div:not(.label) {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 1px 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+#usage-tip small {
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The plan a coding reply writes before it changes anything (see
+   harness/phases.ts). Set apart from the reply around it: it is not the
+   answer, it is what the answer is going to be, and the user reads it while
+   there is still time to stop the work. */
+.message.plan {
+  align-self: stretch;
+  max-width: none;
+  margin: 4px 0;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+}
+
+.message.plan .caption {
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.message.plan :is(p, ul, ol):first-of-type {
+  margin-top: 0;
+}
+
+.message.plan :is(p, ul, ol):last-child {
+  margin-bottom: 0;
+}
+
+/* Whether a change asked for in this thread is planned before it is made
+   (see plan in renderer.ts). A setting among what the thread is keeping,
+   which is otherwise only read. */
+#thread-plan {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+#thread-plan[hidden] {
+  display: none;
+}
+
+#thread-plan label {
+  cursor: pointer;
+  user-select: none;
+}
+
+#thread-plan .hint {
+  margin: 6px 0 0;
+}
+
+/* Getting the app ready to use, which the window shows on the way in when
+   something it needs is missing (see renderer/setup.ts). Wider than the other
+   dialogs because a step holds a list of models or an installer's output, and
+   a flow that scrolls while it works reads as something going wrong. */
+#setup-dialog {
+  width: min(620px, 92vw);
+}
+
+#setup-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 12px 0 0;
+  padding: 0;
+  font-size: 12px;
+  color: var(--muted);
+  list-style: none;
+}
+
+#setup-steps li[aria-current='step'] {
+  color: var(--text);
+}
+
+/* A step that is satisfied carries its tick, so the flow shows what has been
+   done rather than only where it is */
+#setup-steps li.done::before {
+  content: '✓ ';
+  color: var(--accent);
+}
+
+#setup-body {
+  margin-top: 14px;
+}
+
+#setup-body .setup-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+#setup-body .setup-item:first-child {
+  border-top: 0;
+}
+
+#setup-body .setup-item .about {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}
+
+#setup-body .setup-item .name {
+  font-weight: 600;
+}
+
+/* What a requirement amounts to in one word, in the colour of the answer:
+   there is no state here worth reading a sentence for. */
+#setup-body .setup-item .state {
+  flex: none;
+  color: var(--muted);
+}
+
+#setup-body .setup-item.ok .state {
+  color: var(--accent);
+}
+
+#setup-body .setup-item button {
+  flex: none;
+}
+
+#setup-log {
+  max-height: 160px;
+  margin: 12px 0 0;
+  padding: 8px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+#setup-log[hidden] {
+  display: none;
+}
+
+#setup-status {
+  flex: 1;
+  margin: 0;
+  color: var(--muted);
+}
+
+#setup-dialog button[hidden],
+#notice-dialog button[hidden] {
+  display: none;
+}
+
+#setup-dialog button:disabled {
+  opacity: 0.5;
+}
+
+#notice-dialog {
+  width: min(460px, 92vw);
+}
+
+/* A switch with nothing to switch between (see drawFast in renderer/models.ts).
+   Left clickable, so that clicking it can say why rather than nothing
+   happening. */
+#offline.unavailable,
+#fast.unavailable {
+  opacity: 0.45;
+}

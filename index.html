@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; media-src 'self' blob: data:"
+    />
+    <title>ch</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- The window's own title bar: it has no frame of its own, so this is it -->
+    <header id="titlebar">
+      <span id="cost-30d" title="What the models have cost over the last 30 days"></span>
+      <button id="open-usage" type="button" title="Tokens used and what they cost, day by day">Token Usage</button>
+      <label id="fast">
+        <input id="fast-toggle" type="checkbox" />
+        <span>Fast Mode</span>
+      </label>
+      <label id="offline">
+        <input id="offline-toggle" type="checkbox" />
+        <span>Offline Mode</span>
+      </label>
+    </header>
+    <div id="shell">
+      <aside id="sidebar">
+        <div id="search">
+          <input
+            id="search-input"
+            type="search"
+            placeholder="Search threads…"
+            autocomplete="off"
+            aria-label="Search threads"
+            aria-expanded="false"
+            aria-controls="search-results"
+          />
+          <ul id="search-results" role="listbox" hidden></ul>
+        </div>
+        <ul id="thread-list"></ul>
+        <div class="controls">
+          <button id="new-thread">+ New thread</button>
+          <button id="open-settings">Settings</button>
+        </div>
+      </aside>
+      <main>
+        <header>
+          <div class="thread-title-row">
+            <span id="thread-title"></span>
+            <span id="thread-workspace"></span>
+          </div>
+          <div class="thread-controls-row">
+            <button id="thread-changes" type="button" hidden>Changes</button>
+            <details id="thread-usage" hidden>
+              <summary
+                id="thread-usage-summary"
+                title="Tokens used in this thread, what they cost, and how long the models take to start answering"
+              ></summary>
+              <div id="thread-usage-models"></div>
+            </details>
+            <select id="model" title="Model"></select>
+          </div>
+        </header>
+        <nav id="tabs" role="tablist" hidden></nav>
+        <div id="messages"></div>
+        <div id="agent-view" hidden></div>
+        <div id="quote" hidden>
+          <span id="quote-text"></span><button type="button" id="quote-clear" aria-label="Remove quote">×</button>
+        </div>
+        <form id="composer">
+          <textarea id="input" rows="1" placeholder="Type a message…" autofocus></textarea>
+          <button id="send" type="submit">Send</button>
+        </form>
+      </main>
+    </div>
+    <dialog id="settings">
+      <form id="settings-form">
+        <nav class="settings-nav">
+          <h2>Settings</h2>
+          <div id="settings-tabs" role="tablist" aria-orientation="vertical">
+            <button
+              type="button"
+              role="tab"
+              id="tab-anthropic"
+              data-tab="anthropic"
+              aria-controls="panel-anthropic"
+              aria-selected="true"
+              tabindex="0"
+            >
+              Anthropic
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="tab-openai"
+              data-tab="openai"
+              aria-controls="panel-openai"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              OpenAI
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="tab-local"
+              data-tab="local"
+              aria-controls="panel-local"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              Ollama
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="tab-sandbox"
+              data-tab="sandbox"
+              aria-controls="panel-sandbox"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              Sandbox
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="tab-general"
+              data-tab="general"
+              aria-controls="panel-general"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              General
+            </button>
+          </div>
+          <div id="settings-status" role="status"></div>
+        </nav>
+        <div class="settings-content">
+          <p id="settings-hint" class="hint">
+            On Auto, each message is rated from 1 to 5 and goes to the lowest-level model that is switched on and meets
+            the rating. Each model shows its level and the ratings it is used for; set a level yourself to change that.
+          </p>
+
+          <section role="tabpanel" id="panel-anthropic" data-panel="anthropic" aria-labelledby="tab-anthropic">
+            <label for="anthropic-key">API key</label>
+            <div class="row">
+              <input id="anthropic-key" type="password" autocomplete="off" />
+              <button type="button" class="remove-key" data-provider="anthropic">Remove</button>
+            </div>
+            <div class="model-list" data-provider="anthropic"></div>
+          </section>
+
+          <section role="tabpanel" id="panel-openai" data-panel="openai" aria-labelledby="tab-openai" hidden>
+            <label for="openai-key">API key</label>
+            <div class="row">
+              <input id="openai-key" type="password" autocomplete="off" />
+              <button type="button" class="remove-key" data-provider="openai">Remove</button>
+            </div>
+            <div class="model-list" data-provider="openai"></div>
+          </section>
+
+          <section role="tabpanel" id="panel-local" data-panel="local" aria-labelledby="tab-local" hidden>
+            <label for="local-url">Server URL</label>
+            <input id="local-url" type="text" autocomplete="off" />
+            <label for="local-key">API key (optional)</label>
+            <div class="row">
+              <input id="local-key" type="password" autocomplete="off" />
+              <button type="button" class="remove-key" data-provider="local">Remove</button>
+            </div>
+            <p id="ollama-status" class="hint"></p>
+            <div class="model-list" data-provider="local"></div>
+            <div class="row" id="ollama-other">
+              <input
+                id="ollama-model"
+                type="text"
+                autocomplete="off"
+                placeholder="Download another model, e.g. llama3.2:3b"
+              />
+              <button type="button" id="ollama-download">Download</button>
+            </div>
+          </section>
+
+          <section role="tabpanel" id="panel-sandbox" data-panel="sandbox" aria-labelledby="tab-sandbox" hidden>
+            <label for="sandbox-image">Container image</label>
+            <input id="sandbox-image" type="text" autocomplete="off" placeholder="Chosen from the workspace" />
+            <p class="hint">
+              Each thread works in a container built from this image, with Git added. Left empty, each workspace gets
+              the image its own files ask for — a Node image for a package.json, a Python one for a pyproject.toml, and
+              so on — so that the project's own tests and builds can be run. Threads in a workspace share what their
+              package managers download, and keep their installed dependencies to themselves.
+            </p>
+          </section>
+
+          <section role="tabpanel" id="panel-general" data-panel="general" aria-labelledby="tab-general" hidden>
+            <h3 class="settings-group">Approvals</h3>
+            <label for="approval-ceiling">Ask before using a model rated</label>
+            <select id="approval-ceiling">
+              <option value="5">Never ask</option>
+              <option value="4">Ask for 5</option>
+              <option value="3">Ask for 4 and 5</option>
+              <option value="2">Ask for 3–5</option>
+              <option value="1">Ask for 2–5</option>
+            </select>
+
+            <label class="check">
+              <input id="auto-review" type="checkbox" />
+              <span>Review changes automatically</span>
+            </label>
+
+            <h3 class="settings-group">Colours</h3>
+            <label>Setting up</label>
+            <p class="hint">
+              What the app needs installed — Ollama and the models it runs, Docker for the threads' containers — and
+              where the API keys go, in the order it wants them.
+            </p>
+            <div class="row">
+              <button type="button" id="open-setup">Open setup…</button>
+            </div>
+            <div class="row" id="theme-controls">
+              <label for="theme-bg">Background</label>
+              <input type="color" data-theme-var="--bg" id="theme-bg" />
+              <label for="theme-panel">Panel</label>
+              <input type="color" data-theme-var="--panel" id="theme-panel" />
+              <label for="theme-border">Border</label>
+              <input type="color" data-theme-var="--border" id="theme-border" />
+              <label for="theme-text">Text</label>
+              <input type="color" data-theme-var="--text" id="theme-text" />
+              <label for="theme-muted">Muted text</label>
+              <input type="color" data-theme-var="--muted" id="theme-muted" />
+              <label for="theme-accent">Accent</label>
+              <input type="color" data-theme-var="--accent" id="theme-accent" />
+              <label for="theme-bubble">Message bubble</label>
+              <input type="color" data-theme-var="--bubble" id="theme-bubble" />
+              <label for="theme-asked-by-app">Asked by app</label>
+              <input type="color" data-theme-var="--asked-by-app" id="theme-asked-by-app" />
+              <button type="button" id="theme-reset">Reset colours</button>
+            </div>
+          </section>
+        </div>
+        <button type="button" id="settings-close" class="dialog-close" aria-label="Close">&times;</button>
+      </form>
+    </dialog>
+    <dialog id="usage">
+      <div class="usage-page">
+        <header>
+          <h2>Token Usage</h2>
+          <div class="chips" id="usage-view" role="group" aria-label="What the page shows"></div>
+          <div class="chips" id="usage-range" role="group" aria-label="Days shown"></div>
+          <!-- Opened, the dialog puts the focus on its first button; left to
+               itself that is a range, and the ring on it reads as the range
+               being showing rather than as where the keyboard is -->
+          <button type="button" id="usage-close" class="dialog-close" aria-label="Close" autofocus>&times;</button>
+        </header>
+        <div class="usage-content">
+          <p id="usage-empty" class="hint" hidden>
+            Nothing has been used yet. Once a model answers something, what it used and what it cost turn up here.
+          </p>
+          <div id="usage-tiles"></div>
+          <p id="usage-earlier" class="hint" hidden></p>
+          <section id="usage-chart-section">
+            <div class="label" id="usage-chart-label">Each day</div>
+            <div id="usage-chart"></div>
+            <div id="usage-legend"></div>
+          </section>
+          <section id="usage-breakdown-section">
+            <div class="label">By provider and model</div>
+            <div id="usage-breakdown"></div>
+          </section>
+          <section id="usage-purpose-section">
+            <div class="label">By purpose</div>
+            <div id="usage-purpose"></div>
+          </section>
+          <section id="usage-days-section">
+            <div class="label">Day by day</div>
+            <p class="hint">Open a day to see which models the tokens went to.</p>
+            <div id="usage-days"></div>
+          </section>
+        </div>
+      </div>
+      <div id="usage-tip" role="tooltip" hidden></div>
+    </dialog>
+    <div id="message-menu" role="menu" hidden>
+      <button type="button" role="menuitem" id="menu-retry">Retry</button>
+      <button type="button" role="menuitem" id="menu-delete">Delete</button>
+    </div>
+    <dialog id="new-thread-dialog">
+      <form id="new-thread-form">
+        <h2>New thread</h2>
+        <p class="hint">
+          Start in a workspace to give the assistant a copy of its files and let it search them, or start a general chat
+          without one.
+        </p>
+        <section>
+          <label for="recent-workspaces">Workspace</label>
+          <div class="row">
+            <select id="recent-workspaces"></select>
+            <button type="button" id="browse-workspace">Browse…</button>
+          </div>
+        </section>
+        <section id="branch-section" hidden>
+          <label for="branch-choice">Branch</label>
+          <select id="branch-choice">
+            <option value="">Current checkout</option>
+            <option value="+new">New branch…</option>
+          </select>
+          <input id="branch-name" type="text" autocomplete="off" placeholder="Name of the new branch" hidden />
+          <p id="branch-error" class="hint" role="alert" hidden></p>
+        </section>
+        <div class="actions">
+          <button type="button" id="new-thread-cancel">Cancel</button>
+          <button type="button" id="general-chat">General chat</button>
+          <button type="submit" id="start-in-workspace" class="primary">Start in workspace</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="zoom-dialog">
+      <button type="button" id="zoom-close" class="dialog-close" aria-label="Close">&times;</button>
+      <div id="zoom-body"></div>
+    </dialog>
+    <dialog id="feedback-dialog">
+      <form id="feedback-form">
+        <h2>What went wrong?</h2>
+        <p class="hint">Tell us what was off about how this message was classified.</p>
+        <section id="feedback-problems">
+          <label class="row"><input type="checkbox" name="problem" value="too_low" /> Sophistication too low</label>
+          <label class="row"><input type="checkbox" name="problem" value="too_high" /> Sophistication too high</label>
+          <label class="row"><input type="checkbox" name="problem" value="wrong_type" /> Wrong task type</label>
+        </section>
+        <div class="actions">
+          <button type="button" id="feedback-cancel">Cancel</button>
+          <button type="submit" id="feedback-send" class="primary" disabled>Send</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="changes-dialog">
+      <h2>Changes in this thread</h2>
+      <p class="hint" id="changes-hint"></p>
+      <div id="changes-files"></div>
+      <section id="changes-branch" hidden>
+        <p id="changes-branch-status"></p>
+        <input type="text" id="changes-commit-message" placeholder="Commit message" aria-label="Commit message" />
+        <div class="actions">
+          <button type="button" id="changes-pull">Pull</button>
+          <button type="button" id="changes-commit">Commit</button>
+          <button type="button" id="changes-push">Push</button>
+        </div>
+      </section>
+      <p id="changes-status" role="status"></p>
+      <div class="actions">
+        <button type="button" id="changes-close">Close</button>
+        <button type="button" id="changes-send">Send comments</button>
+        <button type="button" id="changes-revert">Revert changes</button>
+        <button type="button" id="changes-apply" class="primary">Write to workspace</button>
+      </div>
+    </dialog>
+    <dialog id="workspace-dialog">
+      <h2 id="workspace-dialog-name"></h2>
+      <p class="hint" id="workspace-dialog-path"></p>
+      <div id="workspace-dialog-body"></div>
+      <div id="workspace-notes">
+        <div class="label" id="workspace-notes-label">Notes</div>
+        <input
+          id="workspace-notes-query"
+          type="search"
+          placeholder="Search these notes…"
+          autocomplete="off"
+          aria-label="Search this workspace's notes"
+        />
+        <div id="workspace-notes-list"></div>
+      </div>
+      <div class="actions">
+        <button type="button" id="workspace-dialog-close">Close</button>
+        <button type="button" id="workspace-dialog-relook">Look again</button>
+        <button type="button" id="workspace-dialog-rename">Rename…</button>
+        <button type="button" id="workspace-dialog-new" class="primary">New thread here</button>
+      </div>
+    </dialog>
+    <dialog id="thread-dialog">
+      <h2 id="thread-dialog-name"></h2>
+      <p class="hint" id="thread-dialog-path"></p>
+      <section id="thread-plan" hidden>
+        <label class="row" for="thread-plan-mode">
+          <span>Plan before changing code</span>
+          <select id="thread-plan-mode">
+            <option value="auto">Let the model decide</option>
+            <option value="always">Always</option>
+            <option value="never">Never</option>
+          </select>
+        </label>
+        <p class="hint">
+          A change that is planned is worked through in four steps — find out, plan, do, answer — and the plan is put in
+          front of you before anything is changed. It costs four passes over the model where one would have done. When
+          the model decides, it is asked about each change with a short prompt of its own.
+        </p>
+      </section>
+      <section id="thread-investigate" hidden>
+        <label class="row" for="thread-investigate-mode">
+          <span>Investigate only (read-only)</span>
+          <input type="checkbox" id="thread-investigate-mode" />
+        </label>
+        <p class="hint">
+          Reads the workspace, then explains what it found with a hypothesis and follow-ups. Changes nothing. Overrides
+          plan setting.
+        </p>
+      </section>
+      <div id="thread-dialog-body"></div>
+      <div class="actions">
+        <button type="button" id="thread-dialog-close">Close</button>
+        <button type="button" id="thread-dialog-changes" class="primary">File changes…</button>
+      </div>
+    </dialog>
+    <dialog id="rename-workspace-dialog">
+      <form id="rename-workspace-form">
+        <h2>Name this workspace</h2>
+        <p class="hint" id="rename-workspace-path"></p>
+        <section>
+          <label for="workspace-name">Name</label>
+          <input id="workspace-name" type="text" autocomplete="off" />
+        </section>
+        <div class="actions">
+          <button type="button" id="rename-workspace-cancel">Cancel</button>
+          <button type="button" id="rename-workspace-reset">Use the folder's own name</button>
+          <button type="submit" class="primary">Save</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="setup-dialog">
+      <h2 id="setup-title">Setting up</h2>
+      <!-- Where the user is in the flow. Built from the steps there turn out
+           to be, since a step that is already satisfied is not shown (see
+           renderer/setup.ts). -->
+      <ol id="setup-steps" aria-label="Steps"></ol>
+      <p class="hint" id="setup-blurb"></p>
+      <div id="setup-body"></div>
+      <!-- An installer's own output, while one is running -->
+      <pre id="setup-log" hidden></pre>
+      <p id="setup-status" role="status"></p>
+      <div class="actions">
+        <button type="button" id="setup-later">Finish later</button>
+        <button type="button" id="setup-skip">Skip this step</button>
+        <button type="button" id="setup-back">Back</button>
+        <button type="button" id="setup-next" class="primary">Next</button>
+      </div>
+    </dialog>
+    <!-- One thing the app has to say, with at most one thing to do about it:
+         what a switch that is greyed out would have explained in a tooltip
+         nobody opens (see renderer/notice.ts) -->
+    <dialog id="notice-dialog">
+      <h2 id="notice-title"></h2>
+      <p class="hint" id="notice-text"></p>
+      <div class="actions">
+        <button type="button" id="notice-close">Close</button>
+        <button type="button" id="notice-action" class="primary" hidden></button>
+      </div>
+    </dialog>
+    <script type="module" src="dist/renderer.js"></script>
+  </body>
+</html>

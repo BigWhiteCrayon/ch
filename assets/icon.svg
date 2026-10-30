@@ -1,0 +1,33 @@
+<!-- The app's mark: its name, "ch", in a rounded square. This is the source of
+     it; assets/icon.png is what the app actually shows (see ICON in
+     src/main.ts), rasterised from this file.
+
+     The letters are drawn rather than set in a typeface, so the mark comes out
+     the same wherever it is rasterised and whatever fonts the machine has. Each
+     is one stroke with round ends: a "c" is an arc open to the right, and an
+     "h" is a stem, a shoulder over it and a second stem down from that. The
+     purple is the app's own accent colour, as styles.css sets it.
+
+     The square does not fill the canvas. A macOS icon is drawn on a grid that
+     leaves a margin around it, and one drawn edge to edge stands out from
+     every other icon in the dock by looking a size larger. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <g transform="translate(100, 100) scale(0.8046875)">
+    <rect width="1024" height="1024" rx="230" ry="230" fill="#7e22ce" />
+    <!-- The ink is 710 wide and 530 tall, sitting left of and above centre as
+         it is drawn, so the whole of it is nudged into the middle of the
+         square -->
+    <g
+      transform="translate(32, 32)"
+      fill="none"
+      stroke="#ffffff"
+      stroke-width="90"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M 432.8 417.4 A 160 160 0 1 0 432.8 662.6" />
+      <path d="M 610 260 L 610 700" />
+      <path d="M 610 540 A 90 90 0 0 1 790 540 L 790 700" />
+    </g>
+  </g>
+</svg>

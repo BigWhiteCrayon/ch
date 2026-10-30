@@ -1,0 +1,83 @@
+{
+  "name": "ch",
+  "productName": "ch",
+  "version": "0.1.0",
+  "description": "Basic multi-thread chat app",
+  "main": "dist/main.js",
+  "private": true,
+  "scripts": {
+    "build": "tsc && tsc -p tsconfig.renderer.json",
+    "start": "npm run build && electron .",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
+    "dev": "npm run build && concurrently -k \"tsc -w --preserveWatchOutput\" \"tsc -w --preserveWatchOutput -p tsconfig.renderer.json\" \"electronmon .\"",
+    "test": "vitest run",
+    "eval": "tsc -p tsconfig.evals.json && node dist-evals/evals/run.js",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.evals.json && tsc --noEmit -p tsconfig.renderer.json",
+    "format": "prettier --write .",
+    "lint": "prettier --check . && npm run build && node dist/scripts/lint.js",
+    "install-docker": "npm run build && node dist/scripts/install-docker.js",
+    "postinstall": "npm run build && node dist/scripts/sign-electron.js",
+    "sign-electron": "npm run build && node dist/scripts/sign-electron.js"
+  },
+  "electronmon": {
+    "patterns": [
+      "!src/**",
+      "!tests/**",
+      "!ideas.md"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "concurrently": "^10.0.5",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.18.0",
+    "electronmon": "^2.0.4",
+    "jsdom": "^30.1.2",
+    "prettier": "^3.9.9",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0"
+  },
+  "build": {
+    "appId": "com.ch.app",
+    "productName": "ch",
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "dist/**/*",
+      "index.html",
+      "styles.css",
+      "assets/**/*",
+      "!**/*.map"
+    ],
+    "asarUnpack": [
+      "dist/**"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "assets/icon.png"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/icon.png"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development",
+      "icon": "assets/icon.png"
+    }
+  }
+}

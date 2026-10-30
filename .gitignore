@@ -1,0 +1,7 @@
+node_modules/
+dist/
+ideas.md
+.eval-data
+.env
+dist-evals/
+release/
