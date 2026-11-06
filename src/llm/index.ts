@@ -358,10 +358,27 @@ function deadline(ms: number): { signal: AbortSignal; clear(): void } {
 // handing the user a failure for something that would have worked a moment
 // later. Several subagents turned away at the same moment would otherwise all
 // come back at the same moment, so each wait is given a little randomness.
+//
+// A server that cannot be reached is treated the same way, since one starting
+// up or a connection dropping is over as quickly. Except for a request that
+// something else is waiting on (see wholeBudget): with the server gone, every
+// message would stand still for the whole of the waits before its reply had
+// even begun, and the reply makes the attempts of its own anyway.
+//
+// A server that took the request and then went quiet is not asked again, and
+// is the one case here where waiting and asking again is worse than doing
+// nothing. It is still holding the request: a local one is working through
+// the prompt, which on a long thread it may have to read from the start, and
+// a second copy of the same question joins the queue behind the first rather
+// than replacing it. That is how one reply came to spend sixteen minutes on
+// three requests the server was answering all along (see ./transport.ts).
 const RATE_LIMIT_TRIES = 4;
 const BACKOFF_MS = 2000;
 const BACKOFF_CEILING_MS = 60000;
 const BACKOFF_JITTER = 0.25;
+
+const worthRetrying = (event: ErrorEvent, request: ChatRequest) =>
+  event.code === 'rate_limit' || (event.code === 'unreachable' && !wholeBudget(request));
 
 // How long to wait before trying again: what the provider asked for if it
 // said, else a doubling wait with a little randomness in it.
@@ -429,8 +446,10 @@ export async function* stream(request: ChatRequest, signal: AbortSignal): AsyncG
   // only just up, would otherwise have to wait out the interval below for a
   // count it should have had at once.
   let estimatedAt = -Infinity;
-  // What the prompt comes to, which does not change while the reply is written
-  const promptTokens = sizeOf(request.messages, request.system);
+  // What the prompt comes to, which does not change while the reply is
+  // written. The tools go in: they are sent with the request and the model
+  // reads them like the rest of it (see sizeOf).
+  const promptTokens = sizeOf(request.messages, request.system, request.tools);
   // What the model reasoned, for a provider that reports it (see ReasoningEvent)
   let thinking = '';
   const toolCalls: ToolCall[] = [];
@@ -453,7 +472,7 @@ export async function* stream(request: ChatRequest, signal: AbortSignal): AsyncG
           broke = event;
           break;
         }
-        if (event.type === 'error' && event.code === 'rate_limit' && !answering && attempt < RATE_LIMIT_TRIES) {
+        if (event.type === 'error' && worthRetrying(event, request) && !answering && attempt < RATE_LIMIT_TRIES) {
           limited = event;
           break;
         }
@@ -507,8 +526,22 @@ export async function* stream(request: ChatRequest, signal: AbortSignal): AsyncG
       }
       if (!limited) break;
       const after = backoff(attempt, limited.retryAfterMs);
-      log.warn('llm.rate_limited', { ...where, attempt, of: RATE_LIMIT_TRIES, after, error: limited.message });
-      yield { type: 'rate_limited', attempt, of: RATE_LIMIT_TRIES, after, message: limited.message };
+      const unreachable = limited.code === 'unreachable';
+      log.warn(unreachable ? 'llm.unreachable' : 'llm.rate_limited', {
+        ...where,
+        attempt,
+        of: RATE_LIMIT_TRIES,
+        after,
+        error: limited.message,
+      });
+      yield {
+        type: 'rate_limited',
+        attempt,
+        of: RATE_LIMIT_TRIES,
+        after,
+        message: limited.message,
+        ...(unreachable ? { unreachable } : {}),
+      };
       await wait(after, signal);
       // Given up on while it waited: the error it was turned away with stands
       if (signal.aborted) {

@@ -73,7 +73,7 @@ after this one will never know you knew it.`;
 
 const signed = (phase?: Phase) => `${KEPT}
 
-${phase === 'explore' ? STEP_ENDS : CONDENSED}
+${phase === 'explore' || phase === 'plan' ? STEP_ENDS : CONDENSED}
 
 So when you establish something the rest of the work rests on, put it in your reply in a line before you call the
 next tool:

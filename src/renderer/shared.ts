@@ -70,6 +70,12 @@ export const searchResults = element<HTMLUListElement>('search-results');
 export const composer = element<HTMLFormElement>('composer');
 export const input = element<HTMLTextAreaElement>('input');
 export const sendButton = element<HTMLButtonElement>('send');
+// The pictures the user is attaching to the message they are writing. The
+// strip that shows them, and the button and file input that fill it
+// (see attachments.ts)
+export const attachmentsEl = element<HTMLDivElement>('attachments');
+export const attachButton = element<HTMLButtonElement>('attach');
+export const attachInput = element<HTMLInputElement>('attach-input');
 // What was typed in the box and not yet sent, by thread, so it stays with the thread it was written in
 export const drafts = new Map<string, string>();
 
@@ -81,6 +87,34 @@ export function setModels(value: ModelInfo[]): void {
 export let allModels: ModelInfo[] = [];
 export function setAllModels(value: ModelInfo[]): void {
   allModels = value;
+}
+// The hosted models last seen on offer. Offline Mode shows these greyed out when
+// they are not in the live list, so it keeps the last list even when the live
+// one omits them. Held across a restart in the window's own storage (as the
+// threads are), because a boot that is already Offline never sees a hosted model
+// in the live list — the main process takes hosted providers out of it outright
+// (see away in llm/index.ts) — and so would otherwise have nothing to show.
+export const RETAINED_MODELS_KEY = 'retained-hosted-models';
+let retainedHostedModels: ModelInfo[] = [];
+try {
+  const saved = localStorage.getItem(RETAINED_MODELS_KEY);
+  const parsed = saved ? JSON.parse(saved) : null;
+  if (Array.isArray(parsed)) retainedHostedModels = parsed as ModelInfo[];
+} catch {
+  // No saved list yet, or the window has no storage: start empty, and the next
+  // online listing fills it.
+}
+export function setRetainedHostedModels(value: ModelInfo[]): void {
+  retainedHostedModels = value;
+  try {
+    localStorage.setItem(RETAINED_MODELS_KEY, JSON.stringify(value));
+  } catch {
+    // A full or unavailable store is no reason to fail a load; the in-memory
+    // list keeps the rows on screen for this session regardless.
+  }
+}
+export function getRetainedHostedModels(): ModelInfo[] {
+  return retainedHostedModels;
 }
 export let providers: ProviderStatus[] = [];
 export function setProviders(value: ProviderStatus[]): void {

@@ -7,7 +7,16 @@ import type {
   SuggestedModel,
   Thread,
 } from './types.js';
-import { allModels, automatic, element, inflight, models, providers, requests } from './shared.js';
+import {
+  allModels,
+  automatic,
+  element,
+  getRetainedHostedModels,
+  inflight,
+  models,
+  providers,
+  requests,
+} from './shared.js';
 import { applyTheme, drawOffline, loadModels, modelKey } from './models.js';
 import { save, state } from './threads.js';
 import { clock } from './usage.js';
@@ -16,11 +25,13 @@ import { handleEvent } from './events.js';
 export const settingsDialog = element<HTMLDialogElement>('settings');
 export const settingsStatus = element('settings-status');
 export const localUrlInput = element<HTMLInputElement>('local-url');
+const localMaxContextInput = element<HTMLInputElement>('local-max-context');
 export const sandboxImageInput = element<HTMLInputElement>('sandbox-image');
 export const approvalCeilingSelect = element<HTMLSelectElement>('approval-ceiling');
 export const autoReviewBox = element<HTMLInputElement>('auto-review');
 export const themeInputs = [...document.querySelectorAll<HTMLInputElement>('[data-theme-var]')];
 export const themeReset = element('theme-reset');
+const offlineWarning = element('settings-offline-warning');
 export const keyInputs = {
   anthropic: element<HTMLInputElement>('anthropic-key'),
   openai: element<HTMLInputElement>('openai-key'),
@@ -126,9 +137,14 @@ export function levelSummary(m: ModelInfo, ratings: Map<string, number[]>): stri
   return `${level} · used for ${range}`;
 }
 
-export function modelRow(m: ModelInfo, ratings: Map<string, number[]>): HTMLLabelElement {
+// A hosted model shown while Offline Mode is on is greyed out (see the
+// '.unavailable' class, which greys its on-switch), but the switch stays on
+// and toggleable: the choice is saved to disabledModels and takes effect once
+// Offline Mode is off.
+export function modelRow(m: ModelInfo, ratings: Map<string, number[]>, away = false): HTMLLabelElement {
   const row = document.createElement('label');
   row.className = 'row';
+  if (away) row.classList.add('unavailable');
 
   if ((HOSTED as readonly string[]).includes(m.provider)) {
     const enabled = document.createElement('input');
@@ -457,10 +473,15 @@ ollamaModelInput.addEventListener('keydown', (e) => {
 // A model family as a collapsed dropdown with a master switch for its versions
 export function familyDetails(
   key: string,
-  family: { label: string; rows: HTMLLabelElement[]; on: boolean }
+  family: { label: string; rows: HTMLLabelElement[]; on: boolean },
+  away = false
 ): HTMLDetailsElement {
   const details = document.createElement('details');
   details.className = 'family';
+  // A family that can't be reached shows its master switch greyed too, not just
+  // its models: a collapsed family shows only the switch, which would otherwise
+  // read as fully on while its models are greyed out (see .unavailable below).
+  if (away) details.classList.add('unavailable');
 
   const head = document.createElement('summary');
   head.className = 'family-head';
@@ -508,6 +529,7 @@ export function renderSettings(): void {
     remove.hidden = !hasKey;
   }
   localUrlInput.value = settings.local.baseURL;
+  localMaxContextInput.value = settings.local.maxContext?.toString() ?? '';
   sandboxImageInput.value = settings.sandbox.image;
   approvalCeilingSelect.value = String(settings.approvalCeiling);
   autoReviewBox.checked = settings.autoReview;
@@ -518,13 +540,23 @@ export function renderSettings(): void {
   }
 
   showTab(settingsTab);
+  const offline = settings.offline;
+  if (offline) {
+    offlineWarning.textContent =
+      'Offline Mode is on — hosted models are shown for reference and can be switched, ' +
+      'but are not used until Offline Mode is off.';
+    offlineWarning.hidden = false;
+  } else {
+    offlineWarning.hidden = true;
+  }
   renderOllama();
   const ratings = autoRatings();
   for (const list of document.querySelectorAll<HTMLElement>('.model-list')) {
     const provider = list.dataset.provider;
     if (provider === 'local') continue;
-    const models = allModels.filter((m) => m.provider === provider);
-    const rows = models.map((m) => modelRow(m, ratings));
+    const source = offline ? getRetainedHostedModels() : allModels;
+    const models = source.filter((m) => m.provider === provider);
+    const rows = models.map((m) => modelRow(m, ratings, offline));
     if (rows.length > 0) {
       // One collapsed dropdown per family, in the order each family first appears
       const families = new Map<string, { label: string; rows: HTMLLabelElement[]; on: boolean }>();
@@ -541,7 +573,7 @@ export function renderSettings(): void {
       );
       list.replaceChildren(
         ...[...families].map(([key, family]) => {
-          const details = familyDetails(key, family);
+          const details = familyDetails(key, family, offline);
           details.open = open.has(key);
           return details;
         })
@@ -654,6 +686,14 @@ settingsDialog.addEventListener('change', (e) => {
 
 localUrlInput.addEventListener('change', () => {
   saveSettings({ local: { baseURL: localUrlInput.value } });
+});
+
+localMaxContextInput.addEventListener('change', () => {
+  const tokens = localMaxContextInput.valueAsNumber;
+  void saveSettings({ local: { maxContext: Number.isFinite(tokens) ? tokens : null } }).then(() => {
+    // Too small a limit is raised to the least that works
+    localMaxContextInput.value = settings.local.maxContext?.toString() ?? '';
+  });
 });
 
 sandboxImageInput.addEventListener('change', () => {

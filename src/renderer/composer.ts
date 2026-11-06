@@ -5,6 +5,7 @@ import { dropQuestion } from './questions.js';
 import { takeQuote } from './quote.js';
 import { send } from './reply.js';
 import { acceptSuggestion } from './suggestion.js';
+import { take } from './attachments.js';
 
 modelSelect.addEventListener('change', () => {
   state.modelChoice = modelSelect.value;
@@ -24,10 +25,12 @@ composer.addEventListener('submit', (e) => {
     return;
   }
   const text = input.value.trim();
-  if (!text) return;
+  const images = take();
+  // A message is the words, the pictures, or both: neither is enough on its own
+  if (!text && !images.length) return;
   input.value = '';
   input.style.height = 'auto';
-  send(takeQuote() + text);
+  send(takeQuote() + text, images);
 });
 
 // Enter sends, Shift+Enter inserts a newline, and Tab fills in the suggested

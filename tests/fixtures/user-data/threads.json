@@ -1,0 +1,1154 @@
+{
+  "threads": [
+    {
+      "id": "ecc7d028-3db2-4a68-9d37-8ae281750881",
+      "title": "A reply that failed",
+      "lastActive": 1793903159447,
+      "messages": [
+        {
+          "role": "user",
+          "text": "status check, please",
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "Not classified",
+          "unclassified": {
+            "id": "a4d145cd-5b5d-4a41-b1d1-2a6de82cecf6",
+            "details": [
+              ["Reason", "HTTP 500: {\"error\":\"fake-ollama was told to fail\"}"],
+              ["Classifier", "fake-small:8b"],
+              ["Answered by", "fake-large:32b (2/5)"]
+            ]
+          }
+        },
+        {
+          "role": "error",
+          "text": "HTTP 500: {\"error\":\"fake-ollama was told to fail\"}"
+        }
+      ],
+      "opened": 1793903158004,
+      "described": 1,
+      "usage": {
+        "local/fake-small:8b": {
+          "provider": "local",
+          "model": "fake-small:8b",
+          "input": 100,
+          "output": 5,
+          "cost": 0
+        }
+      }
+    },
+    {
+      "id": "76ab0417-07df-441c-93b7-1048715ae145",
+      "title": "A question answered",
+      "lastActive": 1793903154468,
+      "messages": [
+        {
+          "role": "user",
+          "text": "Make the button a colour",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "8be5da84-0448-4e9a-9d7f-3a66eb128411",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "tool",
+          "text": "Used ask_user",
+          "tool": "ask_user",
+          "callId": "8ed3c473-9e7f-417e-90ab-f51e07457932",
+          "inputSummary": "question: Which colour should it be?\noptions: [\"Red\",\"Blue\"]",
+          "output": "The user answered: Red"
+        },
+        {
+          "role": "note",
+          "text": "Asked: Which colour should it be?\nYou answered: Red"
+        },
+        {
+          "role": "assistant",
+          "text": "Thanks, that settles it.",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 300 in · 10 out · free · 47ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 200,
+              "output": 7,
+              "cost": 0,
+              "waits": {
+                "timed": 2,
+                "spent": 47,
+                "slowest": 40,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "07e26030-eafe-414d-ae6d-d217a85937ac"
+        }
+      ],
+      "opened": 1793903149876,
+      "usage": {
+        "local/fake-small:8b": {
+          "provider": "local",
+          "model": "fake-small:8b",
+          "input": 200,
+          "output": 8,
+          "cost": 0
+        },
+        "local/fake-large:32b": {
+          "provider": "local",
+          "model": "fake-large:32b",
+          "input": 200,
+          "output": 7,
+          "cost": 0,
+          "waits": {
+            "timed": 2,
+            "spent": 47,
+            "slowest": 40,
+            "queued": 0
+          }
+        }
+      },
+      "described": 1
+    },
+    {
+      "id": "7bfc5f92-d96a-4f64-bc44-dbf65e74150d",
+      "title": "A long conversation",
+      "lastActive": 1793903147097,
+      "messages": [
+        {
+          "role": "user",
+          "text": "Message number 1, to fill the thread up.",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "05ada797-b60f-402d-8ddb-7e24798db29b",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "assistant",
+          "text": "You said: Message number 1, to fill the thread up.",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 200 in · 8 out · free · 93ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 100,
+              "output": 5,
+              "cost": 0,
+              "waits": {
+                "timed": 1,
+                "spent": 93,
+                "slowest": 93,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "21b65617-5a12-4b60-8dc4-b69046c8b4b2"
+        },
+        {
+          "role": "user",
+          "text": "Message number 2, to fill the thread up.",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "63cdd191-ab26-4562-899f-2490bcbd3fe1",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "assistant",
+          "text": "You said: Message number 2, to fill the thread up.",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 200 in · 8 out · free · 92ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 100,
+              "output": 5,
+              "cost": 0,
+              "waits": {
+                "timed": 1,
+                "spent": 92,
+                "slowest": 92,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "2c2fc7c1-bfc7-4a7b-bb4b-e84585666719"
+        },
+        {
+          "role": "user",
+          "text": "Message number 3, to fill the thread up.",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "bad91936-02fc-4f5f-9a46-66fe082e6859",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "assistant",
+          "text": "You said: Message number 3, to fill the thread up.",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 200 in · 8 out · free · 92ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 100,
+              "output": 5,
+              "cost": 0,
+              "waits": {
+                "timed": 1,
+                "spent": 92,
+                "slowest": 92,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "06767e1d-d0eb-4aa4-89c4-ce273d450d5c"
+        },
+        {
+          "role": "user",
+          "text": "Message number 4, to fill the thread up.",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "2e9d2001-fdc1-46c3-8415-0624267520c2",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "assistant",
+          "text": "You said: Message number 4, to fill the thread up.",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 200 in · 8 out · free · 88ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 100,
+              "output": 5,
+              "cost": 0,
+              "waits": {
+                "timed": 1,
+                "spent": 88,
+                "slowest": 88,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "acdc1172-698d-4eea-a5d2-79ca8b456679"
+        },
+        {
+          "role": "user",
+          "text": "Message number 5, to fill the thread up.",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "7e68005f-4632-4182-b30f-2d33b33f68c5",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "assistant",
+          "text": "You said: Message number 5, to fill the thread up.",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 200 in · 8 out · free · 89ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 100,
+              "output": 5,
+              "cost": 0,
+              "waits": {
+                "timed": 1,
+                "spent": 89,
+                "slowest": 89,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "2cb72154-6122-4a37-8095-a3cfb8162412"
+        },
+        {
+          "role": "user",
+          "text": "Message number 6, to fill the thread up.",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "9c84e5b9-250a-48ef-985b-720fca78ebe4",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "assistant",
+          "text": "You said: Message number 6, to fill the thread up.",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 200 in · 8 out · free · 89ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 100,
+              "output": 5,
+              "cost": 0,
+              "waits": {
+                "timed": 1,
+                "spent": 89,
+                "slowest": 89,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "14644405-e8d0-45a1-9c91-cd29bb2d3c23"
+        },
+        {
+          "role": "user",
+          "text": "Message number 7, to fill the thread up.",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "4a7921d7-d472-4c99-8275-328510665c4c",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "assistant",
+          "text": "You said: Message number 7, to fill the thread up.",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 200 in · 8 out · free · 89ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 100,
+              "output": 5,
+              "cost": 0,
+              "waits": {
+                "timed": 1,
+                "spent": 89,
+                "slowest": 89,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "f0dbfa58-6e15-4845-9c86-fac6b8a43426"
+        },
+        {
+          "role": "user",
+          "text": "Message number 8, to fill the thread up.",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "8ea9bed7-77e2-4f3b-91c2-b543a6866987",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "assistant",
+          "text": "You said: Message number 8, to fill the thread up.",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 200 in · 8 out · free · 85ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 100,
+              "output": 5,
+              "cost": 0,
+              "waits": {
+                "timed": 1,
+                "spent": 85,
+                "slowest": 85,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "47fe123f-7014-4de8-9e75-5a7d94bbda0b"
+        },
+        {
+          "role": "user",
+          "text": "Message number 9, to fill the thread up.",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "2bff77a9-5cb5-45f6-9769-f71d7eae33e7",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "assistant",
+          "text": "You said: Message number 9, to fill the thread up.",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 200 in · 8 out · free · 91ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 100,
+              "output": 5,
+              "cost": 0,
+              "waits": {
+                "timed": 1,
+                "spent": 91,
+                "slowest": 91,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "825e5042-66e7-4ab5-bbd8-4486cef939a5"
+        },
+        {
+          "role": "user",
+          "text": "Message number 10, to fill the thread up.",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "658a1615-4fef-4aeb-9c3d-0a7190484047",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "assistant",
+          "text": "You said: Message number 10, to fill the thread up.",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 200 in · 8 out · free · 87ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 100,
+              "output": 5,
+              "cost": 0,
+              "waits": {
+                "timed": 1,
+                "spent": 87,
+                "slowest": 87,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "32f5eab2-7f26-463e-a5b9-937aef6d1884"
+        },
+        {
+          "role": "user",
+          "text": "Message number 11, to fill the thread up.",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "452c1d29-466b-4a2c-8409-c5ad2fcd9c42",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "assistant",
+          "text": "You said: Message number 11, to fill the thread up.",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 200 in · 8 out · free · 94ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 100,
+              "output": 5,
+              "cost": 0,
+              "waits": {
+                "timed": 1,
+                "spent": 94,
+                "slowest": 94,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "c06af834-3749-4a1e-b127-9194eceedca3"
+        },
+        {
+          "role": "user",
+          "text": "Message number 12, to fill the thread up.",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "b2f25bca-ad8a-406a-94f2-688f96ba6c78",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "assistant",
+          "text": "You said: Message number 12, to fill the thread up.",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 200 in · 8 out · free · 84ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 100,
+              "output": 5,
+              "cost": 0,
+              "waits": {
+                "timed": 1,
+                "spent": 84,
+                "slowest": 84,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "5b64a4c3-77f3-4401-9e5f-d5b977138954"
+        }
+      ],
+      "opened": 1793903115393,
+      "usage": {
+        "local/fake-small:8b": {
+          "provider": "local",
+          "model": "fake-small:8b",
+          "input": 2400,
+          "output": 96,
+          "cost": 0
+        },
+        "local/fake-large:32b": {
+          "provider": "local",
+          "model": "fake-large:32b",
+          "input": 1200,
+          "output": 60,
+          "cost": 0,
+          "waits": {
+            "timed": 12,
+            "spent": 1073,
+            "slowest": 94,
+            "queued": 0
+          }
+        }
+      },
+      "described": 12
+    },
+    {
+      "id": "8c92e6ff-dc38-43ba-b538-cbd7f8d41607",
+      "title": "A short conversation",
+      "lastActive": 1793903111926,
+      "messages": [
+        {
+          "role": "user",
+          "text": "Hello, is anybody there?",
+          "classification": {
+            "sophistication": 2,
+            "effort": "medium",
+            "category": "general",
+            "model": "fake-small:8b",
+            "provider": "local"
+          },
+          "answeredBy": {
+            "provider": "local",
+            "model": "fake-large:32b"
+          }
+        },
+        {
+          "role": "note",
+          "text": "General · 2/5 Complexity · medium effort",
+          "classifier": "fake-small:8b",
+          "thoughtId": "e903a1fe-e473-4f4a-a876-2365ff5bad24",
+          "served": "fake-large:32b (2/5)"
+        },
+        {
+          "role": "assistant",
+          "text": "You said: Hello, is anybody there?",
+          "final": true
+        },
+        {
+          "role": "note",
+          "text": "Tokens: 200 in · 8 out · free · 55ms",
+          "usage": [
+            {
+              "purpose": "classification",
+              "provider": "local",
+              "model": "fake-small:8b",
+              "input": 100,
+              "output": 3,
+              "cost": 0
+            },
+            {
+              "purpose": "reply",
+              "provider": "local",
+              "model": "fake-large:32b",
+              "input": 100,
+              "output": 5,
+              "cost": 0,
+              "waits": {
+                "timed": 1,
+                "spent": 55,
+                "slowest": 55,
+                "queued": 0
+              }
+            }
+          ],
+          "passes": [
+            {
+              "purpose": "classification",
+              "model": "fake-small:8b",
+              "input": 100
+            },
+            {
+              "purpose": "reply",
+              "model": "fake-large:32b",
+              "input": 100
+            }
+          ],
+          "thoughtId": "5f0dd94f-17f7-45c1-8a97-c2faae7a8393"
+        }
+      ],
+      "opened": 1793903110405,
+      "usage": {
+        "local/fake-small:8b": {
+          "provider": "local",
+          "model": "fake-small:8b",
+          "input": 200,
+          "output": 8,
+          "cost": 0
+        },
+        "local/fake-large:32b": {
+          "provider": "local",
+          "model": "fake-large:32b",
+          "input": 100,
+          "output": 5,
+          "cost": 0,
+          "waits": {
+            "timed": 1,
+            "spent": 55,
+            "slowest": 55,
+            "queued": 0
+          }
+        }
+      },
+      "described": 1
+    }
+  ],
+  "activeId": "ecc7d028-3db2-4a68-9d37-8ae281750881",
+  "modelChoice": "auto",
+  "daily": {
+    "2026-11-05": {
+      "local/fake-small:8b": {
+        "provider": "local",
+        "model": "fake-small:8b",
+        "input": 2900,
+        "output": 117,
+        "cost": 0
+      },
+      "local/fake-large:32b": {
+        "provider": "local",
+        "model": "fake-large:32b",
+        "input": 1500,
+        "output": 72,
+        "cost": 0,
+        "waits": {
+          "timed": 15,
+          "spent": 1175,
+          "slowest": 94,
+          "queued": 0
+        }
+      }
+    }
+  },
+  "dailyPurpose": {
+    "2026-11-05": {
+      "classification": {
+        "input": 1400,
+        "output": 42,
+        "cost": 0
+      },
+      "reply": {
+        "input": 1500,
+        "output": 72,
+        "cost": 0
+      },
+      "description": {
+        "input": 1500,
+        "output": 75,
+        "cost": 0
+      }
+    }
+  },
+  "recentWorkspaces": ["/workspace/tests/fixtures/sample-workspace"]
+}

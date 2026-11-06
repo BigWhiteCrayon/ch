@@ -84,7 +84,10 @@ const threads = {
   load: vi.fn(),
   save: vi.fn(),
   saveNow: vi.fn(),
+  saveMedia: vi.fn(),
+  loadMedia: vi.fn(),
   workspace: vi.fn(),
+  workspaceFile: vi.fn(),
   searchNotes: vi.fn(),
   forgetNote: vi.fn(),
   details: vi.fn(),
@@ -99,6 +102,9 @@ const threads = {
 };
 // What the main process has on disk for the threads: the last state saved
 let onDisk: string | null = null;
+// ...and the media sidecar, the screenshots and clips a reply took, keyed by
+// id (see save in renderer/threads.ts)
+let onMedia: Record<string, { mediaType: string; data: string }> = {};
 // Where the page is drawn, and the one thing it asks of its window: to come
 // forward for a notification the user clicked
 const host = { platform: process.platform, show: vi.fn(), badge: vi.fn() };
@@ -201,8 +207,10 @@ async function start() {
   // The window before this one closes, which also ends any save it had
   // pending; what is on disk stays as the test left it
   const kept = onDisk;
+  const keptMedia = onMedia;
   window.dispatchEvent(new Event('beforeunload'));
   onDisk = kept;
+  onMedia = keptMedia;
   for (const [target, [type, listener, options]] of listening.splice(0)) {
     target.removeEventListener(type, listener, options);
   }
@@ -262,7 +270,12 @@ beforeEach(async () => {
     platform: process.platform,
   };
   onDisk = null;
+  onMedia = {};
   threads.load.mockImplementation(() => onDisk);
+  threads.loadMedia.mockImplementation(() => (Object.keys(onMedia).length ? JSON.stringify(onMedia) : null));
+  threads.saveMedia.mockImplementation((items: { id: string; mediaType: string; data: string }[]) => {
+    for (const item of items) onMedia[item.id] = { mediaType: item.mediaType, data: item.data };
+  });
   threads.branches.mockResolvedValue({ current: null, names: [] });
   threads.branchStatus.mockResolvedValue({ upstream: null, ahead: 0, behind: 0, dirty: false });
   threads.removeWorktree.mockResolvedValue(undefined);
@@ -273,6 +286,7 @@ beforeEach(async () => {
   threads.save.mockImplementation((state: string) => (onDisk = state));
   threads.saveNow.mockImplementation((state: string) => (onDisk = state));
   threads.workspace.mockResolvedValue({ note: '', writtenAt: null, surveying: false, notes: [], moreNotes: 0 });
+  threads.workspaceFile.mockResolvedValue({ path: '', lines: [], from: 1, total: 0 });
   threads.relook.mockResolvedValue('');
   threads.looking.mockResolvedValue([]);
   threads.details.mockResolvedValue({ context: '', note: '', shared: '' });
@@ -933,6 +947,57 @@ describe('sending a message', () => {
   });
 });
 
+describe('attaching an image to a message', () => {
+  // The pictures the user is attaching are read in the renderer, on a FileReader
+  // the app owns (see attachments.ts), so the test drives the same attach input
+  // and reads the picture off the request the send makes. No preload bridge is
+  // involved: only what the renderer itself does is in question.
+  const shot = { mediaType: 'image/png', data: 'abc' };
+  // jsdom runs a real FileReader on its own timer, so the picture is read into
+  // its base64 here at once instead, and the strip is left the same it would be
+  const RealFileReader = globalThis.FileReader;
+  function attach() {
+    globalThis.FileReader = class {
+      result: string | null = null;
+      onload: (() => void) | null = null;
+      readAsDataURL() {
+        this.result = `data:${shot.mediaType};base64,${shot.data}`;
+        this.onload?.();
+      }
+    } as unknown as typeof FileReader;
+    const input = $<HTMLInputElement>('#attach-input');
+    Object.defineProperty(input, 'files', { value: [{ type: 'image/png' }], configurable: true });
+    input.dispatchEvent(new Event('change'));
+  }
+  afterEach(() => {
+    globalThis.FileReader = RealFileReader;
+  });
+
+  it('rides the picture the user attached along on its message', async () => {
+    attach();
+    await type('what is in this picture?');
+    // The sidecar stamps each picture with its own id on the way out (see
+    // collectMedia in threads.ts), so the picture rides along with one, and the
+    // test checks its bytes and type rather than that id
+    expect(sent().messages.at(-1)).toEqual({
+      role: 'user',
+      content: 'what is in this picture?',
+      images: [expect.objectContaining(shot)],
+    });
+  });
+
+  it('sends a message that is its pictures, with no words', async () => {
+    attach();
+    $<HTMLFormElement>('#composer').requestSubmit();
+    await flush();
+    expect(sent().messages.at(-1)).toEqual({
+      role: 'user',
+      content: '',
+      images: [expect.objectContaining(shot)],
+    });
+  });
+});
+
 describe('receiving a reply', () => {
   beforeEach(async () => {
     await type('hi');
@@ -951,6 +1016,17 @@ describe('receiving a reply', () => {
       { role: 'user', text: 'hi' },
       { role: 'assistant', text: 'Hello', final: true },
     ]);
+  });
+
+  it('draws only the reply as more of its words arrive, not the whole thread', () => {
+    emit(sentId(), { type: 'text', delta: 'Hel' });
+    const asked = $('#messages .message.user');
+    const reply = $('#messages .message.assistant');
+    emit(sentId(), { type: 'text', delta: 'lo **there**' });
+    expect($('#messages .message.user')).toBe(asked);
+    expect($('#messages .message.assistant')).toBe(reply);
+    expect(reply.querySelector('strong')?.textContent).toBe('there');
+    expect(messages()).toEqual(['user: hi', 'assistant: Hello there']);
   });
 
   it('sends the next request only the reply the turn ended with, not what was said before a thought', async () => {
@@ -1311,21 +1387,44 @@ describe('receiving a reply', () => {
 
       it('keeps them out of what is saved, as it does the screenshots', () => {
         record();
-        // The reply itself is on disk; the clip inside it is not. Both halves
-        // matter: without the first, a save that never happened would pass.
+        // The reply itself is on disk; the clip inside it is not — it is named by
+        // id, its bytes and type living in the sidecar beside the JSON. Both
+        // halves matter: without the first, a save that never happened would pass.
         expect(onDisk).toContain('The clip below is the new animation.');
-        expect(onDisk).not.toContain('webm');
+        const videos = saved().threads[0].messages.flatMap((m) => m.videos ?? []);
+        expect(videos).toEqual([{ id: expect.any(String) }]);
       });
     });
 
     // They are big, and the thread is written to disk on every change (see
-    // save in threads.ts)
-    it('keeps them out of what is saved', () => {
+    // save in threads.ts), so the bytes are kept out of the JSON
+    it('keeps them out of what is saved, naming each by id for the sidecar', () => {
       emit(sentId(), { type: 'text', delta: 'Here it is.' });
       emit(sentId(), { type: 'images', images: [shot('abc')] });
       emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 1, output: 1 }, steps: 1 });
+      // The reply's words are on disk; the screenshot is not — it is named by
+      // id only, its bytes written to the sidecar in the same breath
       expect(onDisk).toContain('Here it is.');
-      expect(onDisk).not.toContain('abc');
+      const images = saved().threads[0].messages.flatMap((m) => m.images ?? []);
+      expect(images).toEqual([{ id: expect.any(String) }]);
+      expect(Object.keys(onMedia).length).toBe(1);
+    });
+
+    // The bytes the JSON does not carry are kept in the sidecar, so the
+    // screenshot shows again when the app opens it the next time (see
+    // reattachMedia in threads.ts)
+    it('keeps the bytes in a sidecar, and shows them again after a restart', async () => {
+      emit(sentId(), { type: 'text', delta: 'The screenshot below is the new layout.' });
+      emit(sentId(), { type: 'images', images: [shot('abc')] });
+      emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 1, output: 1 }, steps: 1 });
+      expect(drawn()).toEqual(['data:image/png;base64,abc']);
+      // Not in the thread's JSON; in the sidecar beside it, keyed by id
+      const id = saved().threads[0].messages.flatMap((m) => m.images ?? [])[0]!.id as string;
+      expect(onMedia[id]).toEqual({ mediaType: 'image/png', data: 'abc' });
+      // The app closed and opened again: the screenshot is hung back on the
+      // thread from its id, and drawn again under the answer
+      await start();
+      expect(drawn()).toEqual(['data:image/png;base64,abc']);
     });
   });
 
@@ -3288,11 +3387,16 @@ describe('the token usage page', () => {
     emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 0, output: 0 }, steps: 1 });
 
   // A window opened on a record of what the given days were spent on
-  const withDaily = async (daily: Record<string, object>, threads: object[] = []) => {
+  const withDaily = async (
+    daily: Record<string, object>,
+    threads: object[] = [],
+    dailyPurpose?: Record<string, object>
+  ) => {
     onDisk = JSON.stringify({
       threads: [{ id: 't1', title: 'One', messages: [], ...threads[0] }],
       activeId: 't1',
       daily,
+      ...(dailyPurpose ? { dailyPurpose } : {}),
     });
     await start();
     $('#open-usage').click();
@@ -3406,6 +3510,117 @@ describe('the token usage page', () => {
       'Local | 900 | — | 60 | free',
       'llama3.2:3b | 900 | — | 60 | free',
     ]);
+  });
+
+  it('switches the breakdown between the models and what they were asked to do', async () => {
+    await withDaily(
+      {
+        [day()]: {
+          ...spent('anthropic', 'claude-opus-5-5', 2000, 500, 0.018),
+          ...spent('anthropic', 'claude-haiku-4-5', 400, 40, 0.0006),
+        },
+      },
+      [],
+      {
+        [day()]: {
+          reply: { input: 2400, output: 540, cost: 0.0186 },
+          planning: { input: 40, output: 40, cost: 0.0006 },
+        },
+      }
+    );
+
+    // The models to begin with, so the purpose section is put away
+    expect($('#usage-breakdown-section').hidden).toBe(false);
+    expect($('#usage-purpose-section').hidden).toBe(true);
+    expect($$('#usage-breakdown-view button').map((c) => c.getAttribute('aria-pressed'))).toEqual(['true', 'false']);
+    // The chart and its legend read the same way: one segment per model
+    expect(legend()).toEqual(['claude-haiku-4-5', 'claude-opus-5-5']);
+    expect(bars().at(-1)).toBe(2);
+
+    $$('#usage-breakdown-view button')[1].click();
+    expect($('#usage-breakdown-section').hidden).toBe(true);
+    expect($('#usage-purpose-section').hidden).toBe(false);
+    expect($$('#usage-breakdown-view button').map((c) => c.getAttribute('aria-pressed'))).toEqual(['false', 'true']);
+    // The chart follows the toggle: the segments and legend are now the purposes
+    expect(legend()).toEqual(['Planning', 'Reply']);
+    expect(bars().at(-1)).toBe(2);
+
+    $$('#usage-breakdown-view button')[0].click();
+    expect($('#usage-breakdown-section').hidden).toBe(false);
+    expect($('#usage-purpose-section').hidden).toBe(true);
+    // And back to the models
+    expect(legend()).toEqual(['claude-haiku-4-5', 'claude-opus-5-5']);
+  });
+
+  it('takes a series off the chart from its colour box, and singles another out from its name', async () => {
+    await withDaily(
+      {
+        [day()]: {
+          ...spent('anthropic', 'claude-opus-5-5', 2000, 500, 0.018),
+          ...spent('anthropic', 'claude-haiku-4-5', 400, 40, 0.0006),
+          ...spent('local', 'llama3.2:3b', 900, 60, 0.001),
+        },
+      },
+      [],
+      {
+        [day()]: {
+          reply: { input: 2000, output: 500, cost: 0.018 },
+          planning: { input: 400, output: 40, cost: 0.0006 },
+          subagent: { input: 900, output: 60, cost: 0.001 },
+        },
+      }
+    );
+
+    // Each legend entry has its colour box and its name, each the way to act on the series.
+    const entry = (label: string) =>
+      $$<HTMLElement>('#usage-legend .legend-item').find((e) => e.textContent === label)!;
+    const swatch = (label: string) => entry(label).querySelector('.legend-swatch')!;
+    const nameBtn = (label: string) => entry(label).querySelector('.legend-name')!;
+    const isOff = (label: string) => entry(label).classList.contains('is-off');
+    const isSolo = (label: string) => entry(label).classList.contains('is-solo');
+    // The last column, whichever range it is
+    const lastColumn = () => $$('#usage-chart .chart-col')[$$('#usage-chart .chart-col').length - 1]!;
+
+    expect(legend()).toEqual(['claude-haiku-4-5', 'claude-opus-5-5', 'llama3.2:3b']);
+    expect(bars().at(-1)).toBe(3);
+
+    // The colour box on a name takes that series off, and the chart is rescaled to the rest.
+    swatch('llama3.2:3b').click();
+    expect(isOff('llama3.2:3b')).toBe(true);
+    expect(bars().at(-1)).toBe(2);
+    expect(legend()).toEqual(['claude-haiku-4-5', 'claude-opus-5-5', 'llama3.2:3b']);
+    // Its box is the way to bring it back
+    swatch('llama3.2:3b').click();
+    expect(isOff('llama3.2:3b')).toBe(false);
+    expect(bars().at(-1)).toBe(3);
+
+    // The name on a series singles it out to its own, off the colour box of the others.
+    nameBtn('claude-opus-5-5').click();
+    expect(isSolo('claude-opus-5-5')).toBe(true);
+    expect(bars().at(-1)).toBe(1);
+    expect(lastColumn().querySelectorAll('.seg')).toHaveLength(1);
+    // The same name again lets the rest back on
+    nameBtn('claude-opus-5-5').click();
+    expect(isSolo('claude-opus-5-5')).toBe(false);
+    expect(bars().at(-1)).toBe(3);
+
+    // The last series is not taken off: a chart of nothing tells nothing
+    swatch('claude-haiku-4-5').click();
+    swatch('claude-opus-5-5').click();
+    // Two off, one on: the last one on will not come off, either
+    expect(bars().at(-1)).toBe(1);
+    expect(isOff('claude-haiku-4-5')).toBe(true);
+    swatch('llama3.2:3b').click();
+    expect(bars().at(-1)).toBe(1);
+    expect(isOff('llama3.2:3b')).toBe(false);
+
+    // A choice reading the models does not reach in and change the purposes
+    $$('#usage-breakdown-view button')[1].click();
+    expect(legend()).toEqual(['Planning', 'Reply', 'Subagent']);
+    expect(bars().at(-1)).toBe(3);
+    $$('#usage-breakdown-view button')[0].click();
+    expect(isOff('claude-haiku-4-5')).toBe(true);
+    expect(bars().at(-1)).toBe(1);
   });
 
   it('breaks the range down by what the models were asked to do', async () => {
@@ -4290,6 +4505,108 @@ describe('markdown in a reply', () => {
       const el = drawn('```mermaid\nflowchart TD\nA["<img src=x onerror=alert(1)>"] --> B\n```');
       expect(el.querySelector('img')).toBeNull();
       expect(labels(el, '.node')[0]).toBe('<img src=x onerror=alert(1)>');
+    });
+  });
+
+  describe('a file reference', () => {
+    // A finished reply in a thread that has a workspace, its last assistant
+    // bubble back so the reference it named can be read from that workspace
+    const inWorkspace = async (text: string) => {
+      await newThread('/projects/demo');
+      $<HTMLTextAreaElement>('#input').value = 'hi';
+      $<HTMLFormElement>('#composer').requestSubmit();
+      await flush();
+      emit(sentId(), { type: 'text', delta: text });
+      emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 0, output: 0 }, steps: 1 });
+      await flush();
+      return $<HTMLElement>('#messages .message.assistant');
+    };
+
+    it('shows a named part of the code as a note, closed until it is opened', async () => {
+      const el = await inWorkspace('Here:\n```file\nsrc/main.ts:442-451\n```\n');
+      const details = el.querySelector('details.file-ref');
+      expect(details).not.toBeNull();
+      expect(details!.open).toBe(false);
+      expect(details!.querySelector('.file-path')?.textContent).toBe('src/main.ts');
+      expect(details!.querySelector('.file-range')?.textContent).toBe('442-451');
+      expect(threads.workspaceFile).not.toHaveBeenCalled();
+      expect(details!.querySelector('.file-body .row')).toBeNull();
+    });
+
+    it('reads the lines of the file when the note is opened, numbered', async () => {
+      threads.workspaceFile.mockResolvedValue({
+        path: 'src/main.ts', lines: ['alpha', 'beta'], from: 442, total: 451, more: 9,
+      });
+      const el = await inWorkspace('```file\nsrc/main.ts:442-451\n```\n');
+      const details = $<HTMLDetailsElement>('#messages .message.assistant details.file-ref');
+      details.open = true;
+      details.dispatchEvent(new Event('toggle'));
+      await flush();
+      expect(threads.workspaceFile).toHaveBeenCalledWith('/projects/demo', 'src/main.ts', 442, 451);
+      const rows = [...details.querySelectorAll('.file-body .row')];
+      expect(rows.map((r) => r.querySelector('.number')!.textContent)).toEqual(['442', '443']);
+      expect(rows.map((r) => r.querySelector('code')!.textContent)).toEqual(['alpha', 'beta']);
+      expect(details.querySelector('.file-body .more')?.textContent).toContain('more');
+    });
+
+    it('reads a whole file when the note names no lines', async () => {
+      threads.workspaceFile.mockResolvedValue({ path: 'a.txt', lines: ['x', 'y'], from: 1, total: 2 });
+      const el = await inWorkspace('```file\na.txt\n```\n');
+      const details = $<HTMLDetailsElement>('#messages .message.assistant details.file-ref');
+      details.open = true;
+      details.dispatchEvent(new Event('toggle'));
+      await flush();
+      expect(threads.workspaceFile).toHaveBeenCalledWith('/projects/demo', 'a.txt', undefined, undefined);
+      expect([...details.querySelectorAll('.file-body .row code')].map((c) => c.textContent)).toEqual(['x', 'y']);
+    });
+
+    it('stays open when the messages are rebuilt, and reads it again', async () => {
+      threads.workspaceFile.mockResolvedValue({ path: 'a.txt', lines: ['x'], from: 1, total: 1 });
+      const el = await inWorkspace('```file\na.txt\n```\n');
+      const details = $<HTMLDetailsElement>('#messages .message.assistant details.file-ref');
+      details.open = true;
+      details.dispatchEvent(new Event('toggle'));
+      await flush();
+      // A rebuild redraws the notes, and the one the user opened comes back open
+      emit(sentId(), { type: 'text', delta: ' ' });
+      emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 0, output: 0 }, steps: 1 });
+      await flush();
+      const again = $<HTMLDetailsElement>('#messages .message.assistant details.file-ref');
+      expect(again.open).toBe(true);
+      expect(again.querySelector('.file-body .row')).not.toBeNull();
+    });
+
+    it('says when the file is not there, in place of the lines', async () => {
+      threads.workspaceFile.mockResolvedValue({ path: 'nope.ts', notFound: true });
+      const el = await inWorkspace('```file\nnope.ts\n```\n');
+      const details = $<HTMLDetailsElement>('#messages .message.assistant details.file-ref');
+      details.open = true;
+      details.dispatchEvent(new Event('toggle'));
+      await flush();
+      expect(details.querySelector('.file-body .row')).toBeNull();
+      expect(details.querySelector('.file-body')!.textContent).toContain('Not found');
+    });
+
+    it('says when the path reaches outside the workspace', async () => {
+      threads.workspaceFile.mockResolvedValue({ path: '../secret.txt', outside: true });
+      const el = await inWorkspace('```file\n../secret.txt\n```\n');
+      const details = $<HTMLDetailsElement>('#messages .message.assistant details.file-ref');
+      details.open = true;
+      details.dispatchEvent(new Event('toggle'));
+      await flush();
+      expect(details.querySelector('.file-body')!.textContent).toContain('outside the workspace');
+    });
+
+    it('shows a file reference that is still being written as code', async () => {
+      const el = await inWorkspace('```file\nsrc/main.ts');
+      expect(el.querySelector('details.file-ref')).toBeNull();
+      expect(el.querySelector('pre code')?.textContent).toBe('src/main.ts');
+    });
+
+    it('shows a file block of no references as code', async () => {
+      const el = await inWorkspace('```file\n\n```\n');
+      expect(el.querySelector('details.file-ref')).toBeNull();
+      expect(el.querySelector('pre code')?.textContent).toBe('');
     });
   });
 
@@ -6272,6 +6589,33 @@ describe('being rate limited', () => {
     await flush();
     expect($('#agent-view').textContent).toContain('Rate limited; trying again in 8s (attempt 2 of 4)');
   });
+
+  it('does not call a server that was not there a rate limit', async () => {
+    await ask();
+    emit(sentId(), { type: 'text', delta: 'Starting.' });
+    emit(sentId(), {
+      type: 'rate_limited',
+      attempt: 1,
+      of: 4,
+      after: 2000,
+      message: 'No server reachable at http://x',
+      unreachable: true,
+    });
+    expect(messages()).toContain('note: Could not reach the provider; trying again in 2 seconds (attempt 2 of 4)');
+  });
+
+  it('says that in a subagent’s own view too', async () => {
+    await ask();
+    emit(sentId(), { type: 'subagent', id: 's1', name: 'tests', task: 'read the tests', kind: 'explorer' });
+    emit(sentId(), {
+      type: 'subagent_update',
+      id: 's1',
+      event: { type: 'rate_limited', attempt: 1, of: 4, after: 8000, message: 'gone', unreachable: true },
+    });
+    $<HTMLElement>('#messages .subagent .open').click();
+    await flush();
+    expect($('#agent-view').textContent).toContain('Could not reach the provider; trying again in 8s (attempt 2 of 4)');
+  });
 });
 
 describe('searching the threads', () => {
@@ -6765,6 +7109,77 @@ describe('settings screen', () => {
     });
   });
 
+  describe('offline mode in the settings screen', () => {
+    const opusRow = () => $('.model-list[data-provider="anthropic"] .row');
+    // Going offline leaves only this computer's models on offer (see the
+    // offline switch tests), so a hosted model seen while online is kept by the
+    // retained store and shown greyed out instead.
+    beforeEach(() => {
+      settingsApi.save.mockImplementation(async (patch: { offline?: boolean }) => {
+        settings = { ...settings, ...patch };
+        modelList = settings.offline
+          ? { models: [llama], providers: [{ id: 'anthropic', name: 'Anthropic', ok: false, error: 'Offline.' }] }
+          : { models: [opus, haiku, llama], providers: [] };
+        return settings;
+      });
+    });
+
+    it('keeps a hosted model on the list, greyed out but still switchable, while offline', async () => {
+      modelList = { models: [opus, llama], providers: [] };
+      settings.offline = false;
+      await start();
+      await open();
+      // The opus row is present and, while online, not yet greyed out
+      expect(opusRow()).not.toBeNull();
+      expect(opusRow()!.classList.contains('unavailable')).toBe(false);
+
+      $<HTMLInputElement>('#offline-toggle').click();
+      await flush();
+
+      // Still shown, but now greyed out: the switch stays on and is not disabled
+      const row = opusRow()!;
+      expect(row).not.toBeNull();
+      expect(row.classList.contains('unavailable')).toBe(true);
+      const switchEl = $<HTMLInputElement>('input[data-model="opus"]');
+      expect(switchEl.checked).toBe(true);
+      expect(switchEl.disabled).toBe(false);
+      // The warning is on screen, saying Offline Mode is on
+      expect($<HTMLParagraphElement>('#settings-offline-warning').hidden).toBe(false);
+      expect($<HTMLParagraphElement>('#settings-offline-warning').textContent).toContain('Offline Mode');
+
+      // Turning the switch off saves the choice, taking effect once online again
+      switchEl.checked = false;
+      await changed(switchEl);
+      expect(lastSaved()).toMatchObject({
+        anthropic: { disabledModels: expect.arrayContaining(['opus']) },
+      });
+    });
+
+    // A boot that is already Offline never sees a hosted model in the live list,
+    // so the greyed rows have to come from the retained list held across a
+    // restart (in the window's own storage, as the threads are).
+    it('shows the retained hosted models greyed out on a boot that is already offline', async () => {
+      localStorage.setItem('retained-hosted-models', JSON.stringify([opus]));
+      modelList = {
+        models: [llama],
+        providers: [{ id: 'anthropic', name: 'Anthropic', ok: false, error: 'Offline.' }],
+      };
+      settings.offline = true;
+      await start();
+      await open();
+
+      // The opus row is on screen from the retained list, greyed out but switchable
+      const row = opusRow();
+      expect(row).not.toBeNull();
+      expect(row!.classList.contains('unavailable')).toBe(true);
+      const switchEl = $<HTMLInputElement>('input[data-model="opus"]');
+      expect(switchEl.checked).toBe(true);
+      expect(switchEl.disabled).toBe(false);
+      // ...and the warning is on screen, since Offline Mode is on
+      expect($<HTMLParagraphElement>('#settings-offline-warning').hidden).toBe(false);
+    });
+  });
+
   describe('model families', () => {
     const hosted = (id: string, provider: 'anthropic' | 'openai' = 'anthropic') =>
       model({
@@ -6943,6 +7358,17 @@ describe('settings screen', () => {
     $<HTMLInputElement>('#sandbox-image').value = 'my-image';
     await changed($('#sandbox-image'));
     expect(settingsApi.save).toHaveBeenLastCalledWith({ sandbox: { image: 'my-image' } });
+  });
+
+  it('saves a limit on the context of local models, and takes it away when it is cleared', async () => {
+    await open();
+    const input = $<HTMLInputElement>('#local-max-context');
+    input.value = '16384';
+    await changed(input);
+    expect(settingsApi.save).toHaveBeenLastCalledWith({ local: { maxContext: 16384 } });
+    input.value = '';
+    await changed(input);
+    expect(settingsApi.save).toHaveBeenLastCalledWith({ local: { maxContext: null } });
   });
 
   it('saves the switched-off models and levels when one is changed, keeping those not listed now', async () => {
@@ -8542,21 +8968,21 @@ describe("a thread's changes to its workspace", () => {
     await open();
     expect(dialog().open).toBe(true);
     expect($('#changes-hint').textContent).toContain(FOLDER);
-    expect(files()).toEqual(['Changedsrc/a.ts', 'Addedsrc/new.ts', 'Deletedgone.txt']);
+    expect(files()).toEqual(['Changedsrc/a.ts+1 −1', 'Addedsrc/new.ts+1 −0', 'Deletedgone.txt']);
 
     const [first, , last] = $$('#changes-files details');
-    // Each line of the diff with its kind and its line number, old or new
+    // Each line of the diff with its kind and its line numbers, old and new
     expect(
       [...first.querySelectorAll('.row')].map((row) => [
         row.className,
-        row.querySelector('.number')!.textContent,
+        ...[...row.querySelectorAll('.number')].map((n) => n.textContent),
         row.querySelector('code')!.textContent,
       ])
     ).toEqual([
-      ['row hunk', '', '@@ -1,2 +1,2 @@'],
-      ['row context', '1', ' line 1'],
-      ['row del', '2', '-old'],
-      ['row add', '2', '+new'],
+      ['row hunk', '', '', '@@ -1,2 +1,2 @@'],
+      ['row context', '1', '1', ' line 1'],
+      ['row del', '2', '', '-old'],
+      ['row add', '', '2', '+new'],
     ]);
     expect(last.querySelector('.diff')!.textContent).toBe('Nothing to show for this file.');
     expect(apply().disabled).toBe(false);
@@ -9504,8 +9930,8 @@ describe("asking before the model reads a file on the user's computer", () => {
       'Deny',
       'Allow once',
       'Allow for this thread',
-      'Always allow this file',
-      'Always allow /home/me',
+      'Always allow this file in this workspace',
+      'Always allow /home/me in this workspace',
     ]);
     expect($('#messages').textContent).toContain('Waiting for your approval');
   });
@@ -9514,15 +9940,20 @@ describe("asking before the model reads a file on the user's computer", () => {
     emit(sentId(), asked('a1', '/home/me/notes', true));
     await flush();
     expect(card()?.querySelector('p')?.textContent).toContain('the folder /home/me/notes');
-    expect(buttons()).toEqual(['Deny', 'Allow once', 'Allow for this thread', 'Always allow this folder']);
+    expect(buttons()).toEqual([
+      'Deny',
+      'Allow once',
+      'Allow for this thread',
+      'Always allow this folder in this workspace',
+    ]);
   });
 
   it.each([
     ['Deny', 'deny'],
     ['Allow once', 'once'],
     ['Allow for this thread', 'thread'],
-    ['Always allow this file', 'file'],
-    ['Always allow /home/me', 'folder'],
+    ['Always allow this file in this workspace', 'file'],
+    ['Always allow /home/me in this workspace', 'folder'],
   ])('sends %s as %s, and the question goes', async (label, answer) => {
     emit(sentId(), asked('a1', '/home/me/.npmrc'));
     await flush();
@@ -9806,7 +10237,7 @@ describe('the model asking the user a question', () => {
     await flush();
     expect(card()?.querySelector('p')?.textContent).toBe('Which database?');
     expect(options().map((one) => one.textContent)).toEqual(['Postgres', 'SQLite']);
-    expect(other().placeholder).toBe('Or answer in your own words…');
+    expect(other().placeholder).toBe('Answer in your own words…');
     expect($('#messages').textContent).toContain('Waiting for your answer');
   });
 
@@ -9934,6 +10365,8 @@ describe("having a reply's changes checked by a model", () => {
       request: 'change a',
       output: 'I changed a.ts.',
       ...model,
+      // ...and the workspace, which is what has the changes tried as well as read
+      workspace: '/projects/demo',
     });
     expect(card()).toBeNull();
     expect(messages().at(-1)).toBe('note: Review passed · Opus 5');
@@ -9998,6 +10431,43 @@ describe("having a reply's changes checked by a model", () => {
     finish();
     await flush();
     expect(check()?.textContent).toBe('Review changes');
+  });
+
+  // A review that tried the changes says so, keeps what it did under the note,
+  // and passes that on with the problems, so the fix can be checked the same way
+  describe('that tried the changes', () => {
+    const checked = '- ran `npm test`: 12 passed\n- in the app, sent "hi": the reply never arrived';
+
+    it('says it tried them, and keeps what the reviewer did under the note', async () => {
+      llm.verify.mockResolvedValue({ passed: true, problems: '', model: 'Opus 5', tested: true, checked });
+      finish();
+      await flush();
+      check()?.click();
+      await flush();
+      expect(messages().at(-1)).toBe('note: Review passed · Opus 5 · tried in the thread');
+      expect(saved().threads[0].messages.at(-1).summary).toBe(checked);
+      const note = [...document.querySelectorAll('#messages .message.summary')].at(-1);
+      expect(note?.querySelector('summary')?.textContent).toBe('Review passed · Opus 5 · tried in the thread');
+      expect(note?.textContent).toContain('the reply never arrived');
+    });
+
+    it('puts how the problems were found to the thread along with them', async () => {
+      llm.verify.mockResolvedValue({
+        passed: false,
+        problems: '- Sending a message shows no reply.',
+        model: 'Opus 5',
+        tested: true,
+        checked,
+      });
+      finish();
+      await flush();
+      check()?.click();
+      await flush();
+      const asked = sent().messages.at(-1)?.content;
+      expect(asked).toContain('- Sending a message shows no reply.');
+      expect(asked).toContain('What the reviewer did to check them:');
+      expect(asked).toContain('in the app, sent "hi": the reply never arrived');
+    });
   });
 
   it('says why when the review could not be made, and offers it again', async () => {
@@ -10142,5 +10612,21 @@ describe('the theme editor in the settings', () => {
     await flush();
     expect(settingsApi.save).toHaveBeenCalledWith({ theme: {} });
     expect(document.documentElement.style.getPropertyValue('--bg')).toBe('');
+  });
+});
+
+describe('what the stylesheet says about the workspace notes list', () => {
+  // A thread's own lines are notes too (.message.note). A rule that put a line
+  // between one note and the next, written for the list, drew the top of an
+  // empty bubble between two of the thread's lines — "Waiting for your answer"
+  // and the tokens a reply had spent — wherever they came one after the other.
+  it('keeps what goes between one note and the next to the list', () => {
+    const sheet = fs.readFileSync(path.join(process.cwd(), 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const selectors = [...sheet.matchAll(/([^{}]+)\{[^}]*\}/g)].flatMap(([, list]) =>
+      list.split(',').map((one) => one.trim())
+    );
+    const between = selectors.filter((selector) => /\.note\s*[+~]/.test(selector));
+    expect(between.length).toBeGreaterThan(0);
+    for (const selector of between) expect(selector).toMatch(/^#workspace-notes-list\s/);
   });
 });

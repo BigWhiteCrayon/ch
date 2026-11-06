@@ -26,6 +26,7 @@ import { splitToolReturn } from '../types';
 import { readContext } from '../sandbox';
 import { toolsPrompt } from '../tools/sandbox';
 import { SUBAGENT_PROMPT as NOTES } from '../harness/notes';
+import * as allowance from '../harness/allowance';
 import { compact, nearlyFull, size } from '../harness/compactor';
 import * as discoveries from '../harness/discoveries';
 import { route } from '../harness/router';
@@ -47,8 +48,7 @@ import type { Kind } from './kind';
 // work).
 //
 // A ceiling against a runaway rather than a size for the answer. What
-// actually bounds a step is the window the model was loaded with — 32,768
-// tokens for a local one (see ../llm/ollama.CONTEXT_LENGTH), less whatever
+// actually bounds a step is the window the model was loaded with, less whatever
 // the conversation has already taken — and a step that runs into that comes
 // back cut off, is condensed, and is tried again (see stopReason in work).
 const STEP_TOKENS = 16000;
@@ -510,8 +510,21 @@ async function work(
   // What the step before this one sent, for deciding whether a local model is
   // kept for this subagent or handed to the next (see cachelock.Shape)
   let sentBefore: cachelock.Shape | undefined;
-  // How many rounds this piece gets, which it is told as well as held to
-  const steps = stepsFor(piece);
+  // How many rounds this piece gets, which it is told as well as held to...
+  const asked = stepsFor(piece);
+  // ...and how many it has, which is that plus anything it has asked for and
+  // been given (see ../harness/allowance.ts). A piece is sized from how much
+  // looking it seems to need from outside, and the pieces that need rounds
+  // nobody could have counted are the ones that run something: a test that
+  // will not come up, a fault that takes three guesses to corner. It condenses
+  // its own gathering when its window fills (see condense below), so a full
+  // window is not what bounds it and rounds are worth granting whatever the
+  // room.
+  const more = allowance.create(asked, {
+    label: 'this piece of work',
+    where: { kind: kind.name, subagent: name },
+  });
+  let steps = asked;
   const started = performance.now();
   // Its own note, where it has kept one. A subagent writes to a file of its
   // own (see ../sandbox), so what it reads back is its own work and not the
@@ -539,10 +552,13 @@ async function work(
     // up from that detail (see ./explorer.ts). Telling it to put what it
     // finds in its reply would be telling it to undo exactly that.
     specs.length > 0 && !kind.saysNotes ? discoveries.prompt(model.provider) : '',
-    toolsPrompt(specs.map(({ name }) => name)),
+    toolsPrompt(
+      specs.map(({ name }) => name),
+      context.workspace
+    ),
     OWN_NOTE,
     ...notesFor(kind, specs),
-    rounds(steps),
+    rounds(asked),
     ...(note ? [KEPT, note] : []),
   ]
     .filter(Boolean)
@@ -615,13 +631,17 @@ async function work(
   // answered with the nothing that step produced, and the round that does
   // answer it would have nobody left to answer.
   let letters: ReturnType<typeof mailbox.take> = [];
-  for (let step = 1; step <= steps; step++) {
+  for (let step = 1; step <= asked + more.rounds(); step++) {
     // Whoever sent it has given up waiting, so there is nothing to come back
     // to. Without this it works through every round it has left, each one a
     // call the provider refuses the moment it is made.
     if (signal.aborted) break;
+    // Rounds granted since the last of these are rounds it now has, so what
+    // counts as its last round moves (see ../harness/allowance.ts)
+    steps = asked + more.rounds();
     through = step;
     // Out of rounds: told to report what it has, with no tools to put it off
+    // — bar one (see the asking below)
     const last = step === steps;
     // Asking for the report rather than letting it work on: because it is out
     // of rounds, because it stopped without writing one, or because the answer
@@ -813,6 +833,25 @@ async function work(
       continue;
     }
 
+    // Asking for more rounds is the one call that is still run on the round
+    // that asks for the report, and that round is the only one on which a
+    // subagent can be sure it needed them: every other call made there is read
+    // as no report (below), and a piece cut off mid-experiment is what the
+    // asking exists to prevent (see ../harness/allowance.ts). Only the asking,
+    // though: anything it called alongside goes the way it would have gone.
+    //
+    // Only when the rounds are what ran out. A subagent being nudged for a
+    // report it did not write, or recovering from a failure, is not short of
+    // rounds, and rounds are not what would help it.
+    const pleading = last && more.may() && calls.some((call) => call.name === allowance.TOOL_NAME);
+    if (pleading) {
+      const dropped = calls.filter((call) => call.name !== allowance.TOOL_NAME).map(({ name }) => name);
+      if (dropped.length > 0) log.info('subagent.late_call', { kind: kind.name, subagent: name, step, dropped });
+      const kept = calls.filter((call) => call.name === allowance.TOOL_NAME);
+      calls.length = 0;
+      calls.push(...kept);
+    }
+
     // Stopped without writing a report: there is none in that, so it is asked
     // outright for one, and the step is not counted against it. A model that
     // puts its whole answer in its reasoning ends a step this way, having
@@ -820,7 +859,7 @@ async function work(
     // nowhere (see log.ts). The same goes for one that calls a tool when it
     // was already being asked to report, since nothing it calls then is run
     // and the call is not an answer either.
-    if (!text.trim() && (calls.length === 0 || asking) && nudges < MAX_NUDGES) {
+    if (!pleading && !text.trim() && (calls.length === 0 || asking) && nudges < MAX_NUDGES) {
       nudges++;
       nudging = true;
       step--;
@@ -901,7 +940,7 @@ async function work(
     // Nothing more to call: what it wrote is what it brings back. A call
     // written on a step that asked for the report is not one of those — it is
     // not run — and what it wrote beside it, if anything, is the report.
-    if (calls.length === 0 || asking) {
+    if (!pleading && (calls.length === 0 || asking)) {
       answer = text.trim();
       // Nothing written for us, but it reasoned: some local models put the
       // whole report in their reasoning and leave the reply empty, and being
@@ -957,8 +996,12 @@ async function work(
       // A subagent's own tool calls are not shown: its lines say what it did
       calls.map((call) =>
         offer
-          ? run1(offer, call, { ...context, agent: name, depth })
-          : tools.execute(call, { ...context, agent: name, depth }, { kind: kind.name, subagent: name, step })
+          ? run1(offer, call, { ...context, agent: name, depth, more: more.request })
+          : tools.execute(
+              call,
+              { ...context, agent: name, depth, more: more.request },
+              { kind: kind.name, subagent: name, step }
+            )
       )
     );
     worked = true;

@@ -53,6 +53,10 @@ beforeEach(async () => {
 
 // What was run, as "docker inspect ..." strings
 const ran = () => proc.calls.map((c) => [c.command, ...c.args].join(' '));
+// What a build tagged what it built, and the context it was built from,
+// whatever else is on its command line
+const tagOf = (call: { args: string[] }) => call.args[call.args.indexOf('-t') + 1];
+const contextOf = (call: { args: string[] }) => call.args.at(-1) as string;
 const ranStartingWith = (prefix: string) => ran().filter((line) => line.startsWith(prefix));
 
 // A Docker that behaves: containers in `existing` map to running (true) or
@@ -169,7 +173,7 @@ describe('the image a workspace is worked on in', () => {
     const builds = proc.calls.filter((c) => c.args[0] === 'build');
     expect(builds).toHaveLength(2);
     expect(builds[1].input).toContain('FROM golang:1-bookworm');
-    expect(builds[0].args[2]).not.toBe(builds[1].args[2]);
+    expect(tagOf(builds[0])).not.toBe(tagOf(builds[1]));
     fs.rmSync(other, { recursive: true, force: true });
   });
 });
@@ -199,8 +203,9 @@ describe('the dependencies a workspace is installed with', () => {
         return built.has(args[2]) ? { code: 0 } : { code: 1, stderr: 'No such image' };
       }
       if (command === 'docker' && args[0] === 'build') {
-        if (failDependencies && args[2].startsWith('ch-deps:')) return { code: 1, stderr: 'npm ERR!' };
-        built.add(args[2]);
+        const tag = tagOf({ args });
+        if (failDependencies && tag.startsWith('ch-deps:')) return { code: 1, stderr: 'npm ERR!' };
+        built.add(tag);
       }
       return healthy(command, args);
     };
@@ -216,7 +221,7 @@ describe('the dependencies a workspace is installed with', () => {
 
     expect(builds()).toHaveLength(2);
     const [, deps] = builds();
-    const tag = deps.args[2];
+    const tag = tagOf(deps);
     expect(tag).toMatch(/^ch-deps:[0-9a-f]{12}$/);
     // On top of the sandbox image, installed where the project is worked on
     expect(deps.input).toMatch(/^FROM ch-sandbox:[0-9a-f]{12}\n/);
@@ -225,9 +230,11 @@ describe('the dependencies a workspace is installed with', () => {
     expect(deps.input).toContain('npm ci');
     // ...without lifecycle scripts, which have no project to run in
     expect(deps.input).toContain('--ignore-scripts');
+    // ...but with Electron's binary, which only its postinstall would have fetched
+    expect(deps.input).toContain(`--ignore-scripts && ${docker.ELECTRON_INSTALL}`);
     // ...from a context of the manifests alone
-    expect(deps.args.slice(3, 5)).toEqual(['-f', '-']);
-    expect(deps.args[5]).not.toBe(workspace);
+    expect(deps.args.join(' ')).toContain('-f -');
+    expect(contextOf(deps)).not.toBe(workspace);
     expect(created().split(' ').at(-3)).toBe(tag);
   });
 
@@ -258,7 +265,7 @@ describe('the dependencies a workspace is installed with', () => {
     delete existing[docker.containerName(second)];
     await docker.ensure(second);
     const tags = builds()
-      .map((b) => b.args[2])
+      .map(tagOf)
       .filter((tag) => tag.startsWith('ch-deps:'));
     expect(tags).toHaveLength(2);
     expect(tags[0]).not.toBe(tags[1]);
@@ -283,7 +290,7 @@ describe('the dependencies a workspace is installed with', () => {
     const other = '7c1f0c7e-5a0b-4d8f-9a53-0f4f8a6f2f11';
     docker.setWorkspace(other, '/projects/demo');
     await docker.ensure(other);
-    expect(builds().filter((b) => b.args[2].startsWith('ch-deps:'))).toHaveLength(0);
+    expect(builds().filter((b) => tagOf(b).startsWith('ch-deps:'))).toHaveLength(0);
   });
 
   it('leave the thread on the sandbox image when they cannot be installed, nor retried per thread', async () => {
@@ -299,7 +306,7 @@ describe('the dependencies a workspace is installed with', () => {
     docker.setWorkspace(second, workspace);
     delete existing[docker.containerName(second)];
     await docker.ensure(second);
-    expect(builds().filter((b) => b.args[2].startsWith('ch-deps:'))).toHaveLength(1);
+    expect(builds().filter((b) => tagOf(b).startsWith('ch-deps:'))).toHaveLength(1);
     expect(ranStartingWith('docker run')).toHaveLength(2);
   });
 
@@ -309,7 +316,7 @@ describe('the dependencies a workspace is installed with', () => {
     put('package-lock.json');
     docker.setWorkspace(THREAD, workspace);
     await docker.ensure(THREAD);
-    expect(fs.existsSync(builds()[1].args[5])).toBe(false);
+    expect(fs.existsSync(contextOf(builds()[1]))).toBe(false);
   });
 });
 
@@ -364,7 +371,8 @@ describe('ensure', () => {
       expect.stringMatching(/^docker image inspect ch-sandbox:[0-9a-f]{12}$/),
       expect.stringMatching(
         new RegExp(
-          `^docker run -d --init --name ${NAME} -w /workspace --pids-limit ${docker.PIDS_LIMIT} .* sleep infinity$`
+          `^docker run -d --init --name ${NAME} -w /workspace --label ch\\.sandbox=1` +
+            ` --pids-limit ${docker.PIDS_LIMIT} .* sleep infinity$`
         )
       ),
     ]);
@@ -420,7 +428,7 @@ describe('ensure', () => {
       withoutImage(0);
       await docker.ensure(THREAD);
       expect(built().map((c) => c.args.join(' '))).toEqual([
-        expect.stringMatching(/^build -t ch-sandbox:[0-9a-f]{12} -$/),
+        expect.stringMatching(/^build --label ch\.sandbox=1 -t ch-sandbox:[0-9a-f]{12} -$/),
       ]);
       expect(built()[0].input).toContain('FROM debian:bookworm-slim');
       expect(built()[0].input).toContain('install -y --no-install-recommends git');
@@ -535,12 +543,86 @@ describe('ensure', () => {
     proc.respond = (command, args) => {
       if (command === 'docker' && args[0] === 'info') return { code: 1 };
       if (command === 'colima') return { error: Object.assign(new Error('spawn colima ENOENT'), { code: 'ENOENT' }) };
+      if (command === 'open') return { code: 1 };
       return { code: 0 };
     };
     await expect(docker.ensure(THREAD)).rejects.toThrow('Docker is installed but not running');
 
     healthyDocker();
     await expect(docker.ensure(THREAD)).resolves.toBe(NAME);
+  });
+
+  describe('with Docker Desktop on macOS', () => {
+    const noColima = { error: Object.assign(new Error('spawn colima ENOENT'), { code: 'ENOENT' }) };
+
+    beforeEach(() => {
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    it('opens it when there is no Colima, and waits for the daemon', async () => {
+      const existing = healthyDocker();
+      const healthy = proc.respond;
+      let opened = false;
+      let asked = 0;
+      proc.respond = (command, args) => {
+        if (command === 'colima') return noColima;
+        if (command === 'open') {
+          opened = true;
+          return { code: 0 };
+        }
+        // The first answer is from before it was opened, the second from before it was up
+        if (command === 'docker' && args[0] === 'info' && (!opened || ++asked < 2)) return { code: 1 };
+        return healthy(command, args);
+      };
+      vi.useFakeTimers();
+      const ensured = docker.ensure(THREAD);
+      await vi.advanceTimersByTimeAsync(2000);
+      await expect(ensured).resolves.toBe(NAME);
+      expect(ranStartingWith('open')).toEqual(['open -a Docker']);
+      expect(ranStartingWith('docker info')).toHaveLength(3);
+      expect(existing[NAME]).toBe(true);
+    });
+
+    it('does not open it when Colima starts', async () => {
+      healthyDocker();
+      const healthy = proc.respond;
+      proc.respond = (command, args) => {
+        if (command === 'docker' && args[0] === 'info') return { code: 1 };
+        if (command === 'colima') return { code: 0 };
+        return healthy(command, args);
+      };
+      await expect(docker.ensure(THREAD)).resolves.toBe(NAME);
+      expect(ranStartingWith('open')).toEqual([]);
+    });
+
+    it('gives up when the daemon never comes up', async () => {
+      proc.respond = (command, args) => {
+        if (command === 'docker' && args[0] === 'info') return { code: 1 };
+        if (command === 'colima') return noColima;
+        return { code: 0 };
+      };
+      vi.useFakeTimers();
+      const ensured = expect(docker.ensure(THREAD)).rejects.toThrow('Docker is installed but not running');
+      await vi.advanceTimersByTimeAsync(120000);
+      await ensured;
+    });
+  });
+
+  it('does not try to open Docker Desktop away from macOS', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    proc.respond = (command, args) => {
+      if (command === 'docker' && args[0] === 'info') return { code: 1 };
+      if (command === 'colima') return { code: 1 };
+      return { code: 0 };
+    };
+    await expect(docker.ensure(THREAD)).rejects.toThrow('Docker is installed but not running');
+    expect(ranStartingWith('open')).toEqual([]);
+    vi.restoreAllMocks();
   });
 
   it('explains when Docker is not installed', async () => {
@@ -821,6 +903,66 @@ describe('exec', () => {
   });
 });
 
+// A command that is only to read is kept from writing by the kernel rather
+// than by what it says (see READER_UIDS in the module)
+describe('exec as a reader', () => {
+  const execs = () => proc.calls.filter((c) => c.args[0] === 'exec').map((c) => c.args);
+
+  it('takes away what all may write, runs the command as a user owning nothing, then cleans up after it', async () => {
+    healthyDocker({ [NAME]: true });
+    await expect(docker.exec(THREAD, 'grep -rn x src', { reader: true })).resolves.toEqual({
+      code: 0,
+      output: 'output\n',
+    });
+    const [sweep, command, cleanup] = execs();
+    expect(sweep.slice(0, 3)).toEqual(['exec', '--user', '0']);
+    expect(sweep.at(-1)).toContain('chmod o-w');
+    expect(sweep.at(-1)).toContain('/workspace /cache');
+    const user = command[command.indexOf('--user') + 1];
+    expect(user).toMatch(/^(\d+):\1$/);
+    expect(Number(user.split(':')[0])).toBeGreaterThan(0);
+    expect(command.slice(-3)).toEqual(['bash', '-lc', 'grep -rn x src']);
+    expect(cleanup.slice(0, 3)).toEqual(['exec', '--user', user]);
+    expect(cleanup.at(-1)).toContain('kill -9 -1');
+    expect(cleanup.at(-1)).toContain(`-user ${user.split(':')[0]} -delete`);
+  });
+
+  it('gives commands side by side users of their own, so one cleanup cannot kill the other', async () => {
+    healthyDocker({ [NAME]: true });
+    await Promise.all([docker.exec(THREAD, 'ls', { reader: true }), docker.exec(THREAD, 'ls', { reader: true })]);
+    const users = execs()
+      .filter((args) => args.includes('bash'))
+      .map((args) => args[args.indexOf('--user') + 1]);
+    expect(new Set(users).size).toBe(2);
+  });
+
+  it('cleans up after a command that failed, or was stopped', async () => {
+    healthyDocker({ [NAME]: true });
+    const healthy = proc.respond;
+    proc.respond = (command, args) =>
+      args.includes('bash') ? { code: 137, stderr: 'killed\n' } : healthy(command, args);
+    const controller = new AbortController();
+    const result = await docker.exec(THREAD, 'sleep 999', { reader: true, signal: controller.signal });
+    expect(result.code).toBe(137);
+    expect(execs().at(-1)?.at(-1)).toContain('kill -9 -1');
+    // The signal stops the command, and not the cleanup that has to follow it
+    expect(proc.calls.find((c) => c.args.includes('bash'))?.options.signal).toBe(controller.signal);
+    expect(proc.calls.at(-1)?.options.signal).toBeUndefined();
+  });
+
+  it('runs nothing when the sweep did not run', async () => {
+    healthyDocker({ [NAME]: true });
+    const healthy = proc.respond;
+    proc.respond = (command, args) =>
+      args[0] === 'exec' && args[2] === '0'
+        ? { code: 126, stderr: 'OCI runtime exec failed\n' }
+        : healthy(command, args);
+    const result = await docker.exec(THREAD, 'ls', { reader: true });
+    expect(result.code).toBe(126);
+    expect(execs().some((args) => args.includes('bash'))).toBe(false);
+  });
+});
+
 describe('a container that goes away under us', () => {
   it('looks again and runs the command once more, for exec', async () => {
     const existing = healthyDocker({ [NAME]: true });
@@ -934,10 +1076,54 @@ describe('readEach', () => {
 });
 
 describe('remove and stopAll', () => {
-  it('force-removes the thread container', async () => {
+  it('force-removes the thread container, bringing Docker up for it', async () => {
     healthyDocker({ [NAME]: true });
     await docker.remove(THREAD);
-    expect(ran()).toEqual([`docker rm -f ${NAME}`]);
+    // Docker is asked to come up first: the thread is on its way out of the
+    // store, so a removal not made now is only made by a later sweep
+    expect(ran()).toEqual(['docker info', `docker rm -f ${NAME}`]);
+  });
+
+  it("removes the workspace's shared cache with the last container that used it", async () => {
+    healthyDocker({ [NAME]: true });
+    docker.setWorkspace(THREAD, '/projects/demo');
+    await docker.remove(THREAD);
+    // Docker refuses while another thread's container still uses it, which is
+    // the answer wanted
+    expect(ranStartingWith('docker volume rm')).toHaveLength(1);
+    expect(ran().at(-1)).toMatch(/^docker volume rm ch-cache-[0-9a-f]{12}$/);
+  });
+
+  it('writes down a container it could not remove, and removes it at the next start', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-pending-'));
+    docker.init(dir);
+    healthyDocker({ [NAME]: true });
+    const healthy = proc.respond;
+    proc.respond = (command, args) =>
+      args[0] === 'rm' ? { code: 1, stderr: 'Cannot connect to the Docker daemon' } : healthy(command, args);
+    await docker.remove(THREAD);
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'sandbox-pending.json'), 'utf8'))).toEqual({
+      containers: [NAME],
+    });
+
+    // The next session takes the list back up and makes the removal, though
+    // the container is no longer in anything it can list
+    vi.resetModules();
+    const next = await import('../../src/sandbox/docker');
+    next.init(dir);
+    proc.calls = [];
+    proc.respond = () => ({ code: 0 });
+    await next.sweep([]);
+    expect(ranStartingWith('docker rm -f')).toEqual([`docker rm -f ${NAME}`]);
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'sandbox-pending.json'), 'utf8'))).toEqual({ containers: [] });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('keeps nothing and still resolves when there is nowhere to keep it', async () => {
+    healthyDocker({ [NAME]: true });
+    const healthy = proc.respond;
+    proc.respond = (command, args) => (args[0] === 'rm' ? { code: 1, stderr: 'daemon' } : healthy(command, args));
+    await expect(docker.remove(THREAD)).resolves.toBeUndefined();
   });
 
   it('does not fail when Docker is not installed', async () => {
@@ -972,5 +1158,237 @@ describe('remove and stopAll', () => {
     proc.calls = [];
     docker.stopAll();
     expect(proc.calls).toEqual([]);
+  });
+});
+
+describe('sweep', () => {
+  const GONE = 'ch-thread-99999999-8888-7777-6666-555555555555';
+  const WEEK = 8 * 24 * 3600 * 1000;
+
+  // A Docker holding the given containers (name -> whether it is running),
+  // volumes (name -> whether anything refers to it) and images (tag -> when it
+  // was built), which records what is removed.
+  function dockerWith({
+    containers = {} as Record<string, boolean>,
+    volumes = {} as Record<string, boolean>,
+    images = {} as Record<string, number>,
+    // tag -> the image it was built on, as its label says (see ensureDependencies)
+    bases = {} as Record<string, string>,
+    imageUsers = [] as string[],
+  }) {
+    const removed = { containers: [] as string[], volumes: [] as string[], images: [] as string[] };
+    proc.respond = (command, args) => {
+      if (command !== 'docker') return { code: 1 };
+      const [one, two] = args;
+      if (one === 'ps') {
+        // The images every container was made from, for the image sweep
+        if (args.includes('{{.Image}}')) return { stdout: `${imageUsers.join('\n')}\n` };
+        const names = Object.keys(containers).filter((name) => args.includes('-a') || containers[name]);
+        return { stdout: `${names.join('\n')}\n` };
+      }
+      if (one === 'rm') {
+        const name = args.at(-1) as string;
+        if (!(name in containers)) return { code: 1, stderr: 'No such container' };
+        delete containers[name];
+        removed.containers.push(name);
+        return { code: 0 };
+      }
+      if (one === 'stop') {
+        containers[args.at(-1) as string] = false;
+        return { code: 0 };
+      }
+      if (one === 'volume' && two === 'ls')
+        return {
+          stdout: `${Object.keys(volumes)
+            .filter((v) => !volumes[v])
+            .join('\n')}\n`,
+        };
+      if (one === 'volume' && two === 'rm') {
+        const name = args.at(-1) as string;
+        if (volumes[name]) return { code: 1, stderr: 'volume is in use' };
+        delete volumes[name];
+        removed.volumes.push(name);
+        return { code: 0 };
+      }
+      if (one === 'images') {
+        const listed = [...Object.keys(images), 'node:22-bookworm-slim'].join('\n');
+        return { stdout: `${listed}\n` };
+      }
+      if (one === 'image' && two === 'inspect') {
+        const tag = args.at(-1) as string;
+        if (!(tag in images)) return { code: 1, stderr: 'No such image' };
+        // As Docker prints it: the fields the format asked for, in order, with
+        // nothing for a label the image does not carry
+        return { stdout: `${new Date(images[tag]).toISOString()} ${bases[tag] ?? ''}\n` };
+      }
+      if (one === 'image' && two === 'rm') {
+        const tag = args.at(-1) as string;
+        delete images[tag];
+        removed.images.push(tag);
+        return { code: 0 };
+      }
+      return { code: 0 };
+    };
+    return removed;
+  }
+
+  it('removes the containers of threads that are gone, and leaves the rest', async () => {
+    const removed = dockerWith({ containers: { [NAME]: false, [GONE]: false } });
+    const swept = await docker.sweep([THREAD]);
+    expect(swept.removed).toEqual([GONE]);
+    expect(removed.containers).toEqual([GONE]);
+  });
+
+  it('removes nothing for being unknown when the threads cannot be told', async () => {
+    const removed = dockerWith({ containers: { [NAME]: false, [GONE]: true } });
+    const swept = await docker.sweep();
+    expect(swept.removed).toEqual([]);
+    expect(removed.containers).toEqual([]);
+    // What is left running is still stopped: that one does not go by which
+    // threads there are, only by which containers this session started
+    expect(swept.stopped).toEqual([GONE]);
+  });
+
+  it('stops the containers an earlier session left running', async () => {
+    dockerWith({ containers: { [NAME]: true, [GONE]: true } });
+    const swept = await docker.sweep([THREAD, GONE.replace('ch-thread-', '')]);
+    expect(swept.stopped).toEqual([NAME, GONE]);
+    expect(ranStartingWith('docker stop')).toEqual([`docker stop -t 0 ${NAME}`, `docker stop -t 0 ${GONE}`]);
+  });
+
+  it('leaves alone a container this session is using', async () => {
+    healthyDocker();
+    await docker.ensure(THREAD);
+    const removed = dockerWith({ containers: { [NAME]: true } });
+    // Its thread is not in the list — a thread made moments ago may not be
+    // saved yet — and the container is still not touched
+    const swept = await docker.sweep([]);
+    expect(swept).toMatchObject({ removed: [], stopped: [] });
+    expect(removed.containers).toEqual([]);
+  });
+
+  it('removes the workspace caches nothing refers to any more', async () => {
+    const removed = dockerWith({ volumes: { 'ch-cache-aaaaaaaaaaaa': false, 'ch-cache-bbbbbbbbbbbb': true } });
+    const swept = await docker.sweep([]);
+    expect(swept.volumes).toEqual(['ch-cache-aaaaaaaaaaaa']);
+    expect(removed.volumes).toEqual(['ch-cache-aaaaaaaaaaaa']);
+  });
+
+  it('removes the images it built that nothing has used for a week', async () => {
+    const old = Date.now() - WEEK;
+    const removed = dockerWith({
+      images: {
+        'ch-deps:aaaaaaaaaaaa': old,
+        'ch-deps:bbbbbbbbbbbb': old,
+        'ch-sandbox:cccccccccccc': old,
+        'ch-deps:dddddddddddd': Date.now(),
+      },
+      // The ones that are staying stand on another base, so this one is
+      // wanted by nothing (see the test below for when that cannot be told)
+      bases: {
+        'ch-deps:aaaaaaaaaaaa': 'ch-sandbox:cccccccccccc',
+        'ch-deps:bbbbbbbbbbbb': 'ch-sandbox:eeeeeeeeeeee',
+        'ch-deps:dddddddddddd': 'ch-sandbox:eeeeeeeeeeee',
+      },
+      imageUsers: ['ch-deps:bbbbbbbbbbbb'],
+    });
+    const swept = await docker.sweep([]);
+    // The one a container was made from stays, as does the one built this
+    // week; the user's own images are never looked at
+    expect(swept.images).toEqual(['ch-deps:aaaaaaaaaaaa', 'ch-sandbox:cccccccccccc']);
+    expect(removed.images).toEqual(['ch-deps:aaaaaaaaaaaa', 'ch-sandbox:cccccccccccc']);
+  });
+
+  it('keeps the base an image it is keeping was built on, which nothing runs', async () => {
+    const old = Date.now() - WEEK;
+    // Every container runs the dependencies image; the base under it has
+    // nothing of its own, and is what the next lockfile change builds on
+    const removed = dockerWith({
+      images: { 'ch-sandbox:cccccccccccc': old, 'ch-deps:bbbbbbbbbbbb': old, 'ch-deps:aaaaaaaaaaaa': old },
+      bases: { 'ch-deps:bbbbbbbbbbbb': 'ch-sandbox:cccccccccccc', 'ch-deps:aaaaaaaaaaaa': 'ch-sandbox:cccccccccccc' },
+      imageUsers: ['ch-deps:bbbbbbbbbbbb'],
+    });
+    const swept = await docker.sweep([]);
+    expect(swept.images).toEqual(['ch-deps:aaaaaaaaaaaa']);
+    expect(removed.images).toEqual(['ch-deps:aaaaaaaaaaaa']);
+  });
+
+  it('removes a base once nothing built on it is left either', async () => {
+    const old = Date.now() - WEEK;
+    const removed = dockerWith({
+      images: { 'ch-sandbox:cccccccccccc': old, 'ch-deps:aaaaaaaaaaaa': old },
+      bases: { 'ch-deps:aaaaaaaaaaaa': 'ch-sandbox:cccccccccccc' },
+    });
+    const swept = await docker.sweep([]);
+    expect(swept.images.sort()).toEqual(['ch-deps:aaaaaaaaaaaa', 'ch-sandbox:cccccccccccc']);
+    expect(removed.images.sort()).toEqual(['ch-deps:aaaaaaaaaaaa', 'ch-sandbox:cccccccccccc']);
+  });
+
+  it('keeps every base while an image that cannot say what it stands on is kept', async () => {
+    const old = Date.now() - WEEK;
+    // The dependencies image is in use and was built before the label existed:
+    // which base it needs cannot be told, so none of them is taken away
+    const removed = dockerWith({
+      images: { 'ch-sandbox:cccccccccccc': old, 'ch-sandbox:dddddddddddd': old, 'ch-deps:bbbbbbbbbbbb': old },
+      imageUsers: ['ch-deps:bbbbbbbbbbbb'],
+    });
+    expect((await docker.sweep([])).images).toEqual([]);
+    expect(removed.images).toEqual([]);
+  });
+
+  it('removes no image when it cannot tell which are in use', async () => {
+    dockerWith({ images: { 'ch-deps:aaaaaaaaaaaa': Date.now() - WEEK } });
+    const healthy = proc.respond;
+    proc.respond = (command, args) =>
+      args[0] === 'ps' && args.includes('{{.Image}}') ? { code: 1, stderr: 'daemon' } : healthy(command, args);
+    expect((await docker.sweep([])).images).toEqual([]);
+  });
+
+  it('keeps the image it has just built, whatever its age says', async () => {
+    healthyDocker();
+    const built = (await docker.ensure(THREAD)) && (ranStartingWith('docker run').at(-1) as string).split(' ').at(-3);
+    const removed = dockerWith({ images: { [built as string]: Date.now() - WEEK } });
+    await docker.sweep([THREAD]);
+    expect(removed.images).toEqual([]);
+  });
+
+  it('does nothing, and does not start Docker, when the daemon is down', async () => {
+    proc.respond = () => ({ code: 1, stderr: 'Cannot connect to the Docker daemon' });
+    const swept = await docker.sweep([]);
+    expect(swept).toEqual({ removed: [], stopped: [], volumes: [], images: [] });
+    expect(ran()).toEqual([`docker ps -a --filter name=ch-thread- --format {{.Names}}`]);
+  });
+
+  it('does nothing when Docker is not installed', async () => {
+    proc.respond = () => ({ error: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) });
+    await expect(docker.sweep([])).resolves.toEqual({ removed: [], stopped: [], volumes: [], images: [] });
+  });
+});
+
+describe('the build cache', () => {
+  it('is pruned after an image is built, in the background and only to what is unused', async () => {
+    const existing = healthyDocker();
+    const healthy = proc.respond;
+    proc.respond = (command, args) =>
+      args[0] === 'image' ? { code: 1, stderr: 'No such image' } : healthy(command, args);
+    delete existing[NAME];
+    await docker.ensure(THREAD);
+    // Waited for here only because nothing else does: the build does not
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ranStartingWith('docker builder prune')).toEqual(['docker builder prune -f --filter until=168h']);
+  });
+
+  it('is left alone when the build failed', async () => {
+    const existing = healthyDocker();
+    const healthy = proc.respond;
+    proc.respond = (command, args) => {
+      if (args[0] === 'image') return { code: 1, stderr: 'No such image' };
+      if (args[0] === 'build') return { code: 1, stderr: 'network unreachable' };
+      return healthy(command, args);
+    };
+    delete existing[NAME];
+    await docker.ensure(THREAD);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ranStartingWith('docker builder prune')).toEqual([]);
   });
 });

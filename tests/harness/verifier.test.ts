@@ -2,14 +2,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatEvent, ChatRequest, FileChange } from '../../src/types';
 import { from, model } from '../helpers';
 
-const mocks = vi.hoisted(() => ({ listModels: vi.fn(), stream: vi.fn(), list: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  listModels: vi.fn(),
+  stream: vi.fn(),
+  list: vi.fn(),
+  snapshot: vi.fn(),
+  revert: vi.fn(),
+  findings: vi.fn(),
+}));
 vi.mock('../../src/llm', () => ({ listModels: mocks.listModels, stream: mocks.stream }));
 vi.mock('../../src/sandbox/changes', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/sandbox/changes')>()),
   list: mocks.list,
+  snapshot: mocks.snapshot,
+  revert: mocks.revert,
 }));
+vi.mock('../../src/subagents', () => ({ findings: mocks.findings, TESTER: { name: 'tester' } }));
 
-import { PROMPT, batch, combine, parse, pickModel, verify } from '../../src/harness/verifier';
+import { PROMPT, batch, combine, parse, pickModel, report, testTask, verify } from '../../src/harness/verifier';
 
 const small = model({ id: 'llama3.2:3b', sophistication: 2 });
 const mid = model({ id: 'qwen:32b', sophistication: 4 });
@@ -33,6 +43,9 @@ beforeEach(() => {
   mocks.listModels.mockReset();
   mocks.stream.mockReset();
   mocks.list.mockReset();
+  mocks.snapshot.mockReset().mockResolvedValue('tree-before');
+  mocks.revert.mockReset().mockResolvedValue(true);
+  mocks.findings.mockReset();
   mocks.listModels.mockResolvedValue({ models: all, providers: [] });
   mocks.list.mockResolvedValue({
     files: [{ path: 'src/a.ts', status: 'modified', binary: false, diff: '@@ -1 +1 @@\n-a\n+b' }],
@@ -78,6 +91,28 @@ describe('parse', () => {
     });
     expect(parse('**Problems:**\n- No test.')).toEqual({ passed: false, problems: '- No test.' });
     expect(parse('PROBLEMS: it forgot b.ts')).toEqual({ passed: false, problems: 'it forgot b.ts' });
+  });
+
+  it('reads the verdict a model reasoned its way to, rather than only its first line', () => {
+    const reply = [
+      'Looking at the diffs for the upload feature, I need to check correctness and completeness.',
+      '',
+      '**Bug found:** the drop handler never calls preventDefault().',
+      '',
+      'PROBLEMS',
+      '- src/renderer/attachments.ts: the drop listener does not call e.preventDefault().',
+    ].join('\n');
+    expect(parse(reply)).toEqual({
+      passed: false,
+      problems: '- src/renderer/attachments.ts: the drop listener does not call e.preventDefault().',
+    });
+    expect(parse('I checked every diff and the wiring holds up.\n\nPASS')).toEqual({ passed: true, problems: '' });
+  });
+
+  it('keeps looking above a line that says PROBLEMS and names none', () => {
+    const verdict = parse('PROBLEMS\n- No test.\n\nPROBLEMS');
+    expect(verdict?.passed).toBe(false);
+    expect(verdict?.problems).toContain('- No test.');
   });
 
   it.each(['', 'Looks fine to me', 'PROBLEMS', 'PASSING\n- no'])('cannot read %j', (reply) => {
@@ -134,7 +169,8 @@ describe('verify', () => {
     const result = await verify(request);
     expect(result).toEqual({ passed: true, problems: '', model: 'qwen:32b', usage: undefined });
     expect(mocks.list).toHaveBeenCalledWith('t1');
-    expect(sent()).toMatchObject({ provider: 'local', model: 'qwen:32b', system: PROMPT, brief: true });
+    expect(sent()).toMatchObject({ provider: 'local', model: 'qwen:32b', system: PROMPT, brief: true, think: true });
+    expect(PROMPT).toContain('You have no tools here');
     expect(content()).toContain('<request>\nAdd a flag\n</request>');
     expect(content()).toContain('<reply>\nDone, I added it.\n</reply>');
     expect(content()).toContain('## src/a.ts (modified)\n@@ -1 +1 @@\n-a\n+b');
@@ -172,6 +208,49 @@ describe('verify', () => {
     // Spent on thinking, with nothing written at all
     replyWith({ type: 'done', stopReason: 'length' });
     await expect(verify(request)).rejects.toThrow('The reviewer ran out of room before it finished.');
+  });
+
+  it('says a reviewer that ran out of time ran out of time', async () => {
+    // Cut off mid-verdict, which is not a reply that could not be read: the
+    // model was still working on one
+    replyWith({ type: 'reasoning', delta: 'Checking the wiring...' }, { type: 'done', stopReason: 'cancelled' });
+    await expect(verify(request)).rejects.toThrow('The reviewer did not reach a verdict within 30 minutes.');
+  });
+
+  it('gives an online model ten minutes, a local one thirty', async () => {
+    // Cut off mid-verdict, which is not a reply that could not be read
+    const cancel = () =>
+      replyWith({ type: 'reasoning', delta: 'Checking the wiring...' }, { type: 'done', stopReason: 'cancelled' });
+    mocks.listModels.mockResolvedValue({ models: [sonnet], providers: [] });
+    cancel();
+    await expect(verify(request)).rejects.toThrow('The reviewer did not reach a verdict within 10 minutes.');
+
+    mocks.listModels.mockResolvedValue({ models: [mid], providers: [] });
+    cancel();
+    await expect(verify(request)).rejects.toThrow('The reviewer did not reach a verdict within 30 minutes.');
+  });
+
+  it('does not spend its limit waiting its turn', async () => {
+    vi.useFakeTimers();
+    try {
+      let waitedOut = false;
+      mocks.stream.mockImplementation((_request: ChatRequest, signal: AbortSignal) =>
+        (async function* (): AsyncGenerator<ChatEvent> {
+          // Nine minutes behind a reply, which is inside no limit of its own
+          await vi.advanceTimersByTimeAsync(540_000);
+          yield { type: 'waited', ms: 540_000 };
+          // ...then nine minutes of reviewing, which the limit allows in full
+          await vi.advanceTimersByTimeAsync(540_000);
+          waitedOut = signal.aborted;
+          yield { type: 'text', delta: 'PASS' };
+          yield { type: 'done', stopReason: 'stop' };
+        })()
+      );
+      await expect(verify(request)).resolves.toMatchObject({ passed: true });
+      expect(waitedOut).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reviews a large change a batch of files at a time, each batch told every path', async () => {
@@ -271,5 +350,136 @@ describe('verify', () => {
 
     replyWith({ type: 'text', delta: 'Hmm, hard to say.' }, { type: 'done', stopReason: 'stop' });
     await expect(verify(request)).rejects.toThrow("The reviewer's reply could not be read.");
+  });
+});
+
+describe('report', () => {
+  it('reads what the reviewer checked, above its verdict, without the heading it was asked for', () => {
+    expect(report('Checked:\n- ran npm test: 3 passed\n- sent "hi": it echoed\nPASS')).toEqual({
+      passed: true,
+      problems: '',
+      checked: '- ran npm test: 3 passed\n- sent "hi": it echoed',
+    });
+    expect(report('**Checked:**\n- ran it\n\nPROBLEMS\n- It crashed on an empty message.')).toEqual({
+      passed: false,
+      problems: '- It crashed on an empty message.',
+      checked: '- ran it',
+    });
+    expect(report('Checked:\n- nothing yet')).toBeNull();
+  });
+});
+
+describe('testTask', () => {
+  it('gives the tester the request, the reply as context, every path, and the diffs', () => {
+    const task = testTask({ ...request, workspace: '/w' }, { files: [file('src/a.ts', '@@ -1 +1 @@\n-a\n+b')] });
+    expect(task).toContain('<request>\nAdd a flag\n</request>');
+    expect(task).toContain('<reply>\nDone, I added it.\n</reply>');
+    expect(task).toContain('src/a.ts (modified)');
+    expect(task).toContain('+b');
+    expect(task).toContain('only what the model said it did');
+    expect(task).not.toContain('thread_diff');
+  });
+
+  it('cuts the diffs short past a budget, and says where the rest is', () => {
+    const task = testTask({ ...request, workspace: '/w' }, { files: [file('big.ts', `+${'x'.repeat(50000)}`)] });
+    expect(task.length).toBeLessThan(45000);
+    expect(task).toContain('read the rest with thread_diff');
+  });
+});
+
+// In a thread with a workspace, the changes are tried: by a tester subagent in
+// the thread's container (see ../../src/subagents/tester.ts)
+describe('verify, in a thread with a workspace', () => {
+  const inWorkspace = { ...request, workspace: '/projects/demo' };
+  const found = (text: string, isError = false) =>
+    mocks.findings.mockResolvedValue([{ name: 'review', task: '', text, isError }]);
+
+  it("sends a tester into the thread's container, and returns its verdict and what it checked", async () => {
+    found('Checked:\n- ran npm test: 12 passed\n- in the app, sent "hi": it echoed\n\nPASS');
+    const verdict = await verify(inWorkspace);
+    expect(verdict).toMatchObject({
+      passed: true,
+      problems: '',
+      tested: true,
+      model: mid.name,
+      checked: '- ran npm test: 12 passed\n- in the app, sent "hi": it echoed',
+    });
+    const [[tasks, context]] = mocks.findings.mock.calls;
+    expect(tasks).toEqual([{ name: 'review', task: expect.stringContaining('Add a flag'), kind: { name: 'tester' } }]);
+    expect(context).toMatchObject({
+      threadId: 't1',
+      workspace: '/projects/demo',
+      model: { provider: mid.provider, model: mid.id },
+      sophistication: mid.sophistication,
+    });
+    // Not the review by reading alone
+    expect(mocks.stream).not.toHaveBeenCalled();
+  });
+
+  it('returns the problems it found, each with how it saw it', async () => {
+    found('Checked:\n- sent "" in the app\nPROBLEMS\n- An empty message crashes the reply: sent "" and saw TypeError.');
+    expect(await verify(inWorkspace)).toMatchObject({
+      passed: false,
+      problems: '- An empty message crashes the reply: sent "" and saw TypeError.',
+      tested: true,
+    });
+  });
+
+  it("puts the thread's files back as they were before it, in case a command it ran wrote some", async () => {
+    found('Checked:\n- built it\nPASS');
+    await verify(inWorkspace);
+    expect(mocks.snapshot).toHaveBeenCalledWith('t1');
+    expect(mocks.revert).toHaveBeenCalledWith('t1', 'tree-before');
+  });
+
+  it('leaves the files alone after a reply has begun on the thread, or with nothing to go back to', async () => {
+    found('Checked:\n- built it\nPASS');
+    await verify(inWorkspace, { untouched: () => false });
+    expect(mocks.revert).not.toHaveBeenCalled();
+    // Going back to no snapshot would be going back to the container as it was made, the reply's changes and all
+    mocks.snapshot.mockResolvedValue(null);
+    await verify(inWorkspace);
+    expect(mocks.revert).not.toHaveBeenCalled();
+  });
+
+  it('adds up what its calls cost, as the review', async () => {
+    mocks.findings.mockImplementation(async (_tasks, context) => {
+      for (const input of [1000, 2500]) {
+        context.emit({
+          type: 'usage',
+          purpose: 'subagent',
+          provider: mid.provider,
+          model: mid.id,
+          input,
+          output: 100,
+          cost: 0,
+        });
+      }
+      context.emit({
+        type: 'tokens',
+        purpose: 'subagent',
+        provider: mid.provider,
+        model: mid.id,
+        input: 9,
+        output: 9,
+        cost: 0,
+      });
+      return [{ name: 'review', task: '', text: 'Checked:\n- ran it\nPASS', isError: false }];
+    });
+    const verdict = await verify(inWorkspace);
+    expect(verdict.usage).toMatchObject({ purpose: 'verification', model: mid.id, input: 3500, output: 200 });
+  });
+
+  it('reviews by reading the diffs where the tester came back with no verdict, or failed', async () => {
+    found('I looked around but ran out of rounds.');
+    expect(await verify(inWorkspace)).toMatchObject({ passed: true, problems: '' });
+    expect(mocks.stream).toHaveBeenCalledTimes(1);
+    found('The model could not be reached.', true);
+    const read = await verify(inWorkspace);
+    expect(read.tested).toBeUndefined();
+    mocks.findings.mockRejectedValue(new Error('No model is available to run subagents.'));
+    expect(await verify(inWorkspace)).toMatchObject({ passed: true });
+    // ...and the files are put back each time all the same
+    expect(mocks.revert).toHaveBeenCalledTimes(3);
   });
 });

@@ -26,6 +26,7 @@ export { CODER } from './coder';
 export { EXPLORER } from './explorer';
 export { HEAD_EXPLORER } from './head';
 export { REVIEWER } from './reviewer';
+export { TESTER } from './tester';
 export { WORKER } from './worker';
 export { MAX_HANDOUT_DEPTH, MESSAGE_TOOL, TOOL_NAME, WAIT_TOOL, type Kind } from './kind';
 export {
@@ -239,6 +240,6 @@ export const BREAKS_UP = SOPHISTICATION.STRONG;
 // that writes a file, so every change in its plan goes out as a piece, and this
 // would tell it to keep for itself parts it has no way to make.
 export function prompt(sophistication: number | undefined, withTools = true, phase?: Phase): string {
-  if (phase === 'explore' || phase === 'execute') return '';
+  if (phase === 'explore' || phase === 'execute' || phase === 'suggest') return '';
   return withTools && (sophistication ?? 0) >= BREAKS_UP ? BREAK_UP : '';
 }

@@ -4,7 +4,19 @@
 
 import { describe, expect, it } from 'vitest';
 import { unwrapped } from '../helpers';
-import { AGENT, CODER, EXPLORER, KINDS, MESSAGE_TOOL, REVIEWER, TOOL_NAME, WORKER, byName } from '../../src/subagents';
+import {
+  AGENT,
+  CODER,
+  EXPLORER,
+  KINDS,
+  MESSAGE_TOOL,
+  REVIEWER,
+  TESTER,
+  TOOL_NAME,
+  WORKER,
+  byName,
+} from '../../src/subagents';
+import { ALLOWED as TESTER_ALLOWED } from '../../src/subagents/tester';
 import { ALLOWED } from '../../src/subagents/explorer';
 import { ASK_TOOL, MAX_HANDOUT_DEPTH, MOVES_THREAD, WAIT_TOOL, forbidden } from '../../src/subagents/kind';
 import { work as throughTheReplyFlow } from '../../src/subagents/thread';
@@ -139,9 +151,9 @@ describe('what a kind of subagent may do', () => {
     }
   });
 
-  it('lets the kinds that do the work put the thread on a branch, which the reply has no tools for at all', () => {
-    const branching = all.filter(({ agentOnly }) => agentOnly);
-    expect(branching.map(({ name }) => name).sort()).toEqual(['create_branch', 'enter_branch']);
+  it('lets the kinds that do the work put the thread on a branch', () => {
+    const branching = all.filter(({ name }) => name === 'create_branch' || name === 'enter_branch');
+    expect(branching).toHaveLength(2);
     const context: ToolContext = {
       signal: new AbortController().signal,
       threadId: 't',
@@ -554,5 +566,62 @@ describe('the agent kind', () => {
   // kind does, so a thread without a workspace can still hand it a job
   it('wants no workspace of its own', () => {
     expect(AGENT.needsWorkspace).toBeUndefined();
+  });
+});
+
+// The reviewer of a reply's changes, which reads them and tries them (see ../../src/subagents/tester.ts and
+// ../../src/harness/verifier.ts)
+describe('the tester', () => {
+  const real = (name: string) => all.find((one) => one.name === name) as Tool;
+
+  it('is sent by the review, never asked for by a model', () => {
+    expect(KINDS).not.toContain(TESTER);
+    expect(byName('tester')).toBeUndefined();
+  });
+
+  it('can find out, run the project, use the app and see it, and keep how it got the app running', () => {
+    for (const name of ['read_file', 'search_workspace', 'run_command', 'thread_diff', 'use_app', 'screenshot']) {
+      expect(TESTER.allows(real(name)), name).toBe(true);
+    }
+    expect(TESTER.allows(real('save_run_recipe'))).toBe(true);
+  });
+
+  it('can change no file, hand nothing out, move the thread nowhere, and ask nobody anything', () => {
+    const not = [
+      'write_file',
+      'edit_file',
+      'sync_workspace',
+      'update_workspace_context',
+      'create_branch',
+      'enter_branch',
+    ];
+    for (const name of [...not, TOOL_NAME, MESSAGE_TOOL, WAIT_TOOL, ASK_TOOL, 'record', ...MOVES_THREAD]) {
+      expect(TESTER.allows(real(name) ?? tool(name)), name).toBe(false);
+    }
+    // ...not even through the tools that ask the user first: nobody is watching a review to be asked
+    expect(TESTER.allows(real('run_host_command'))).toBe(false);
+    expect(TESTER.allows(real('read_user_file'))).toBe(false);
+  });
+
+  it("lets nothing in that isn't named, and names only tools that really exist", () => {
+    expect(TESTER.allows(tool('a_tool_added_later'))).toBe(false);
+    const names = new Set(all.map(({ name }) => name));
+    expect([...TESTER_ALLOWED].filter((name) => !names.has(name))).toEqual([]);
+  });
+
+  it('is given room for the checks and the app, and works in a workspace', () => {
+    expect(TESTER.steps).toBeGreaterThan(CODER.steps);
+    expect(TESTER.least).toBeGreaterThanOrEqual(CODER.least!);
+    expect(TESTER.needsWorkspace).toBe(true);
+  });
+
+  it('is told to try the change in the app, change nothing, and end on a verdict the app can read', () => {
+    const told = unwrapped(TESTER.prompt);
+    expect(told).toContain('recipe: true');
+    expect(told).toContain('You change nothing');
+    expect(told).toContain('one thing the author may not have');
+    expect(told).toContain('"Checked:"');
+    expect(told).toContain('the single word PASS on a line of its own');
+    expect(told).toContain('never claim to have run or seen anything you did not');
   });
 });

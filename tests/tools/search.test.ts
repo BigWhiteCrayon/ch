@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SearchResult } from '../../src/search/results';
 import type { ToolContext, Tool } from '../../src/types';
+import { unwrapped } from '../helpers';
 
 const embeddings = vi.hoisted(() => ({ search: vi.fn(), order: vi.fn() }));
 vi.mock('../../src/search/embeddings', () => embeddings);
@@ -22,7 +23,18 @@ const ripgrep = vi.hoisted(() => ({
 vi.mock('../../src/search/ripgrep', () => ripgrep);
 vi.mock('../../src/sandbox/docker', () => ({ WORKDIR: '/workspace' }));
 
-import { looksLikePattern, symbolIn, tools, trim } from '../../src/tools/search';
+import {
+  covers,
+  fromGrep,
+  literals,
+  looksLikePattern,
+  namesIn,
+  pathsIn,
+  relative,
+  symbolIn,
+  tools,
+  trim,
+} from '../../src/tools/search';
 
 const THREAD = '0ad34c48-11d6-466f-8567-79d2df9819bc';
 const signal = new AbortController().signal;
@@ -41,6 +53,8 @@ const asking = (over: Partial<Parameters<typeof trim>[1]> = {}) => ({
   ...over,
 });
 const linesOf = (result: SearchResult) => result.files.flatMap((file) => file.blocks.flat());
+// What a backend was asked, from the last call made to it
+const lastAsked = (backend: { mock: { calls: unknown[][] } }) => backend.mock.calls.at(-1)![2] as Record<string, any>;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -107,7 +121,7 @@ describe('cutting a result down to what was asked for', () => {
         { path: 'lib/b.ts', blocks: [block(1, 2)] },
         { path: 'src/a.ts', blocks: [block(1, 2)] },
       ]),
-      asking({ path: 'src' })
+      asking({ paths: ['src'] })
     );
     expect(result.files.map(({ path }) => path)).toEqual(['src/a.ts']);
   });
@@ -133,7 +147,10 @@ describe('cutting a result down to what was asked for', () => {
 describe('the limits a model gave', () => {
   const limitFor = async (input: Record<string, unknown>) => {
     await searchCode.run({ query: 'q', ...input }, context);
-    return embeddings.search.mock.calls.at(-1)![2] as { limit: number; maxPerFile: number };
+    const { limit, maxPerFile } = embeddings.search.mock.calls.at(-1)![2] as { limit: number; maxPerFile: number };
+    // The backends are asked for one line more from each file than is shown,
+    // so that a file cut short is known to be (see trim)
+    return { limit, maxPerFile: maxPerFile - 1 };
   };
 
   it('allows what it allows, and no more', async () => {
@@ -165,7 +182,8 @@ describe('a search for a pattern rather than for a meaning', () => {
     expect(ripgrep.regexSearch).toHaveBeenCalledWith(
       '/projects/demo',
       'await\\s+fetch\\(',
-      { limit: 20, maxPerFile: 10, context: 1, pathsOnly: false, path: undefined, thread: THREAD },
+      // A pattern's limits, which are wider than a search by meaning's
+      { limit: 50, maxPerFile: 26, context: 1, pathsOnly: false, path: undefined, ignoreCase: false, thread: THREAD },
       signal
     );
     expect(embeddings.search).not.toHaveBeenCalled();
@@ -196,6 +214,49 @@ describe('a search for a pattern rather than for a meaning', () => {
   it('still wants a query, pattern or no pattern', async () => {
     await expect(searchCode.run({ query: '  ', regex: true }, context)).rejects.toThrow('non-empty string');
     expect(ripgrep.regexSearch).not.toHaveBeenCalled();
+  });
+});
+
+// Every query here was really sent, with regex: true really set, and every
+// one of them came back "No matches." — eighteen of the nineteen empty
+// searches in a week of threads, and twelve of those were followed by the
+// same search again rather than by another tool. The flag reads as "match the
+// words rather than their meaning", so a row of words is what it is given,
+// and a row of words is a pattern that matches only itself.
+describe('a pattern that was asked for and matches nothing', () => {
+  beforeEach(() => {
+    ripgrep.regexSearch.mockResolvedValue(found([]));
+    embeddings.search.mockResolvedValue(
+      found([{ path: 'src/renderer/usage.ts', blocks: [[{ line: 42, text: 'const recordUsage = (' }]] }])
+    );
+  });
+
+  it('answers the words in it by meaning rather than saying nothing is there', async () => {
+    const output = String(await searchCode.run({ query: 'recordUsage usage daily tokens cost', regex: true }, context));
+    expect(output).toContain('42: const recordUsage = (');
+    expect(output).not.toContain('No matches.');
+  });
+
+  it('says it searched the other way, which is the only way the model could tell', async () => {
+    const output = String(await searchCode.run({ query: 'recordUsage usage daily tokens cost', regex: true }, context));
+    expect(output).toContain('regex: true');
+    expect(output).toContain('matches by meaning');
+    // The words, not the row of them as written
+    expect(embeddings.search).toHaveBeenCalledWith(
+      { workspace: '/projects/demo', thread: THREAD },
+      'recordUsage usage daily tokens cost',
+      expect.anything(),
+      signal
+    );
+  });
+
+  it('leaves a pattern that matched alone, saying nothing about how it was read', async () => {
+    ripgrep.regexSearch.mockResolvedValue(
+      found([{ path: 'src/a.ts', blocks: [[{ line: 3, text: 'await fetch(url);' }]] }])
+    );
+    const output = String(await searchCode.run({ query: 'await\\s+fetch\\(', regex: true }, context));
+    expect(output).toBe('src/a.ts\n  3: await fetch(url);');
+    expect(embeddings.search).not.toHaveBeenCalled();
   });
 });
 
@@ -307,6 +368,23 @@ describe('where something is defined', () => {
     expect(symbolIn('Thread')).toBe('Thread');
   });
 
+  // Each of these was asked with a declaring word in it and answered about
+  // the wrong name, because the word after the declaring one was taken over
+  // the word before it. Two of them were then answered out of node_modules,
+  // where `role` and `base64` are declared and `Message` and `ToolImage` are
+  // not.
+  it('takes the name that is written like one, whichever side of the declaring word it is on', () => {
+    expect(symbolIn('State interface threads activeId version recentWorkspaces')).toBe('State');
+    expect(symbolIn('Message type role text images videos events callId')).toBe('Message');
+    // `mediaType` is beside the keyword too, and on the side this used to
+    // prefer; the name written first is the one the query is about
+    expect(symbolIn('ToolImage ToolVideo interface mediaType data')).toBe('ToolVideo');
+    // Nothing beside the keyword is written like a name, and the query names
+    // two others: better to answer by meaning than to look up `point`, which
+    // is declared in webcrypto-core and nowhere in this project
+    expect(symbolIn('renderer entry point module that calls loadModels and loadOffline at startup')).toBeUndefined();
+  });
+
   it('takes no name out of a question about what the code does', () => {
     expect(symbolIn('where are API keys stored')).toBeUndefined();
     expect(symbolIn('thread list sidebar display filtering workspace')).toBeUndefined();
@@ -339,7 +417,7 @@ describe('where something is defined', () => {
     expect(ripgrep.definitionSearch).toHaveBeenCalledWith(
       '/projects/demo',
       'Thread',
-      expect.objectContaining({ limit: 20, maxPerFile: 10 }),
+      expect.objectContaining({ limit: 20, maxPerFile: 11 }),
       signal
     );
   });
@@ -360,11 +438,118 @@ describe('where something is defined', () => {
     expect(output).toContain('9: uses it');
   });
 
+  describe('several names at once', () => {
+    it('reads the names out of a query that is a row of them, and only the ones written like names', () => {
+      expect(namesIn('open flush lastSaved changed')).toEqual(['lastSaved']);
+      expect(namesIn('withDaily withPurpose breakdown purpose helper definitions')).toEqual([
+        'withDaily',
+        'withPurpose',
+      ]);
+      // A question made of ordinary words names nothing, which is what keeps
+      // it from being looked up as three declarations nobody wrote
+      expect(namesIn('threads archiving sidebar')).toEqual([]);
+    });
+
+    // The grep this is meant to replace, as it was really run:
+    // `grep -n "const open =\|const flush\|const lastSaved\|const changed"`.
+    // None of those four is written like a name, and the keyword beside each
+    // of them is what says it is one.
+    it('takes a plain word for a name where a declaring word beside it says so', () => {
+      expect(namesIn('async function open function flush lastSaved function changed')).toEqual([
+        'open',
+        'flush',
+        'lastSaved',
+        'changed',
+      ]);
+      // A modifier is never the name, whichever side of the keyword it is on
+      expect(namesIn('export interface Thread')).toEqual(['Thread']);
+    });
+
+    it('looks each of them up and gives each its own heading', async () => {
+      ripgrep.definitionSearch.mockImplementation((_w: string, name: string) =>
+        Promise.resolve(found([{ path: 'src/usage.ts', blocks: [[{ line: 7, text: `const ${name} = (` }]] }]))
+      );
+      const output = String(await searchCode.run({ query: 'withDaily withPurpose', definition: true }, context));
+      expect(output).toContain('declare `withDaily`');
+      expect(output).toContain('declare `withPurpose`');
+      expect(output).toContain('7: const withDaily = (');
+      expect(output).toContain('7: const withPurpose = (');
+      expect(embeddings.search).not.toHaveBeenCalled();
+    });
+
+    it('shares the limit out, so six names do not answer six times over', async () => {
+      ripgrep.definitionSearch.mockResolvedValue(found([{ path: 'src/a.ts', blocks: [block(1, 30)] }]));
+      const output = String(
+        await searchCode.run({ query: 'withDaily withPurpose ModelTotal', definition: true, max_results: 9 }, context)
+      );
+      expect(output.match(/^ {2}\d+: /gm)).toHaveLength(9);
+    });
+
+    // An answer one heading short otherwise reads as a name this search
+    // missed rather than a name that is not in the project
+    it('names the ones that are declared nowhere instead of leaving them out', async () => {
+      const only = found([{ path: 'src/a.ts', blocks: [[{ line: 7, text: 'const withDaily = (' }]] }]);
+      ripgrep.definitionSearch.mockImplementation((_w: string, name: string) =>
+        Promise.resolve(name === 'withDaily' ? only : found([]))
+      );
+      const output = String(await searchCode.run({ query: 'withDaily withPurpose', definition: true }, context));
+      expect(output).toContain('declare `withDaily`');
+      expect(output).toContain('Nothing in the files declares `withPurpose`');
+    });
+
+    it('answers by meaning when none of them is declared anywhere', async () => {
+      ripgrep.definitionSearch.mockResolvedValue(found([]));
+      embeddings.search.mockResolvedValue(found([{ path: 'src/a.ts', blocks: [[{ line: 9, text: 'uses them' }]] }]));
+      const output = String(await searchCode.run({ query: 'withDaily withPurpose', definition: true }, context));
+      expect(output).toContain('declares `withDaily` or `withPurpose`');
+      expect(output).toContain('9: uses them');
+    });
+  });
+
   it('is not the search that fails when the definition search does', async () => {
     ripgrep.definitionSearch.mockRejectedValue(new Error('ripgrep (rg) is not installed.'));
     embeddings.search.mockResolvedValue(found([{ path: 'src/a.ts', blocks: [[{ line: 9, text: 'by meaning' }]] }]));
     const output = String(await searchCode.run({ query: 'interface Thread' }, context));
     expect(output).toBe('src/a.ts\n  9: by meaning');
+  });
+});
+
+// styles.css is 61 KB of selectors cut into pieces at its braces, and every
+// piece means much the same thing, so a query naming the selectors it wanted
+// came back with the end of the file. index.html went the same way: asked for
+// `id="composer"`, `id="input"` and `id="send"`, three consecutive lines of
+// it, it answered with `</body></html>`, and the reply ran grep.
+describe('a file with no prose in it', () => {
+  const markup = found([{ path: 'index.html', blocks: [[{ line: 70, text: '<form id="composer">' }]] }]);
+
+  it('answers by the words of the query, not by what they mean', async () => {
+    ripgrep.keywordSearch.mockResolvedValue(markup);
+    const output = String(
+      await searchCode.run({ query: 'composer input textarea send button', path: 'index.html' }, context)
+    );
+    expect(output).toContain('70: <form id="composer">');
+    expect(output).toContain('no prose');
+    expect(embeddings.search).not.toHaveBeenCalled();
+  });
+
+  it('does it for a glob over such files as well as for one of them', async () => {
+    ripgrep.keywordSearch.mockResolvedValue(markup);
+    await searchCode.run({ query: 'question options send', path: '*.css' }, context);
+    expect(ripgrep.keywordSearch).toHaveBeenCalled();
+  });
+
+  it('leaves the files that do hold prose to the search by meaning', async () => {
+    embeddings.search.mockResolvedValue(found([{ path: 'src/a.ts', blocks: [[{ line: 1, text: 'by meaning' }]] }]));
+    await searchCode.run({ query: 'where the composer is drawn', path: 'src/renderer' }, context);
+    expect(ripgrep.keywordSearch).not.toHaveBeenCalled();
+    expect(embeddings.search).toHaveBeenCalled();
+  });
+
+  it('falls through to the search by meaning when none of the words are there', async () => {
+    ripgrep.keywordSearch.mockResolvedValue(found([]));
+    embeddings.search.mockResolvedValue(found([{ path: 'styles.css', blocks: [[{ line: 9, text: 'by meaning' }]] }]));
+    const output = String(await searchCode.run({ query: 'the dark theme', path: 'styles.css' }, context));
+    expect(output).toContain('9: by meaning');
   });
 });
 
@@ -430,5 +615,210 @@ describe("what a pattern's own words are worth", () => {
     const output = String(await searchCode.run({ query: '\\d+|\\s{2,}' }, context));
     expect(output).toContain('no words');
     expect(embeddings.search).not.toHaveBeenCalled();
+  });
+
+  it('stops there the same way when the pattern was the one asked for', async () => {
+    ripgrep.regexSearch.mockResolvedValue(found([]));
+    const output = String(await searchCode.run({ query: '\\d+|\\s{2,}', regex: true }, context));
+    expect(output).toContain('no words');
+    expect(embeddings.search).not.toHaveBeenCalled();
+  });
+});
+
+// The greps run through run_reading_command in a week of threads, nearly all
+// of which were this tool's to answer, and what each of them needed from it
+describe('a search written the way grep is', () => {
+  describe("grep's own way of writing a pattern", () => {
+    it('swaps its operators for ripgrep’s, which is all the difference between the two', () => {
+      expect(fromGrep('isFast\\|prefer')).toBe('isFast|prefer');
+      // A bare ( is grep's literal bracket and ripgrep's group: the commonest
+      // way one of these failed to run at all
+      expect(fromGrep('conversation(\\|images')).toBe('conversation\\(|images');
+      expect(fromGrep('\\(open\\|close\\)d\\+')).toBe('(open|close)d+');
+      // What is the same in both stays as it is
+      expect(fromGrep('\\bdaily\\b\\|a\\.b')).toBe('\\bdaily\\b|a\\.b');
+    });
+
+    it('leaves a class of characters as it was written', () => {
+      expect(fromGrep('[(|]\\|x')).toBe('[(|]|x');
+      expect(fromGrep('[]a]\\|x')).toBe('[]a]|x');
+    });
+
+    it('takes a pattern for grep’s only where it has a \\| in it', () => {
+      expect(fromGrep('fetch\\(|get\\(')).toBeUndefined();
+      expect(fromGrep('TODO|FIXME')).toBeUndefined();
+      // An escaped backslash before a | is not grep's "or"
+      expect(fromGrep('a\\\\|b')).toBeUndefined();
+    });
+
+    it('runs the translation, and says it did', async () => {
+      ripgrep.regexSearch.mockResolvedValue(found([{ path: 'src/a.ts', blocks: [[{ line: 3, text: 'isFast' }]] }]));
+      const output = String(await searchCode.run({ query: 'isFast\\|prefer', regex: true }, context));
+      expect(ripgrep.regexSearch.mock.calls[0][1]).toBe('isFast|prefer');
+      expect(output).toContain('the way grep writes one');
+      expect(output).toContain('`isFast|prefer`');
+      expect(output).toContain('3: isFast');
+    });
+
+    it('translates one it worked out was a pattern as well as one it was told was', async () => {
+      ripgrep.regexSearch.mockResolvedValue(found([{ path: 'src/a.ts', blocks: [[{ line: 3, text: 'turnOf' }]] }]));
+      await searchCode.run({ query: 'turnOf\\|request.asked' }, context);
+      expect(ripgrep.regexSearch.mock.calls[0][1]).toBe('turnOf|request.asked');
+    });
+  });
+
+  describe('every line a name is on', () => {
+    it('reads the strings out of the query at its |s, written either way', () => {
+      expect(literals('hasTools|readByUser')).toEqual(['hasTools', 'readByUser']);
+      expect(literals("turnOf\\|'done' | request.asked")).toEqual(['turnOf', "'done'", 'request.asked']);
+      expect(literals('The app closed before this finished')).toEqual(['The app closed before this finished']);
+    });
+
+    it('matches each of them as written, so a dot or a bracket is only itself', async () => {
+      ripgrep.regexSearch.mockResolvedValue(found([{ path: 'src/a.ts', blocks: [[{ line: 9, text: 'turnOf(x)' }]] }]));
+      const output = String(await searchCode.run({ query: 'turnOf(|request.asked', literal: true }, context));
+      expect(ripgrep.regexSearch.mock.calls[0][1]).toBe('turnOf\\(|request\\.asked');
+      expect(output).toBe('src/a.ts\n  9: turnOf(x)');
+    });
+
+    it('lists the lines alone: no definitions above them and no search by meaning', async () => {
+      ripgrep.regexSearch.mockResolvedValue(found([{ path: 'src/a.ts', blocks: [[{ line: 9, text: 'hasTools()' }]] }]));
+      await searchCode.run({ query: 'hasTools', literal: true }, context);
+      expect(ripgrep.definitionSearch).not.toHaveBeenCalled();
+      expect(embeddings.search).not.toHaveBeenCalled();
+    });
+
+    // Nothing containing it is the answer to what was asked, and it is said
+    // as that rather than as "No matches.", which a model reads as a search
+    // that went wrong
+    it('says plainly where nothing contains it, rather than answering something else', async () => {
+      ripgrep.regexSearch.mockResolvedValue(found([]));
+      const output = String(
+        await searchCode.run({ query: 'hasTools|readByUser', literal: true, path: 'src' }, context)
+      );
+      expect(output).toBe('No line in src contains "hasTools" or "readByUser", as written.');
+      expect(embeddings.search).not.toHaveBeenCalled();
+    });
+
+    it('says how to look for several where one string with spaces in it was found nowhere', async () => {
+      ripgrep.regexSearch.mockResolvedValue(found([]));
+      const output = String(await searchCode.run({ query: 'hasTools readByUser', literal: true }, context));
+      expect(output).toContain('separated by |');
+    });
+
+    it('matches whatever the case when asked to, and not otherwise', async () => {
+      ripgrep.regexSearch.mockResolvedValue(found([]));
+      await searchCode.run({ query: 'always allow', literal: true, ignore_case: true }, context);
+      expect(lastAsked(ripgrep.regexSearch).ignoreCase).toBe(true);
+      await searchCode.run({ query: 'always allow', literal: true }, context);
+      expect(lastAsked(ripgrep.regexSearch).ignoreCase).toBe(false);
+    });
+
+    it('has the wider limits of a search matched against the text', async () => {
+      ripgrep.regexSearch.mockResolvedValue(found([]));
+      await searchCode.run({ query: 'hasTools', literal: true }, context);
+      expect(lastAsked(ripgrep.regexSearch)).toMatchObject({ limit: 50, maxPerFile: 26 });
+    });
+  });
+
+  describe('where it was told to look', () => {
+    it('reads a path under the container’s working directory as the workspace’s own', () => {
+      expect(relative('/workspace/src/main.ts')).toBe('src/main.ts');
+      expect(relative('./src/renderer/')).toBe('src/renderer');
+      expect(relative('/workspace')).toBe('');
+      expect(relative('.')).toBe('');
+    });
+
+    it('takes several paths, as a list or as grep is given them', () => {
+      expect(pathsIn('src/main.ts src/preload.ts', 'path')).toEqual(['src/main.ts', 'src/preload.ts']);
+      expect(pathsIn('/workspace/src/main.ts, tests', 'path')).toEqual(['src/main.ts', 'tests']);
+      expect(pathsIn(['src/a.ts', '/workspace/src/b.ts'], 'path')).toEqual(['src/a.ts', 'src/b.ts']);
+      // A glob's own commas are not a list
+      expect(pathsIn('src/**/*.{ts,css}', 'path')).toEqual(['src/**/*.{ts,css}']);
+      // The whole workspace is no narrowing at all
+      expect(pathsIn('/workspace', 'path')).toBeUndefined();
+      expect(() => pathsIn(7, 'path')).toThrow('"path" must be a path, a glob, or a list of them.');
+    });
+
+    it('keeps what any of the paths covers and none of what is left out', () => {
+      const kept = covers(['src/main.ts', 'tests'], ['tests/fixtures']);
+      expect(kept('src/main.ts')).toBe(true);
+      expect(kept('tests/a.test.ts')).toBe(true);
+      expect(kept('src/preload.ts')).toBe(false);
+      expect(kept('tests/fixtures/x.ts')).toBe(false);
+      expect(covers()('anything.ts')).toBe(true);
+    });
+
+    // Written under /workspace, a path matched no file the embeddings list,
+    // and a search by meaning narrowed that way came back empty
+    it('narrows a search by meaning to a path written under the working directory', async () => {
+      await searchCode.run({ query: 'where settings are saved', path: '/workspace/src' }, context);
+      const asked = lastAsked(embeddings.search);
+      expect(asked.path).toEqual(['src']);
+      expect(asked.keep('src/settings.ts')).toBe(true);
+    });
+
+    it('hands both lists to ripgrep, and cuts the answer to them as well', async () => {
+      ripgrep.regexSearch.mockResolvedValue(
+        found([
+          { path: 'src/llm/index.ts', blocks: [[{ line: 1, text: 'image' }]] },
+          { path: 'src/llm/providers/a.ts', blocks: [[{ line: 2, text: 'image' }]] },
+        ])
+      );
+      const output = String(
+        await searchCode.run(
+          { query: 'image', literal: true, path: 'src/llm', exclude: '/workspace/src/llm/providers' },
+          context
+        )
+      );
+      expect(lastAsked(ripgrep.regexSearch)).toMatchObject({ path: ['src/llm'], exclude: ['src/llm/providers'] });
+      expect(output).toBe('src/llm/index.ts\n  1: image');
+    });
+
+    it('answers by the words of the query where every path it was given holds no prose', async () => {
+      ripgrep.keywordSearch.mockResolvedValue(
+        found([{ path: 'index.html', blocks: [[{ line: 70, text: '<form id="composer">' }]] }])
+      );
+      await searchCode.run({ query: 'composer send', path: 'index.html styles.css' }, context);
+      expect(ripgrep.keywordSearch).toHaveBeenCalled();
+    });
+  });
+
+  describe('an answer the limits cut short', () => {
+    it('says how much it left out, and how to see the rest', async () => {
+      ripgrep.regexSearch.mockResolvedValue(
+        found([
+          { path: 'src/a.ts', blocks: [block(1, 9)] },
+          { path: 'src/b.ts', blocks: [block(1, 2)] },
+        ])
+      );
+      const output = unwrapped(String(await searchCode.run({ query: 'x', literal: true, max_per_file: 3 }, context)));
+      expect(output).toContain('at least 6 further lines in 1 file was left out');
+      expect(output).toContain('max_per_file (3)');
+      expect(output).toContain('Raise them');
+    });
+
+    it('counts what trim leaves out, by line and by file', () => {
+      const result = trim(
+        found([
+          { path: 'a.ts', blocks: [block(1, 5)] },
+          { path: 'b.ts', blocks: [block(1, 5)] },
+        ]),
+        asking({ limit: 6, maxPerFile: 4 })
+      );
+      expect(result.cut).toEqual({ items: 4, files: 2 });
+    });
+
+    it('says nothing of the kind when nothing was left out', async () => {
+      ripgrep.regexSearch.mockResolvedValue(found([{ path: 'src/a.ts', blocks: [block(1, 2)] }]));
+      const output = String(await searchCode.run({ query: 'x', literal: true }, context));
+      expect(output).not.toContain('left out');
+    });
+
+    it('gives a pattern that fell through to the search by meaning that search’s own limit', async () => {
+      ripgrep.regexSearch.mockResolvedValue(found([]));
+      await searchCode.run({ query: 'archive|archived$' }, context);
+      expect(lastAsked(embeddings.search).limit).toBe(20);
+    });
   });
 });

@@ -1,0 +1,7 @@
+{
+  "about": "Failures: say 'status' for an HTTP 500 from the model server, 'midway' for a model that fails part way through its reply. Anything else is answered as usual.",
+  "rules": [
+    { "when": "status", "error": 500 },
+    { "when": "midway", "error": "the model ran out of memory" }
+  ]
+}

@@ -79,6 +79,9 @@ export function callDetails(calls: Message[]): HTMLDetailsElement {
   details.className = failed > 0 ? 'failed' : unfinished ? 'running' : 'succeeded';
   // Whatever images the calls came back with, under their text
   for (const image of calls.flatMap((m) => m.images ?? [])) {
+    // One whose bytes fell out of the sidecar's cap (see renderer/threads.ts)
+    // is only a name now, and draws nothing
+    if (!image.data) continue;
     const img = document.createElement('img');
     img.className = 'tool-image';
     img.src = `data:${image.mediaType};base64,${image.data}`;

@@ -1,0 +1,11 @@
+{
+  "about": "A slow reply that reasons first, for watching streaming, the thinking display and stopping a reply part way.",
+  "rules": [
+    {
+      "purpose": "reply",
+      "think": "Thinking it over slowly, one piece at a time, so that the reasoning can be watched as it arrives.",
+      "reply": "This reply arrives slowly, a few characters at a time, so that the streaming can be watched and a reply can be stopped before it has finished. It goes on for a while yet, sentence after sentence, until it is done.",
+      "delayMs": 150
+    }
+  ]
+}

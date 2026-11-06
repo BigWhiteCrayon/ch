@@ -16,18 +16,25 @@ export interface RawReply {
   content: unknown;
 }
 
-// An image a tool returned, base64 encoded
-export type ToolImage = { mediaType: 'image/png' | 'image/jpeg'; data: string };
+// An image the model is shown, base64 encoded: a tool's screenshot, or one the
+// user attached to a message (see the user variant of ChatMessage below). The id
+// names it in the sidecar that keeps its bytes between sessions (see the media
+// bridge on ThreadsBridge), so the bytes can live beside the thread's JSON
+// rather than in it, and are absent until that sidecar is read back.
+export type ToolImage = { id?: string; mediaType: 'image/png' | 'image/jpeg' | 'image/webp'; data?: string };
 
 // A clip a tool recorded, base64 encoded. It goes to the user and no further:
 // no provider this app talks to has a video channel at all (see the tool-role
 // message below, which carries images only), so what the model is given of a
 // recording is frames out of it as ordinary images. Kept apart from ToolImage
 // for that reason — the two have different audiences.
-export type ToolVideo = { mediaType: 'video/webm'; data: string };
+export type ToolVideo = { id?: string; mediaType: 'video/webm'; data?: string };
 
 export type ChatMessage =
-  | { role: 'user'; content: string }
+  // `images` are what the user attached to the message, shown to the model as
+  // it reads the turn (the providers turn them into their own image blocks, see
+  // the user branch of each toMessages). A message may carry images and no words
+  | { role: 'user'; content: string; images?: ToolImage[] }
   | { role: 'assistant'; content: string; toolCalls?: ToolCall[]; raw?: RawReply }
   | { role: 'tool'; toolCallId: string; name: string; content: string; isError: boolean; images?: ToolImage[] };
 
@@ -82,7 +89,12 @@ export interface Usage {
   cacheRead?: number;
 }
 
-export type ErrorCode = 'auth' | 'rate_limit' | 'spend_limit' | 'unreachable' | 'other';
+// 'unreachable' is a server that was not reached at all, which is what one
+// still starting up looks like and is worth asking again. 'stalled' is the
+// opposite and is not: a server that took the request and then went quiet may
+// still be working on it, so another copy of the same question only adds to
+// what it has to get through (see llm/transport.failure).
+export type ErrorCode = 'auth' | 'rate_limit' | 'spend_limit' | 'unreachable' | 'stalled' | 'other';
 
 export interface TextEvent {
   type: 'text';
@@ -119,10 +131,11 @@ export interface ErrorEvent {
   retryAfterMs?: number;
 }
 
-// The provider is being asked for more than it will give, and the request is
-// being made again after a wait rather than given up on (see llm/index.ts).
-// Comes before the attempt it is waiting for, and never after anything of an
-// answer has arrived: a reply half written is not one to start again.
+// The provider is being asked for more than it will give, or could not be
+// reached at all, and the request is being made again after a wait rather than
+// given up on (see llm/index.ts). Comes before the attempt it is waiting for,
+// and never after anything of an answer has arrived: a reply half written is
+// not one to start again.
 export interface RateLimitedEvent {
   type: 'rate_limited';
   // Which attempt has just been turned away, and how many there will be
@@ -132,6 +145,8 @@ export interface RateLimitedEvent {
   after: number;
   // What the provider said
   message: string;
+  // There was no server to turn it away, rather than one that said to wait
+  unreachable?: boolean;
 }
 
 // What the call has used so far, while it is still being written. Cumulative
@@ -271,6 +286,9 @@ export interface HostedSettings {
 export interface LocalSettings {
   baseURL: string;
   apiKey: string;
+  // The most context a local model is loaded with, for a machine without the
+  // memory for all a model can take. Left out, it is given all of it.
+  maxContext?: number;
 }
 
 export interface Settings {
@@ -340,7 +358,8 @@ export type FileAccessAnswer = 'deny' | 'once' | 'thread' | 'file' | 'folder';
 export interface SettingsPatch {
   anthropic?: { apiKey?: string | null; disabledModels?: string[] };
   openai?: { apiKey?: string | null; disabledModels?: string[] };
-  local?: { apiKey?: string | null; baseURL?: string };
+  // A maxContext of null takes the limit away
+  local?: { apiKey?: string | null; baseURL?: string; maxContext?: number | null };
   sophistication?: Record<string, number>;
   sandbox?: { image?: string };
   offline?: boolean;
@@ -355,7 +374,7 @@ export interface SettingsPatch {
 export interface PublicSettings {
   anthropic: { hasKey: boolean; disabledModels: string[] };
   openai: { hasKey: boolean; disabledModels: string[] };
-  local: { baseURL: string; hasKey: boolean };
+  local: { baseURL: string; hasKey: boolean; maxContext?: number };
   sophistication: Record<string, number>;
   sandbox: SandboxSettings;
   offline: boolean;
@@ -406,6 +425,12 @@ export interface ToolContext {
   // answer: a reply to a message, not a subagent or a look at a workspace
   // (see tools/ask.ts and the 'question' event).
   ask?(question: string, options: string[]): Promise<string>;
+  // Asks the loop running this model for more rounds of tool calls than its
+  // allowance holds, and answers in the words the model reads: granted, or
+  // refused with the reason (see harness/allowance.ts and tools/steps.ts).
+  // Unset where nothing is counting its rounds, which is a reply given no
+  // ceiling at all (see HarnessRequest.rounds).
+  more?(reason: string): string;
 }
 
 export interface Tool extends ToolSpec {
@@ -437,9 +462,6 @@ export interface Tool extends ToolSpec {
   needsWorkspace?: boolean;
   // Only offered in a general chat, which has no workspace: for what is of use only until it has one
   generalOnly?: boolean;
-  // Only offered to a subagent, and never in a reply of its own: for what is a subagent's to decide while it works
-  // and the reply's to decide by other means (see tools/branches.ts, and specsFor in subagents/run.ts)
-  agentOnly?: boolean;
   // Only offered when the message carries review comments (see harness/review.ts)
   needsReview?: boolean;
   // Writes the note on the workspace's project. Not offered while a first look
@@ -471,14 +493,14 @@ export function splitToolReturn(value: unknown): { text: unknown; images?: ToolI
 export type Effort = 'low' | 'medium' | 'high';
 
 // The kind of task a message is; sets which instructions the model is given
-export type Category = 'coding' | 'question' | 'investigation' | 'general';
+export type Category = 'coding' | 'question' | 'investigation' | 'suggestion' | 'general';
 
 // The steps a coding change is worked through, in order (see
 // harness/phases.ts). Each is finished before the next begins, and each is
 // given the step before it rather than everything that has happened: what
 // carries forward is what the last step wrote down, not the tool calls it
 // made getting there.
-export type Phase = 'explore' | 'plan' | 'execute' | 'respond' | 'report';
+export type Phase = 'explore' | 'plan' | 'execute' | 'respond' | 'report' | 'suggest';
 
 // How a thread plans a coding change: 'always' does, 'never' does not, and
 // 'auto' asks about each task with a prompt of its own (see harness/planner.ts)
@@ -668,6 +690,10 @@ export interface VerificationRequest {
   // capable. Absent where that is not known: the most capable model checks.
   provider?: string;
   model?: string;
+  // The workspace the thread was started in. With one, the changes are tried as
+  // well as read: by a reviewer in the thread's container that runs the
+  // project's checks and uses the app (see harness/verifier.ts).
+  workspace?: string;
 }
 
 export interface Verification {
@@ -676,6 +702,13 @@ export interface Verification {
   problems: string;
   // The model that did the checking
   model: string;
+  // Whether the changes were tried — the project's checks run, the app used —
+  // and not only read (see harness/verifier.ts)
+  tested?: boolean;
+  // What the reviewer did to check them, in its own words: a line per command
+  // run or thing done in the app, and what came of it. Only where they were
+  // tried.
+  checked?: string;
   // Changed files the review did not reach, where there were more than it
   // looks over at once (see harness/verifier.ts). Absent where it saw them all.
   unreviewed?: number;
@@ -812,9 +845,9 @@ export type HarnessEvent =
   // A general chat has moved into a workspace of its own (see tools/workspaces.ts). The reply that said so goes on
   // as it began, with the instructions and tools it started with; the thread is in the workspace from its next message.
   | { type: 'workspace'; workspace: string }
-  // A subagent has put the thread it is working in on a branch of its own (see tools/branches.ts). Only where the
-  // thread's work goes changes: the files in its container stay as they are, and the branch's worktree is the folder
-  // the thread's changes are written back to from now on.
+  // The reply or a subagent has put the thread it is working in on a branch of its own (see tools/branches.ts). Only
+  // where the thread's work goes changes: the files in its container stay as they are, and the branch's worktree is the
+  // folder the thread's changes are written back to from now on.
   | { type: 'branch'; branch: { name: string; base: string; worktree: string } }
   // Waiting its turn for a local model: either the model is busy with a
   // request that was already in progress, or it is holding another
@@ -830,7 +863,7 @@ export type HarnessEvent =
   | FellBackEvent
   | { type: 'step'; step: number }
   // Which step of a coding change the reply has reached (see harness/phases.ts)
-  | { type: 'phase'; phase: Phase; investigation?: boolean }
+  | { type: 'phase'; phase: Phase; investigation?: boolean; suggestion?: boolean }
   // What the model says it is going to change, written before it changes
   // anything and shown to the user as its own thing
   // Any pictures or clips the finding-out step took are sent with it, so the
@@ -1089,8 +1122,23 @@ export interface ThreadsBridge {
   save(state: string): void;
   // As save, but does not return until it is on disk: for when the window is closing
   saveNow(state: string): void;
+  // The screenshots and clips a reply took, kept out of the threads JSON so a
+  // thread does not grow tens of megabytes of base64 (see save in
+  // renderer/threads.ts): written to a sidecar beside it, keyed by each item's
+  // id. Never throws; a failure is logged and the next one tries again.
+  saveMedia(items: { id: string; mediaType: string; data: string }[]): void;
+  // The sidecar's contents, as a map of id -> the item's bytes, or null if it
+  // was never written. The window hangs these back on the media the JSON names
+  // by id when it loads (see load in renderer/threads.ts).
+  loadMedia(): string | null;
   // What is known about a workspace: the note on its project as it stands
   workspace(workspace: string): Promise<WorkspaceDetails>;
+  // A file in the workspace, read by the relative name a reply gave it (and,
+  // where the reply named a range, its first and last lines). It is the user's
+  // own workspace, read at the user's own click to show what a reply pointed
+  // at, so nothing is asked about it; a path that would reach outside the
+  // workspace is refused (see WorkspaceFile.outside).
+  workspaceFile(workspace: string, relPath: string, from?: number, to?: number): Promise<WorkspaceFile>;
   // What this thread keeps for itself, and what it has made of that note
   details(threadId: string, workspace?: string): Promise<ThreadDetails>;
   // The workspaces an explorer is going through right now, for a window that
@@ -1216,6 +1264,30 @@ export interface AppliedChanges {
   skipped: { path: string; reason: string }[];
   // What went wrong, if applying failed outright
   error?: string;
+}
+
+// What a file in a workspace is, read by the name a reply gave it (see
+// workspaceFile on ThreadsBridge). It has `lines` and `total` where the file
+// was found and is text, or one of the fields below instead, naming why nothing
+// could be shown.
+export interface WorkspaceFile {
+  // The file as read, relative to the workspace, so the reader and the thing
+  // that asked for it name it the same way
+  path: string;
+  // The lines that were read, each without its number, in order
+  lines?: string[];
+  // The line the first of them is, 1-based
+  from?: number;
+  // How many lines the file has in all
+  total?: number;
+  // How many lines there were past the ones shown, if the file ran longer
+  more?: number;
+  // One of these set instead of `lines`: what went wrong in reading it
+  notFound?: boolean;
+  binary?: boolean;
+  tooLarge?: boolean;
+  // A path that would reach outside the workspace, which is refused
+  outside?: boolean;
 }
 
 export interface OllamaBridge {

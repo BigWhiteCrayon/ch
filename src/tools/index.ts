@@ -19,6 +19,7 @@ import * as reading from './reading';
 import * as review from './review';
 import * as sandbox from './sandbox';
 import * as search from './search';
+import * as steps from './steps';
 import * as subagents from './subagents';
 import * as sync from './sync';
 import * as workspaces from './workspaces';
@@ -35,6 +36,7 @@ export {
   review,
   sandbox,
   search,
+  steps,
   subagents,
   sync,
   workspaces,
@@ -53,6 +55,9 @@ export const all: Tool[] = [
   ...notes.tools,
   ...subagents.tools,
   ask.tool,
+  // Asking for more rounds than the allowance holds, which every loop that
+  // counts rounds answers (see ../harness/allowance.ts)
+  steps.tool,
   sync.tool,
   diff.tool,
   // Last, so that the tools a general chat has and a workspace chat has not are at the end of the list it is sent

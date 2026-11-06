@@ -24,6 +24,7 @@ import type {
   ThreadHit,
   WorkspaceDetails,
   WorkspaceNote,
+  WorkspaceFile,
   FileAccessAnswer,
   HarnessEvent,
   PlanMode,
@@ -54,6 +55,7 @@ export type {
   ThreadHit,
   WorkspaceDetails,
   WorkspaceNote,
+  WorkspaceFile,
   FileAccessAnswer,
   HarnessEvent,
   PlanMode,
@@ -199,7 +201,7 @@ export interface ReviewComment {
   path: string;
   row: string;
   line: number | null;
-  entries: { from: 'user' | 'assistant'; text: string; sent?: boolean }[];
+  entries: { from: 'user' | 'assistant'; text: string; sent?: boolean; at?: number }[];
 }
 
 export interface Thread {

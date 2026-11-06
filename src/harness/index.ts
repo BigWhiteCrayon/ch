@@ -40,6 +40,7 @@ import type {
   Usage,
 } from '../types';
 import * as access from './access';
+import * as allowance from './allowance';
 import { announcing } from './announced';
 import * as discoveries from './discoveries';
 import * as notes from './notes';
@@ -64,6 +65,7 @@ import { ADD_TO_CONTEXT, toolsPrompt } from '../tools/sandbox';
 
 export {
   access,
+  allowance,
   announcing,
   describe,
   grounding,
@@ -133,6 +135,15 @@ together set out, quoting the code concerned in fenced snippets, each with the p
 diagram where the flow is clearer drawn. Be accurate above all: say what was checked and what was not, rather than
 guess.`,
 
+  suggestion: `This is a suggestion: the user wants to know how something could be changed, not for the change to be
+made. Find out how the code stands now, and put forward a concrete way to change it — the change made only to show it,
+in a demo copy that is reverted, so that what the user is left with is the explanation and the suggestion, not the
+change itself. For a change that is visual show it: make it in the demo copy and take a screenshot of the state as it is
+now and the state as you suggest it, so the user sees before and after. For a change that is not visual, say it with
+snippets of the code as it stands and as you would change it, each with the path of the file it comes from, and a
+diagram where the flow is clearer drawn. Be accurate above all: say what was checked and what was not, rather than
+guess.`,
+
   general: `This is a general request, such as conversation, writing or brainstorming. Match what the user is after:
 a greeting or small talk gets a short, friendly reply, a request for a piece of writing gets the piece itself in the
 tone and length asked for, and a request for ideas gets a varied set of concrete options. Do not pad the reply with
@@ -162,7 +173,10 @@ say that you did.
 * Make the change in those files and carry the task through to the end. Where you can, break up the changes into
 smaller subjects and send them out to sub-agents through hand_to_subagent.
 
-Ensure you run the code and its tests, whenever you modify a file if there are tests.
+Whenever you modify a file, check it: run the project's tests where there are tests, and where the change is to
+something the app does, use the app itself with use_app — give it the data the feature needs, do what the user would
+do, and read back what it shows. Where neither covers the change, add a test beside the project's own. Not a script
+of your own in /tmp: it checks the code apart from the app, and nobody sees it again.
 
 Where the change is to how something looks, or the user asked to see something, the screenshot belongs to this step
 rather than to the reply: draw the result with the screenshot tool, look at it, and put right what is wrong before
@@ -179,7 +193,9 @@ HTML or images, which are not displayed. To show how parts connect, draw a diagr
 named mermaid holding a flowchart, such as flowchart TD on the first line, then lines like A[Parser] --> B{Valid?}
 and B -->|yes| C(Cache). Draw diagrams top-down, with at most 3 nodes side by side and short labels. Give nodes
 short ids, and keep the same ids if you draw the diagram again. Only flowcharts are drawn; anything else in a mermaid
-block is shown as code. A user message that starts with > lines is quoting part of an earlier reply, or a diagram
+block is shown as code. Where you point the user at a part of the code, name it as a fenced code block called file,
+one file per line, its path relative to the top of the workspace and, for a part of it, the lines as :123 or :123-140,
+which the user opens to read. A user message that starts with > lines is quoting part of an earlier reply, or a diagram
 node or edge written as [diagram N, node "X"] or [diagram N, edge "A->B"], and the text after the quote is the user's
 comment on that part.`;
 
@@ -279,9 +295,10 @@ function plainPrompt(
   const withTools = names.length > 0;
   const budget = phase === 'explore' && finding ? phases.BUDGET(finding.rounds, finding.tight) : '';
   const step = phase ? [phases.PROMPTS[phase], budget] : [];
-  // An investigation is worked through in steps whatever the task's category
+  // An investigation or a suggestion is worked through in steps whatever the
+  // task's category
   const ordering =
-    category === 'coding' || category === 'investigation'
+    category === 'coding' || category === 'investigation' || category === 'suggestion'
       ? [...step, ...(phase ? [] : [CODING_STEPS])].filter(Boolean).join('\n\n')
       : '';
   // How to write for the user, for the steps whose words a user reads. What
@@ -631,7 +648,7 @@ async function systemPrompt(
           // no user reads: the finding out is where the findings are made, and
           // it is the step FORMAT_PROMPT is left out of (see plainPrompt)
           discoveries.prompt(provider, phase),
-          toolsPrompt(toolNames),
+          toolsPrompt(toolNames, workspace),
           showPrompt(toolNames, phase),
           subagents.prompt(task.sophistication, true, phase),
           workspace ? sandbox.workspacePrompt(workspace, changing(toolNames, phase)) : '',
@@ -855,7 +872,10 @@ export async function* run(
   // asks for the same for every reply, for the speed of it.
   const looking = project.looking().length > 0;
   const prefer = looking || llm.isFast() ? 'hosted' : undefined;
-  const vision = asked.messages.some((m) => m.role === 'tool' && (m.images?.length ?? 0) > 0);
+  // Vision: the request carries images the model has to see — a screenshot a
+  // tool took, or one the user attached to a message — so only a model that
+  // takes them is chosen, where there is one
+  const vision = asked.messages.some((m) => (m.role === 'tool' || m.role === 'user') && m.images?.length);
   const routed = route(models, classification, { ...asked, vision }, prefer);
   if (!routed) {
     const reasons = providers.filter((p) => !p.ok).map((p) => `${p.name}: ${p.error}`);
@@ -936,11 +956,7 @@ export async function* run(
     .list()
     .filter((tool) => workspace || !tool.needsWorkspace)
     .filter((tool) => !workspace || !tool.generalOnly)
-    // A subagent's own, never offered in a reply of its own: see
-    // ../tools/branches.ts. This reply may be a subagent's, in which case they
-    // are exactly what it is here for.
-    .filter((tool) => agent || !tool.agentOnly)
-    // ...and what no subagent may do, whatever else it is given: ask the user,
+    // What no subagent may do, whatever else it is given: ask the user,
     // replace the workspace's note, move the thread, or record for somebody to
     // watch. All four belong to the reply that sent it, and an agent is one of
     // several at work out of the user's sight (see allows in
@@ -1064,7 +1080,7 @@ export async function* run(
     const key = phase ?? '';
     let system = built.get(key);
     if (system === undefined) {
-      system = await systemPrompt(threadId, task, workspace, names, chosen.provider, phase, allowance);
+      system = await systemPrompt(threadId, task, workspace, names, chosen.provider, phase, allowanceSaid);
       built.set(key, system);
     }
     return system;
@@ -1091,7 +1107,11 @@ export async function* run(
   // asked for another one: an agent subagent is given a job and no ceiling at
   // all (see HarnessRequest.rounds)
   const bought = maxSteps(task.effort, Boolean(workspace));
-  const limit = rounds ?? bought;
+  // What bounds the reply before anything is granted, and what bounds it now:
+  // the second grows when the model asks for more rounds and is given them
+  // (see ./allowance.ts and the loop below).
+  const bound = rounds ?? bought;
+  let limit = bound;
   // ...of which the finding-out step gets a share and no more (see phases.ts),
   // bounded by what its window holds as well as by what its effort bought. It
   // is told the number as well as held to it.
@@ -1101,9 +1121,27 @@ export async function* run(
   // reading and writes down what it has. That step is what keeps the window
   // from filling with file contents before there is a plan to fit in it, and a
   // share of no ceiling would be no share at all.
-  const share = Math.min(limit, bought);
+  const share = Math.min(bound, bought);
   const finding = phases.findingRounds(share, window);
-  const allowance: Finding = { rounds: finding, tight: phases.windowBound(share, window) };
+  const allowanceSaid: Finding = { rounds: finding, tight: phases.windowBound(share, window) };
+  // Rounds the model may ask for rather than be cut off at (see
+  // ./allowance.ts). Two of them, because the reply is bounded in two places:
+  // the finding-out step's share of the rounds, and the step budget every
+  // other step runs on.
+  //
+  // Only the first is refused for want of room. The finding-out step ends when
+  // its window fills rather than condensing — what condensing would throw away
+  // is the tool results its whole output is drawn from (see the loop below) —
+  // so rounds granted there with the window full are rounds with nowhere to
+  // put what they return. Every other step condenses and carries on, so a full
+  // window is not what bounds it.
+  let roomToLook = true;
+  const findingMore = allowance.create(finding, {
+    room: () => roomToLook,
+    label: 'the finding-out step',
+    where: { ...where, scope: 'explore' },
+  });
+  const working = allowance.create(bound, { label: 'this reply', where: { ...where, scope: 'reply' } });
   // The doing step has no such allowance: its reading is how it finds out that
   // the plan is wrong, which is the one thing nothing before it can do for it,
   // and what bounds it is the step budget and the window (see phases.ts, where
@@ -1217,7 +1255,9 @@ export async function* run(
   // thread is asked about this task, once, with a prompt of its own (see
   // planner.ts): only a task that is a coding change in a workspace is worth
   // the question. An investigation is not asked: it has no plan to decide on.
-  if (order && planning !== 'always' && task.category !== 'investigation') {
+  // Neither is a suggestion: it is worked through the same two steps an
+  // investigation is, and the planner would ask about a plan it will not have.
+  if (order && planning !== 'always' && task.category !== 'investigation' && task.category !== 'suggestion') {
     const deciding = performance.now();
     const decision = await decide({ messages: asked.messages, summary }, models, signal);
     const { provider, model, usage: spent } = decision;
@@ -1240,6 +1280,9 @@ export async function* run(
   // something it did not already have. What the finding-out step is held to
   // (see phases.findingRounds and WRITES_DOWN).
   let looked = 0;
+  // The budget whose last round the model has been told about, so that it is
+  // told once per budget rather than once per round (see allowance.LAST_ROUND)
+  let warnedAt = 0;
   // ...and whether it has been told its rounds are gone, which is said once
   let told = false;
   // Files the step in hand has actually had open: what it read itself, what an
@@ -1257,10 +1300,20 @@ export async function* run(
   let sentBefore: cachelock.Shape | undefined;
   if (phase) {
     log.info('phase.start', { ...where, phase, steps: order?.length });
-    yield { type: 'phase', phase, ...(task.category === 'investigation' ? { investigation: true } : {}) };
+    yield {
+      type: 'phase',
+      phase,
+      ...(task.category === 'investigation' ? { investigation: true } : {}),
+      ...(task.category === 'suggestion' ? { suggestion: true } : {}),
+    };
   }
 
-  for (let step = 1; step <= limit; step++) {
+  // The bound is read afresh at every round rather than fixed here, because a
+  // grant made in the last round of a reply has to move the round after it (see
+  // ./allowance.ts). Inside the loop it is pinned for the round, which is what
+  // every "is this the last round" question below wants.
+  for (let step = 1; step <= bound + working.rounds(); step++) {
+    limit = bound + working.rounds();
     yield { type: 'step', step };
     // Where this reply is an agent subagent's: anything the model that sent it
     // has written to it since the last round. Each goes in as a turn of its
@@ -1306,11 +1359,35 @@ export async function* run(
     // reply in front of it to write up, and nothing to condense either.
     const full =
       phase === 'explore' && messages.length > conversation && window !== undefined && nearlyFull(now, window);
-    const spent = phase === 'explore' && (looked >= finding || full);
+    // Whether a grant of more rounds would have anywhere to put what they
+    // returned, which is what the finding-out step's asking turns on (see the
+    // allowances above). Set before the round's calls run, because it is the
+    // tool call that reads it.
+    roomToLook = !(window !== undefined && nearlyFull(now, window));
+    // What the step has, which is its share plus whatever it has been granted
+    const allowed = finding + findingMore.rounds();
+    const spent = phase === 'explore' && (looked >= allowed || full);
+    // A grant takes the step back out of being spent, so the telling is owed
+    // again: what it was told was true of the allowance it had then.
+    if (!spent) told = false;
     if (spent && !told) {
       told = true;
-      log.info('phase.spent', { ...where, step, phase, rounds: finding, why: full ? 'window' : 'rounds' });
-      messages.push({ role: 'user', content: phases.spent(full ? 'window' : 'rounds') });
+      log.info('phase.spent', { ...where, step, phase, rounds: allowed, why: full ? 'window' : 'rounds' });
+      messages.push({ role: 'user', content: phases.spent(full ? 'window' : 'rounds', findingMore.may()) });
+    }
+    // ...and the reply's own budget, which is nobody's allowance to work under
+    // and was reached in silence: the loop stopped and what had been written
+    // was what the user got, mid-change as often as not. So its last round is
+    // said to be the last, where asking for more is still open (see
+    // allowance.LAST_ROUND). Not in the finding-out step, which has an
+    // allowance of its own and is told about that one instead.
+    //
+    // Once per budget: a grant moves the last round along, and the telling is
+    // owed again when the new one comes.
+    if (step === limit && phase !== 'explore' && working.may() && warnedAt !== limit) {
+      warnedAt = limit;
+      log.info('request.last_round', { ...where, step, phase, limit });
+      messages.push({ role: 'user', content: allowance.LAST_ROUND });
     }
     // The doing step has no such ending: its reading is the only point in the
     // reply where anything is read against the plan rather than from it, so it
@@ -1582,10 +1659,22 @@ export async function* run(
     // front of the model would only invite the next step to take up where it
     // left off. What the step is asked for next is the write-up (see
     // phases.NOTHING_CARRIED), which is all that was ever going to carry on.
+    //
+    // All but one of them, that is: asking for more rounds is the move the
+    // step is told it still has while a grant is to be had (see phases.spent),
+    // so that call is run and the others go. A step that is granted rounds is
+    // no longer spent at the top of the next round, and the tools are its own
+    // again; one that is refused has been told why, and writing down what it
+    // has is the only move left to it after all.
     if (spent && calls.length > 0) {
-      log.info('phase.late_call', { ...where, step, phase, dropped: calls.map((call) => call.name) });
+      const asking = calls.filter((call) => call.name === allowance.TOOL_NAME);
+      const dropped = calls.filter((call) => call.name !== allowance.TOOL_NAME);
+      if (dropped.length > 0) {
+        log.info('phase.late_call', { ...where, step, phase, dropped: dropped.map((call) => call.name) });
+      }
       calls.length = 0;
-      done = { ...done, stopReason: 'end_turn' };
+      calls.push(...asking);
+      if (calls.length === 0) done = { ...done, stopReason: 'end_turn' };
     }
 
     // The model answered (or was cut off): the loop is over
@@ -1627,7 +1716,18 @@ export async function* run(
         continue;
       }
 
-      if (wrote && threadId && workspace && done.stopReason === 'end_turn' && levelled <= MAX_LEVELLINGS) {
+      // A suggestion makes its change in a demo copy that is reverted (see
+      // main.ts), so bringing the thread level with its workspace would push a
+      // change the user was only shown, not asked for, back onto their project:
+      // the suggestion is skipped here, and the demo edits are put back instead.
+      if (
+        wrote &&
+        threadId &&
+        workspace &&
+        done.stopReason === 'end_turn' &&
+        task.category !== 'suggestion' &&
+        levelled <= MAX_LEVELLINGS
+      ) {
         levelled++;
         const call: ToolCall = { id: `${requestId ?? 'reply'}-level-${levelled}`, name: SYNC_TOOL, input: {} };
         yield { type: 'tool_call', ...call };
@@ -1831,8 +1931,14 @@ export async function* run(
     }
     // A round that only wrote something down is not a round of looking, and is
     // not charged to the finding-out step's allowance (see WRITES_DOWN)
-    // ...nor is one that only asked the user something
-    if (calls.some((call) => !WRITES_DOWN.has(call.name) && call.name !== ASK_TOOL)) looked++;
+    // ...nor is one that only asked the user something, nor one that only
+    // asked for more rounds: a round that charged for the asking would be a
+    // round of the grant spent on getting it (see ./allowance.ts)
+    if (
+      calls.some((call) => !WRITES_DOWN.has(call.name) && call.name !== ASK_TOOL && call.name !== allowance.TOOL_NAME)
+    ) {
+      looked++;
+    }
     if (calls.some((call) => WRITES_FILES.has(call.name))) wrote = true;
     for (const call of calls) yield { type: 'tool_call', ...call };
     messages.push({ role: 'assistant', content: text, toolCalls: calls, raw: done.raw });
@@ -1847,6 +1953,10 @@ export async function* run(
       model: { provider: chosen.provider, model: chosen.id },
       emit: reports.push,
       ask: (question, options) => ask(reports.push, question, options),
+      // Whichever allowance bounds the model as things stand: the finding-out
+      // step has one of its own, and every other step is bounded by the
+      // reply's step budget (see the allowances above and ./allowance.ts)
+      more: (reason) => (phase === 'explore' ? findingMore : working).request(reason),
       phase,
       window,
       // Where this reply is itself a subagent's: its name, so that what it

@@ -4,6 +4,7 @@
 
 import type { LocalSettings, OllamaStatus, SuggestedModel } from '../types';
 import { resolveSophistication } from './sophistication';
+import { patientFetch } from './transport';
 
 // Offered for download when not already present. All of these support tools.
 // memoryGB follows Ollama's own guidance for models of each size: 8 GB for
@@ -20,9 +21,10 @@ export const SUGGESTED: Omit<SuggestedModel, 'sophistication'>[] = [
   { name: 'qwen3-vl:8b', memoryGB: 8 },
 ];
 
-// Tokens of context every model is loaded with. Ollama's own default, 4,096,
-// is used up by the system prompt and a tool result or two; more than this
-// costs memory and time that a laptop doesn't have to spare.
+// Tokens of context a model is loaded with when it doesn't say how many it can
+// take; one that says is given all of them, up to the limit in the settings
+// (see LocalSettings.maxContext). Ollama's own default, 4,096, is used up by
+// the system prompt and a tool result or two.
 export const CONTEXT_LENGTH = 32768;
 // What a model is loaded with when all it is asked is something brief (see
 // ChatRequest.brief). Two models seldom fit in memory at the full length, and
@@ -92,7 +94,7 @@ function headers(apiKey: string): Record<string, string> {
 export async function status({ baseURL, apiKey }: LocalSettings): Promise<OllamaStatus> {
   const url = rootURL(baseURL);
   try {
-    const res = await fetch(`${url}/api/tags`, {
+    const res = await patientFetch(`${url}/api/tags`, {
       headers: headers(apiKey),
       signal: AbortSignal.timeout(3000),
     });
@@ -129,7 +131,7 @@ export async function ensureLoaded(
   const url = rootURL(baseURL);
   let running: { name: string; context_length?: number }[];
   try {
-    const res = await fetch(`${url}/api/ps`, { headers: headers(apiKey), signal });
+    const res = await patientFetch(`${url}/api/ps`, { headers: headers(apiKey), signal });
     if (!res.ok) return;
     running = ((await res.json()) as { models?: typeof running | null }).models ?? [];
   } catch (err) {
@@ -141,8 +143,11 @@ export async function ensureLoaded(
   // An Ollama too old to say what it loaded the model with is taken at its word
   if (loaded && (loaded.context_length ?? contextLength) === contextLength) return;
 
-  // A request with no prompt loads the model and answers once it is ready
-  const res = await fetch(`${url}/api/generate`, {
+  // A request with no prompt loads the model and answers once it is ready.
+  // Nothing comes back from it until the model is in memory, which for a
+  // large one is minutes, so it waits without a limit of its own (see
+  // ./transport.ts); what bounds it is the caller's signal.
+  const res = await patientFetch(`${url}/api/generate`, {
     method: 'POST',
     headers: headers(apiKey),
     body: JSON.stringify({
@@ -171,7 +176,10 @@ export async function pull(
   onProgress: (progress: { status: string; percent: number | null }) => void,
   signal: AbortSignal
 ): Promise<void> {
-  const res = await fetch(`${rootURL(baseURL)}/api/pull`, {
+  // A download reports as it goes, but a slow one can be quiet for a long
+  // while between pieces, which is the other wait undici's default limit was
+  // cutting short (see ./transport.ts)
+  const res = await patientFetch(`${rootURL(baseURL)}/api/pull`, {
     method: 'POST',
     headers: headers(apiKey),
     body: JSON.stringify({ model: name, name, stream: true }),

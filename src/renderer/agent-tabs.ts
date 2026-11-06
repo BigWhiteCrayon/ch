@@ -165,7 +165,9 @@ export function appendEvent(out: Message[], event: AgentEvent): void {
     const seconds = Math.max(1, Math.round(event.after / 1000));
     out.push({
       role: 'note',
-      text: `Rate limited; trying again in ${seconds}s (attempt ${event.attempt + 1} of ${event.of})`,
+      text:
+        `${event.unreachable ? 'Could not reach the provider' : 'Rate limited'}; ` +
+        `trying again in ${seconds}s (attempt ${event.attempt + 1} of ${event.of})`,
     });
   } else if (event.type === 'fell_back') {
     out.push({ role: 'note', text: `Out of credit on ${event.from}; continuing on ${event.to}.` });

@@ -1,7 +1,16 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { retryAfter } from './openai-compatible';
 import { stopped } from './stopped';
-import type { ChatEvent, ChatMessage, ChatRequest, ErrorEvent, Provider, ProviderModel, Usage } from '../../types';
+import type {
+  ChatEvent,
+  ChatMessage,
+  ChatRequest,
+  ErrorEvent,
+  Provider,
+  ProviderModel,
+  ToolImage,
+  Usage,
+} from '../../types';
 import * as log from '../../log';
 
 // The token counts the API reports, as both a finished message and a delta
@@ -97,18 +106,46 @@ function toErrorEvent(err: unknown): ErrorEvent {
 // ../../harness/index.ts). Folded in, a nudge after a round of tool calls is a
 // turn of results with a line of text after them, which is the shape the API
 // wants.
-function addUser(out: Anthropic.Beta.BetaMessageParam[], text: string): void {
+function addUser(out: Anthropic.Beta.BetaMessageParam[], text: string, images?: ToolImage[]): void {
   const last = out.at(-1);
   if (last?.role !== 'user') {
-    out.push({ role: 'user', content: text });
+    // A turn with pictures and no words sends the pictures alone; with words,
+    // the words and the pictures in one block array
+    if (images?.length) out.push(userBlock(text, images));
+    else out.push({ role: 'user', content: text });
     return;
   }
-  // Nothing to fold in, and an empty text block is refused outright
-  if (!text) return;
+  // Fold into the turn before it. An image-only nudge after a round of results
+  // joins the results rather than becoming an empty turn of its own.
+  if (!text && !images?.length) return;
   const blocks: Anthropic.Beta.BetaContentBlockParam[] =
-    typeof last.content === 'string' ? [{ type: 'text', text: last.content }] : [...last.content];
-  blocks.push({ type: 'text', text });
+    typeof last.content === 'string' ? (last.content ? [{ type: 'text', text: last.content }] : []) : [...last.content];
+  if (text) blocks.push({ type: 'text', text });
+  for (const image of images ?? []) {
+    // A name with no bytes behind it has nothing to send (see the tool path above)
+    if (!image.data) continue;
+    blocks.push({
+      type: 'image',
+      source: { type: 'base64', media_type: image.mediaType, data: image.data },
+    });
+  }
   out[out.length - 1] = { role: 'user', content: blocks };
+}
+
+// A user turn as a block array: the words first (an empty block is refused, so
+// it is left out where there are none), then a picture each
+function userBlock(text: string, images: ToolImage[]): Anthropic.Beta.BetaMessageParam {
+  const content: Anthropic.Beta.BetaContentBlockParam[] = [];
+  if (text) content.push({ type: 'text', text });
+  for (const image of images) {
+    // A name with no bytes behind it has nothing to send (see the tool path above)
+    if (!image.data) continue;
+    content.push({
+      type: 'image',
+      source: { type: 'base64', media_type: image.mediaType, data: image.data },
+    });
+  }
+  return { role: 'user', content };
 }
 
 // Converts the app's messages to the Messages API format.
@@ -134,6 +171,9 @@ export function toMessages(messages: ChatMessage[]): Anthropic.Beta.BetaMessageP
           ? [{ type: 'text', text: m.content }]
           : [];
         for (const img of m.images) {
+          // A name with no bytes behind it (a screenshot whose bytes fell out of
+          // the sidecar's cap, see threads.ts) has nothing to send
+          if (!img.data) continue;
           content.push({
             type: 'image',
             source: { type: 'base64', media_type: img.mediaType, data: img.data },
@@ -156,7 +196,7 @@ export function toMessages(messages: ChatMessage[]): Anthropic.Beta.BetaMessageP
       }
       out.push({ role: 'assistant', content });
     } else if (m.role === 'user') {
-      addUser(out, m.content);
+      addUser(out, m.content, m.images);
     } else {
       out.push({ role: m.role, content: m.content });
     }

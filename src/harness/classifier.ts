@@ -39,7 +39,7 @@ export function effortFor(sophistication: number): Effort {
   return sophistication <= 3 ? 'medium' : 'high';
 }
 
-const CATEGORIES: Category[] = ['coding', 'question', 'investigation', 'general'];
+const CATEGORIES: Category[] = ['coding', 'question', 'investigation', 'suggestion', 'general'];
 // Assumed when the kind of task can't be told
 export const DEFAULT_CATEGORY: Category = 'general';
 // The same, in a thread that was started in a workspace. Such a thread is about
@@ -90,6 +90,8 @@ const RATING =
   'does not make it coding; only code being worked on does.\n' +
   'investigation: a long explanation of why something already happens, or how a system the user has works end to ' +
   'end. Nothing is built or changed. A short answer is a question, and a fault to be fixed is coding.\n' +
+  'suggestion: a change is to be proposed, not made: "suggest how to", "how would I", "how could this be ' +
+  'improved". Asking for the change itself is coding; asking how a thing works is a question or an investigation.\n' +
   'A message that asks for nothing at all - a greeting, a thank-you, an acknowledgement - is always 1 low.';
 
 // What the classifier is told in a general chat. The examples come last and
@@ -148,6 +150,8 @@ why is quicksort usually faster than mergesort in practice? -> 2 medium question
 would a queue serve this better than the table we have? what do we lose? -> 4 high question
 how does a request get from the router to the database? -> 3 medium investigation
 why does the importer skip rows with a blank date? -> 3 medium investigation
+suggest how I could split this module apart without breaking the tests -> 3 medium suggestion
+how would I make the settings screen work offline? show me what it would take -> 4 high suggestion
 fix the typo in the README -> 1 low coding
 remove the unused import from utils.py -> 1 low coding
 add a test that the config loader rejects a missing key -> 2 medium coding
@@ -275,7 +279,7 @@ export function parse(
 ): { sophistication: number; effort: Effort; category: Category } | null {
   const sophistication = Number(/\d+/.exec(reply)?.[0]);
   if (!(sophistication >= 1 && sophistication <= 5)) return null;
-  const category = /\b(coding|question|investigation|general)\b/i.exec(reply)?.[1].toLowerCase();
+  const category = /\b(coding|question|investigation|suggestion|general)\b/i.exec(reply)?.[1].toLowerCase();
   // A model may still answer "general" in a workspace; that is not taken from it
   const allowed = inWorkspace ? CATEGORIES.filter((c) => c !== 'general') : CATEGORIES;
   return {

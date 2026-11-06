@@ -52,11 +52,11 @@ beforeEach(() => {
 });
 
 describe('what the model is told about them', () => {
-  it('offers both only to a subagent in a workspace, and not to a step that only reads', () => {
-    const shown = tools.map(({ name, agentOnly, needsWorkspace, phases }) => [name, agentOnly, needsWorkspace, phases]);
+  it('offers both to a reply or a subagent in a workspace, and not to a step that only reads', () => {
+    const shown = tools.map(({ name, needsWorkspace, phases }) => [name, needsWorkspace, phases]);
     expect(shown).toEqual([
-      ['create_branch', true, true, ['execute']],
-      ['enter_branch', true, true, ['execute']],
+      ['create_branch', true, ['execute']],
+      ['enter_branch', true, ['execute']],
     ]);
   });
 

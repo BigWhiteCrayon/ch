@@ -4,9 +4,16 @@ import { toolEnv } from '../../src/sandbox/env';
 
 describe('toolEnv', () => {
   it('appends the Homebrew directories to PATH on macOS and Linux', () => {
-    const env = toolEnv({ PATH: '/usr/bin', HOME: '/home/me' }, 'darwin');
+    const env = toolEnv({ PATH: '/usr/bin', HOME: '/home/me' }, 'linux');
     expect(env.PATH).toBe(['/usr/bin', '/opt/homebrew/bin', '/usr/local/bin'].join(path.delimiter));
     expect(env.HOME).toBe('/home/me');
+  });
+
+  it("appends Docker Desktop's per-user directory on macOS", () => {
+    const env = toolEnv({ PATH: '/usr/bin', HOME: '/Users/me' }, 'darwin');
+    expect(env.PATH).toBe(
+      ['/usr/bin', '/opt/homebrew/bin', '/usr/local/bin', '/Users/me/.docker/bin'].join(path.delimiter)
+    );
   });
 
   it('keeps existing PATH entries first so they take priority', () => {

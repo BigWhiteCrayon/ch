@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { unwrapped } from '../helpers';
 import type { Tool } from '../../src/types';
 
@@ -15,9 +18,12 @@ const docker = vi.hoisted(() => ({
   readEach: vi.fn(),
   BROWSER_INSTALL: 'install-browser',
   RECORDER_INSTALL: 'install-recorder',
+  ELECTRON_INSTALL: 'install-electron',
   setWorkspace: vi.fn(),
   remove: vi.fn(),
   stopAll: vi.fn(),
+  init: vi.fn(),
+  sweep: vi.fn(),
 }));
 vi.mock('../../src/sandbox/docker', () => docker);
 
@@ -29,6 +35,7 @@ import {
   restoreContext,
   workspacePrompt,
   readContext,
+  recipes,
 } from '../../src/sandbox';
 import {
   NO_BROWSER,
@@ -128,12 +135,14 @@ describe('the workspace prompt', () => {
 });
 
 describe('the tool set', () => {
-  it('offers the eight sandbox tools, each with a schema naming its required input', () => {
+  it('offers the ten sandbox tools, each with a schema naming its required input', () => {
     expect(tools.map((t) => t.name)).toEqual([
       'run_command',
       'read_file',
       'screenshot',
       'record',
+      'use_app',
+      'save_run_recipe',
       'write_file',
       'edit_file',
       'add_to_context',
@@ -242,10 +251,43 @@ describe('screenshot', () => {
     it('rejects an action it does not know, naming the step', async () => {
       const bad = [
         { action: 'click', selector: '#a' },
-        { action: 'hover', selector: '#b' },
+        { action: 'drag', selector: '#b' },
       ];
       await expect(tool('screenshot').run({ url, steps: bad }, context)).rejects.toThrow('Step 2');
       expect(docker.exec).not.toHaveBeenCalled();
+    });
+
+    it('rejects a step missing what its action needs, before starting anything', async () => {
+      const bad = [{ action: 'press' }];
+      await expect(tool('screenshot').run({ url, steps: bad }, context)).rejects.toThrow('Step 1: press needs "key"');
+      expect(docker.exec).not.toHaveBeenCalled();
+    });
+
+    // A picture was all a driven page gave back, so finding out what a click did
+    // meant a script of the model's own; what the steps read is said back now
+    it('says back what the steps read, and what the page wrote to its console', async () => {
+      const report = {
+        results: [{ step: 2, action: 'text', value: '3 threads' }],
+        console: ['[error] Failed to load resource (http://localhost:3000/api)'],
+        errors: ['TypeError: x is undefined'],
+      };
+      docker.exec.mockResolvedValue({ code: 0, output: `\n@@ch-report:${JSON.stringify(report)}\n` });
+      const result = await tool('screenshot').run({ url, steps }, context);
+      expect(result.text).toContain('step 2 (text): 3 threads');
+      expect(result.text).toContain('TypeError: x is undefined');
+      expect(result.text).toContain('Failed to load resource');
+      expect(result.text).not.toContain('@@ch-report');
+    });
+
+    it('says what the steps before a failed one read, along with the failure', async () => {
+      const report = { results: [{ step: 1, action: 'eval', value: '"draft"' }] };
+      docker.exec.mockResolvedValue({
+        code: 1,
+        output: `step 2 (click): no element matches #open\n@@ch-report:${JSON.stringify(report)}\n`,
+      });
+      const run = tool('screenshot').run({ url, steps }, context);
+      await expect(run).rejects.toThrow('no element matches #open');
+      await expect(run).rejects.toThrow('step 1 (eval): "draft"');
     });
 
     it('rejects more than 50 steps', async () => {
@@ -306,11 +348,11 @@ describe('screenshot', () => {
 
     it('is run from cwd, at the size asked for', async () => {
       await tool('screenshot').run({ command, cwd: 'app', width: 640, height: 480 }, context);
-      const script = docker.exec.mock.calls[0][1] as string;
+      const script = docker.exec.mock.calls[1][1] as string;
       expect(script).toContain("cd '/workspace/app'");
       expect(script).toContain('640x480x24');
       expect(script).toContain('sleep 5');
-      expect(docker.exec.mock.calls[0][2]).toEqual({ signal, timeoutSeconds: 35 });
+      expect(docker.exec.mock.calls[1][2]).toEqual({ signal, timeoutSeconds: 35 });
     });
 
     it.each([{ command, url: 'http://localhost:3000' }, {}])('rejects the input %j', async (input) => {
@@ -320,13 +362,14 @@ describe('screenshot', () => {
 
     it('installs what is missing when the script exits 127, then runs it once more', async () => {
       docker.exec
+        .mockResolvedValueOnce({ code: 0, output: '' })
         .mockResolvedValueOnce({ code: 127, output: `${NO_BROWSER}\n` })
         .mockResolvedValueOnce({ code: 0, output: '' })
         .mockResolvedValueOnce({ code: 0, output: '' });
       const result = await tool('screenshot').run({ command }, context);
       expect(result.images).toHaveLength(1);
-      expect(docker.exec.mock.calls[1]).toEqual([THREAD, 'install-browser', { signal, timeoutSeconds: 600 }]);
-      expect(String(docker.exec.mock.calls[2][1])).toContain('Xvfb');
+      expect(docker.exec.mock.calls[2]).toEqual([THREAD, 'install-browser', { signal, timeoutSeconds: 600 }]);
+      expect(String(docker.exec.mock.calls[3][1])).toContain('Xvfb');
     });
 
     it('says there is no browser when installing does not help', async () => {
@@ -358,6 +401,9 @@ describe('screenshot', () => {
         const [, script, options] = shots[0];
         expect(script).toContain('port=$((9200 + n))');
         expect(script).toContain(`${command} --remote-debugging-port=$port`);
+        // ...which the app's own shell is given, not having this script's variables: without it the flag
+        // reached the app empty, and it listened on a port of its own choosing that nothing was driving
+        expect(script).toContain('DISPLAY=:$n port=$port exec setsid bash -c');
         expect(script).toContain(docker.quote(JSON.stringify(steps)));
         // The window frame is part of the app, so the screen is what is captured —
         // not the page the driver could capture for itself
@@ -373,7 +419,7 @@ describe('screenshot', () => {
       // shot, and sizing the page would size it away from the window captured
       it('gives the driver no page to go to and no file to write', async () => {
         await tool('screenshot').run({ command, steps }, context);
-        const script = String(docker.exec.mock.calls[0][1]);
+        const script = String(docker.exec.mock.calls[1][1]);
         expect(script).toMatch(/node -e '.*' '' 1280 800 '' \$port /s);
         expect(script).toContain('if (url) {');
         expect(script).toContain('if (file) {');
@@ -381,7 +427,7 @@ describe('screenshot', () => {
 
       it('leaves the port alone where the command names its own, a launcher having swallowed one added', async () => {
         await tool('screenshot').run({ command: 'npm start -- --remote-debugging-port=9311', steps }, context);
-        const script = String(docker.exec.mock.calls[0][1]);
+        const script = String(docker.exec.mock.calls[1][1]);
         expect(script).toContain('port=9311');
         expect(script).not.toContain('--remote-debugging-port=$port');
       });
@@ -926,6 +972,15 @@ describe('edit_file', () => {
     docker.exec.mockResolvedValue({ code: 0, output: '@@ -1 +1 @@\n-old\n+new\n' });
   });
 
+  // A read never makes the container, so a thread whose first act was an edit was told its file was not there: there
+  // was no container yet to hold it
+  it("makes the thread's container before it reads the file, as a write would", async () => {
+    file('old\n');
+    await edit({ old_text: 'old', new_text: 'new' });
+    expect(docker.ensure).toHaveBeenCalledWith(THREAD);
+    expect(docker.ensure.mock.invocationCallOrder[0]).toBeLessThan(docker.read.mock.invocationCallOrder[0]);
+  });
+
   it('replaces just the text it is given, leaves the rest of the file as it was, and reports the diff', async () => {
     file('line 1\n  const x = 1;\nline 3\n');
     await expect(edit({ old_text: '  const x = 1;', new_text: '  const x = 2;' })).resolves.toBe(
@@ -1288,5 +1343,316 @@ describe('reading a file in a window that cannot hold it', () => {
     docker.exec.mockResolvedValue({ code: 0, output: 'one\ntwo\n@@ch-length:500\n' });
     const said = await read.run({ path: 'src/a.ts' }, { signal, threadId: THREAD, window: 32_000 });
     expect(said).toContain('read on from start_line 3');
+  });
+});
+
+// The app kept running between calls, so that it can be used a move at a time
+// rather than started afresh for every look (see use_app in src/tools/sandbox.ts)
+describe('use_app', () => {
+  const PNG = Buffer.from('png');
+  const started = () => {
+    const call = docker.exec.mock.calls.find(([, script]) => String(script).includes('ch_stop'));
+    return String(call?.[1]);
+  };
+  const idOf = (text: string) => /session ([0-9a-f]{8})/.exec(text)![1];
+
+  it('starts a page on a display of its own, leaves it running, and says the id to use it by', async () => {
+    const result = await tool('use_app').run({ action: 'start', url: 'http://localhost:3000' }, context);
+    const id = idOf(result.text);
+    const script = started();
+    expect(script).toContain(`/tmp/ch-app-${id}`);
+    expect(script).toContain('--remote-debugging-port=$port');
+    expect(script).toContain("'http://localhost:3000'");
+    // Nothing it starts holds the command open
+    expect(script).toContain('</dev/null) &');
+    // Not stopped at the end, unlike a screenshot's browser
+    expect(script).not.toMatch(/kill -- -\$chrome/);
+    expect(result.text).toContain(`Give session "${id}"`);
+    expect(result.images).toEqual([]);
+  });
+
+  it('adds the debugging port to an app command, or keeps the one it names', async () => {
+    await tool('use_app').run({ action: 'start', command: 'npx electron . --no-sandbox' }, context);
+    expect(started()).toContain('npx electron . --no-sandbox --remote-debugging-port=$port');
+    expect(started()).toContain('DISPLAY=:$n port=$port exec setsid bash -c');
+    docker.exec.mockClear();
+    await tool('use_app').run({ action: 'start', command: 'npm start -- --remote-debugging-port=9311' }, context);
+    expect(started()).toContain('port=9311');
+    expect(started()).not.toContain('--remote-debugging-port=$port');
+  });
+
+  it('does steps in a running session and says back what they read and what the app wrote', async () => {
+    const report = { results: [{ step: 1, action: 'text', value: 'Saved' }] };
+    docker.exec.mockResolvedValue({
+      code: 0,
+      output: `\n@@ch-report:${JSON.stringify(report)}\n\n@@ch-log:\nPOST /api/save 200\n`,
+    });
+    const steps = [{ action: 'text', selector: '.status' }];
+    const result = await tool('use_app').run({ action: 'do', session: 'abcd1234', steps }, context);
+    expect(result.text).toContain('step 1 (text): Saved');
+    expect(result.text).toContain('What the app itself wrote:\nPOST /api/save 200');
+    expect(result.images).toEqual([]);
+    const script = String(lastExec()[1]);
+    expect(script).toContain('/tmp/ch-app-abcd1234/env');
+    expect(script).toContain(docker.quote(JSON.stringify(steps)));
+    expect(docker.read).not.toHaveBeenCalled();
+  });
+
+  it('draws the session when asked to', async () => {
+    docker.read.mockResolvedValue({ code: 0, data: PNG });
+    const result = await tool('use_app').run({ action: 'do', session: 'abcd1234', screenshot: true }, context);
+    expect(result.images[0].data).toBe(PNG.toString('base64'));
+  });
+
+  it('says plainly when the session is gone or its app has exited', async () => {
+    docker.exec.mockResolvedValue({ code: 3, output: 'ch-no-session\n' });
+    await expect(
+      tool('use_app').run({ action: 'do', session: 'abcd1234', steps: [{ action: 'wait', ms: 1 }] }, context)
+    ).rejects.toThrow('There is no session abcd1234');
+    docker.exec.mockResolvedValue({ code: 4, output: 'ch-app-exited\nError: port in use\n' });
+    await expect(
+      tool('use_app').run({ action: 'do', session: 'abcd1234', steps: [{ action: 'wait', ms: 1 }] }, context)
+    ).rejects.toThrow('has exited. The end of what it wrote:\nError: port in use');
+  });
+
+  it('stops a session, and refuses an id that is not one', async () => {
+    const result = await tool('use_app').run({ action: 'stop', session: 'abcd1234' }, context);
+    expect(result.text).toBe('Stopped session abcd1234.');
+    expect(String(lastExec()[1])).toContain("ch_stop '/tmp/ch-app-abcd1234'");
+    await expect(tool('use_app').run({ action: 'stop', session: '../etc' }, context)).rejects.toThrow(
+      'not a session id'
+    );
+  });
+
+  it('asks for something to do', async () => {
+    await expect(tool('use_app').run({ action: 'do', session: 'abcd1234' }, context)).rejects.toThrow('Give steps');
+    expect(docker.exec).not.toHaveBeenCalled();
+  });
+
+  it('records a session while doing the steps, and refuses steps without one', async () => {
+    docker.readEach.mockResolvedValue([{ code: 0, data: Buffer.from('webm') }]);
+    const steps = [{ action: 'click', selector: '#send' }];
+    await tool('record').run({ session: 'abcd1234', steps }, context);
+    const script = String(docker.exec.mock.calls.find(([, s]) => String(s).includes('x11grab'))![1]);
+    expect(script).toContain('/tmp/ch-app-abcd1234/env');
+    expect(script).toContain(docker.quote(JSON.stringify(steps)));
+    await expect(tool('record').run({ url: 'http://localhost:3000', steps }, context)).rejects.toThrow(
+      'Steps are done in a session'
+    );
+  });
+});
+
+// A container older than the dependencies' image fetching Electron (see
+// ELECTRON_INSTALL in ../../src/sandbox/docker.ts) has the package and no binary,
+// so a desktop app launched there had nothing to run, and a screenshot of it was
+// a blank screen taken all the same
+describe("Electron's binary, before a desktop app is launched", () => {
+  const command = 'npx electron . --no-sandbox --disable-gpu';
+  const fetched = () => docker.exec.mock.calls.filter(([, script]) => String(script).includes('install-electron'));
+
+  beforeEach(() => docker.read.mockResolvedValue({ code: 0, data: Buffer.from('png') }));
+
+  it.each([
+    ['screenshot', { command, cwd: 'app' }],
+    ['screenshot', { command, cwd: 'app', steps: [{ action: 'wait', ms: 10 }] }],
+    ['record', { command, cwd: 'app' }],
+    ['use_app', { action: 'start', command, cwd: 'app' }],
+  ])('is fetched from cwd by %s %j, ahead of the launch', async (name, input) => {
+    docker.readEach.mockResolvedValue([{ code: 0, data: Buffer.from('webm') }]);
+    await tool(name).run(input, context);
+    expect(docker.exec.mock.calls[0]).toEqual([
+      THREAD,
+      "cd '/workspace/app' && install-electron",
+      { signal, timeoutSeconds: 300 },
+    ]);
+    expect(fetched()).toHaveLength(1);
+  });
+
+  it.each([
+    ['screenshot', { url: 'http://localhost:3000' }],
+    ['use_app', { action: 'start', url: 'http://localhost:3000' }],
+  ])('is not fetched for a page, by %s', async (name, input) => {
+    await tool(name).run(input, context);
+    expect(fetched()).toHaveLength(0);
+  });
+
+  it('leaves the app to fail in its own words when the fetch could not be run', async () => {
+    docker.exec.mockRejectedValueOnce(new Error('timed out'));
+    const result = await tool('screenshot').run({ command }, context);
+    expect(result.images).toHaveLength(1);
+  });
+});
+
+describe('run_command and a scratch script', () => {
+  it('runs it all the same, and says what to do instead', async () => {
+    docker.exec.mockResolvedValue({ code: 0, output: 'ok\n' });
+    const said = await tool('run_command').run({ command: 'npx tsx /tmp/check.ts' }, context);
+    expect(said).toContain('exit code 0\nok');
+    expect(said).toContain('use_app');
+    expect(said).toContain("add a test beside the project's own");
+  });
+
+  it('says nothing more for a command that is not one', async () => {
+    docker.exec.mockResolvedValue({ code: 0, output: 'ok\n' });
+    expect(await tool('run_command').run({ command: 'npx vitest run' }, context)).toBe('exit code 0\nok\n');
+  });
+});
+
+// A workspace's run recipe (see ../../src/sandbox/recipes.ts): run whole by use_app, and saved only once it has run
+describe("a workspace's run recipe", () => {
+  const WORKSPACE = '/projects/demo';
+  const inWorkspace = { ...context, workspace: WORKSPACE };
+  const RECIPE = {
+    setup: ['npm run build'],
+    services: [{ command: 'node fake-llm.js', ready: 'http://localhost:11500/v1/models' }],
+    env: { LOCAL_LLM_BASE_URL: 'http://localhost:11500/v1' },
+    data: { from: 'test/fixtures/user-data', flag: '--user-data-dir' },
+    app: { command: 'npx electron . --no-sandbox' },
+    ready: '#composer',
+    after: [{ action: 'click', selector: '.finish-later' }],
+  };
+  const scripts = () => docker.exec.mock.calls.map(([, script]) => String(script));
+  const launched = () => scripts().find((script) => script.includes('Xvfb :$n') && script.includes('setsid bash -c'));
+  const drove = (selector: string) => scripts().some((script) => script.includes(`"selector":"${selector}"`));
+  const idOf = (text: string) => /session ([0-9a-f]{8})/.exec(text)![1];
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-recipes-'));
+    recipes.init(dir);
+    docker.read.mockResolvedValue({ code: 0, data: Buffer.from('png') });
+  });
+
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  describe('started by use_app with recipe: true', () => {
+    it('builds, starts what runs beside the app, copies its data, launches it, and waits for it to be up', async () => {
+      recipes.put(WORKSPACE, RECIPE);
+      const result = await tool('use_app').run({ action: 'start', recipe: true }, inWorkspace);
+      const id = idOf(result.text);
+      const [prepare] = scripts();
+      expect(prepare).toContain(`export LOCAL_LLM_BASE_URL='http://localhost:11500/v1'`);
+      expect(prepare).toContain(`bash -c 'npm run build'`);
+      // A service is only started where its address does not answer already
+      expect(prepare).toContain(`if ! answers 'http://localhost:11500/v1/models'; then`);
+      expect(prepare).toContain(`(setsid nohup bash -c 'node fake-llm.js'`);
+      expect(prepare).toContain(`cp -a 'test/fixtures/user-data/.' '/tmp/ch-data-${id}'`);
+      // The app gets the variables and its own copy of the data, and a port to be driven by
+      expect(launched()).toContain('export LOCAL_LLM_BASE_URL=');
+      expect(launched()).toContain(
+        `npx electron . --no-sandbox --user-data-dir=/tmp/ch-data-${id} --remote-debugging-port=$port`
+      );
+      expect(drove('#composer')).toBe(true);
+      expect(drove('.finish-later')).toBe(true);
+      expect(result.text).toContain("from this workspace's run recipe");
+      expect(result.text).toContain(`Give session "${id}"`);
+    });
+
+    it('does the steps given with it once the recipe has the app up', async () => {
+      recipes.put(WORKSPACE, RECIPE);
+      await tool('use_app').run(
+        { action: 'start', recipe: true, steps: [{ action: 'text', selector: '#messages' }] },
+        inWorkspace
+      );
+      const order = scripts().map((script) =>
+        script.includes('"#composer"') ? 'ready' : script.includes('"#messages"') ? 'mine' : ''
+      );
+      expect(order.filter(Boolean)).toEqual(['ready', 'mine']);
+    });
+
+    it('says to save one where the workspace has none, and starts nothing', async () => {
+      await expect(tool('use_app').run({ action: 'start', recipe: true }, inWorkspace)).rejects.toThrow(
+        'save_run_recipe'
+      );
+      expect(docker.exec).not.toHaveBeenCalled();
+    });
+
+    it('is not given with url or command', async () => {
+      recipes.put(WORKSPACE, RECIPE);
+      await expect(
+        tool('use_app').run({ action: 'start', recipe: true, url: 'http://localhost:3000' }, inWorkspace)
+      ).rejects.toThrow('not both');
+    });
+
+    it('says which part of it failed and what that said, and keeps it for the next model to be told', async () => {
+      recipes.put(WORKSPACE, RECIPE);
+      docker.exec.mockResolvedValueOnce({
+        code: 1,
+        output: '@@ch-recipe-failed:setup 1 (npm run build)\nsrc/a.ts(3,1): error TS2304\n',
+      });
+      const failing = tool('use_app').run({ action: 'start', recipe: true }, inWorkspace);
+      await expect(failing).rejects.toThrow('failed at setup 1 (npm run build).\nsrc/a.ts(3,1): error TS2304');
+      await expect(failing).rejects.not.toThrow('still running');
+      expect(launched()).toBeUndefined();
+      expect(recipes.get(WORKSPACE)!.failed).toMatchObject({
+        stage: 'setup 1 (npm run build)',
+        why: 'src/a.ts(3,1): error TS2304',
+      });
+      expect(unwrapped(recipes.prompt(WORKSPACE))).toContain('failed at setup 1 (npm run build)');
+    });
+
+    it('leaves the app running to be looked at when it never showed what says it is up', async () => {
+      recipes.put(WORKSPACE, RECIPE);
+      docker.exec.mockImplementation(async (_thread: string, script: string) =>
+        script.includes('"#composer"')
+          ? { code: 1, output: 'Step 1 (wait_for) failed: #composer never appeared' }
+          : {
+              code: 0,
+              output: '',
+            }
+      );
+      const failing = tool('use_app').run({ action: 'start', recipe: true }, inWorkspace);
+      await expect(failing).rejects.toThrow('failed at the ready check (#composer). Session');
+      await expect(failing).rejects.toThrow('is still running');
+      expect(recipes.get(WORKSPACE)!.failed!.stage).toBe('the ready check (#composer)');
+    });
+
+    it('clears a failure it had once it runs all the way through again', async () => {
+      recipes.put(WORKSPACE, RECIPE);
+      recipes.failed(WORKSPACE, 'launch', 'gone');
+      await tool('use_app').run({ action: 'start', recipe: true }, inWorkspace);
+      expect(recipes.get(WORKSPACE)!.failed).toBeUndefined();
+    });
+  });
+
+  describe('saved by save_run_recipe', () => {
+    it('is run from nothing, kept only then, and the app it started is stopped', async () => {
+      const result = await tool('save_run_recipe').run(RECIPE, inWorkspace);
+      expect(recipes.get(WORKSPACE)).toMatchObject({ ...RECIPE, thread: THREAD });
+      expect(launched()).toBeDefined();
+      expect(scripts().at(-1)).toMatch(/ch_stop '\/tmp\/ch-app-[0-9a-f]{8}'$/);
+      // What it leaves the app showing, drawn once the steps after the ready check are done
+      expect(result.images).toHaveLength(1);
+      expect(result.text).toContain('`npm run build`, `node fake-llm.js` in the background, then');
+    });
+
+    it('is not kept where it does not run through, and says where it stopped', async () => {
+      docker.exec.mockResolvedValueOnce({ code: 1, output: '@@ch-recipe-failed:service 1 (node fake-llm.js)\n' });
+      await expect(tool('save_run_recipe').run(RECIPE, inWorkspace)).rejects.toThrow(
+        'was not saved: run from nothing, it failed at service 1 (node fake-llm.js)'
+      );
+      expect(recipes.get(WORKSPACE)).toBeUndefined();
+    });
+
+    it('keeps the recipe the workspace had where the new one does not run', async () => {
+      recipes.put(WORKSPACE, RECIPE);
+      docker.exec.mockResolvedValueOnce({ code: 1, output: '@@ch-recipe-failed:setup 1 (make)\n' });
+      await expect(tool('save_run_recipe').run({ ...RECIPE, setup: ['make'] }, inWorkspace)).rejects.toThrow();
+      expect(recipes.get(WORKSPACE)!.setup).toEqual(['npm run build']);
+    });
+
+    it.each([
+      [{ ...RECIPE, setup: ['echo built > src/version.ts'] }, 'writes to a file in the project'],
+      [{ ...RECIPE, setup: ['git init'] }, 'makes a repository'],
+      [{ ...RECIPE, after: [{ action: 'fly' }] }, 'Step 1'],
+      [{ setup: ['npm run build'] }, '"app" must be given'],
+    ])('is refused before anything is run, for %j', async (given, why) => {
+      await expect(tool('save_run_recipe').run(given, inWorkspace)).rejects.toThrow(why);
+      expect(docker.exec).not.toHaveBeenCalled();
+    });
+
+    it('needs a workspace to be kept for', async () => {
+      await expect(tool('save_run_recipe').run(RECIPE, context)).rejects.toThrow('started in a workspace');
+    });
   });
 });

@@ -28,6 +28,7 @@ import './renderer/workspace-dialog.js';
 import './renderer/thread-dialog.js';
 import './renderer/rename-feedback.js';
 import './renderer/composer.js';
+import './renderer/attachments.js';
 
 // The first drawing of the window, and everything else that happens on the way
 // in. Called at the very end of this file, once every module has been evaluated:

@@ -70,7 +70,8 @@ export function questionCard(requestId: string, event: QuestionEvent): HTMLEleme
   const other = document.createElement('input');
   other.type = 'text';
   other.className = 'other';
-  other.placeholder = 'Or answer in your own words…';
+  // The 'or' divider already marks the free-text box as a second way to answer, so it need not say so again.
+  other.placeholder = 'Answer in your own words…';
   const send = document.createElement('button');
   send.type = 'button';
   send.className = 'send primary';
@@ -85,6 +86,14 @@ export function questionCard(requestId: string, event: QuestionEvent): HTMLEleme
     answerQuestion(requestId, other.value.trim());
   });
   send.addEventListener('click', () => answerQuestion(requestId, other.value.trim()));
+  // The 'or' between the options and the free-text box marks it as a second way to answer,
+  // not just another option: only when there are options to pick.
+  if (event.options.length) {
+    const or = document.createElement('div');
+    or.className = 'answer-or';
+    or.textContent = 'or';
+    card.append(or);
+  }
   const actions = document.createElement('div');
   actions.className = 'actions';
   actions.append(other, send);

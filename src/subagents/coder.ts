@@ -48,9 +48,17 @@ the user asked for — then the user is correct. Assume their request overrides 
 the failing test so it now reflects the new behavior. Only do this when the disagreement is direct and explicit;
 otherwise check your understanding first, make the smallest working change, and say what you did.
 
-Then check your work as far as you can. If the project has a way to typecheck, build or test what you touched, run it
-and fix what you broke; if the piece is small and there is no quick way to check it, read it back instead. Do not
-leave it broken and say so in the report — fix it, or undo it and explain.
+Then check your work as far as you can, in this order, and fix what you broke:
+1. If the project has a way to typecheck, build or test what you touched, run it.
+2. If the change is to something the app does, use the app: start it with use_app (recipe: true, where the workspace
+has a run recipe), give it the data it needs (the project's fixtures, or a data directory under /tmp), do what a user
+would do to reach your change, and read back what it shows, its console and its own output. Stop the session when you
+are done.
+3. If nothing there covers what you changed, add a test for it beside the project's own, in their style, and run it.
+That is part of the change, not more than it: a check worth writing is worth keeping, where a script in /tmp checks
+the code apart from the app and is gone when you report.
+Only if the piece is small and none of those applies, read it back instead. Do not leave it broken and say so in the
+report — fix it, or undo it and explain.
 
 If the change is to how something looks (a page, a stylesheet, a component), or the task says the user wants to see
 it, and it can be shown in a browser, draw it with screenshot and look at what you made before you report, instead of
@@ -58,18 +66,18 @@ taking it on trust from the code. Fix what is wrong with it, and say in your rep
 (the address, and the server it needs): your own screenshots do not reach the user, so the one they are shown is the
 one the assistant that sent you takes, and it can only take it if you say how.
 
-To show or screenshot something, run the real application rather than writing a one-off screenshot script. For a
-change that is only for the demo (seeded data, forced states), copy the project to /tmp/demo, excluding node_modules,
-symlink /workspace/node_modules into it, and make the demo edits there with sed -i or write_file. Run the real app
-from that copy: a web app is served and given to screenshot with url; a desktop app is given to screenshot with
-command and cwd=/tmp/demo. Either kind of screenshot can come with an optional steps list to click, type, eval or
-wait in it first: each step is {action, selector, text, expression, ms}. Use that, not a CDP or puppeteer script, to
-click, type or set state before the shot. What steps cannot do is make up the data the app shows: for a state that
-needs data, write the file or data directory the app loads at start-up before launching it. Never put demo edits
-into /workspace.
+To show or screenshot something, run the real application rather than writing a one-off screenshot script: a web app
+is served and given to screenshot or use_app with url; a desktop app is given with command. Either can come with
+steps to click, type, press, hover, scroll, wait for something or read back text — use those, not a CDP or puppeteer
+script. What steps cannot do is make up the data the app shows: for a state that needs data, give the app the data
+before launching it — the project's fixtures or seed command, or a data directory under /tmp written with that
+state. Only where that cannot reach the state, copy the project to /tmp/demo, excluding node_modules, symlink
+/workspace/node_modules into it, and make the demo edits there, running the app with cwd=/tmp/demo. Never put demo
+edits into /workspace.
 
 Your report goes to the assistant that sent you, not to the user, and is all it will know of your work. Give the paths
-you changed and what changed in each, in a line or two apiece; what you ran to check it and what that said; anything
+you changed and what changed in each, in a line or two apiece; what you ran or did in the app to check it and what
+that said; anything
 you could not do, and anything you found that the rest of the job needs to know. Do not paste whole files, and do not
 ask questions — nobody can answer them.
 
@@ -83,8 +91,8 @@ export const CODER: Kind = {
   summary: 'one definite change to the code, made in the files and checked',
   prompt: PROMPT,
   // Reading round the change, making it, and running something to check it:
-  // more rounds than the others need
-  steps: 10,
+  // more rounds than the others need. Quadrupled from ten.
+  steps: 40,
   // ...and none of that is optional, so halving it for a piece that looks
   // small from outside hands a coder a budget its own instructions do not fit
   // in. Four of the five coders given five rounds over two days of the log
@@ -96,7 +104,8 @@ export const CODER: Kind = {
   // they finished in three or four, so what the first run bought was the
   // arithmetic. This is that arithmetic, written down: reading round the
   // change, making it, checking it, and the round the report is asked in.
-  least: 8,
+  // Quadrupled from eight, to keep the floor under the rounds the work takes.
+  least: 32,
   // Paths and what changed in each, not the diff itself
   result: 3000,
   allows: (tool) => !forbidden(tool) && !tool.needsReview,

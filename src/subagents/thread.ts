@@ -43,6 +43,7 @@ const STEPS: Record<Phase, string> = {
   execute: 'Making the change.',
   respond: 'Writing up what it did.',
   report: 'Writing up what it found.',
+  suggest: 'Making the suggestion.',
 };
 
 // What came back from one turn of the flow

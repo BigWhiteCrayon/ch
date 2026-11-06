@@ -217,6 +217,21 @@ describe('toMessages', () => {
     ]);
   });
 
+  it('turns a user message with an image into a text block and an image block', () => {
+    const converted = toMessages([
+      { role: 'user', content: 'What is in this picture?', images: [{ mediaType: 'image/png', data: 'aGVsbG8=' }] },
+    ]);
+    expect(converted).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'What is in this picture?' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+        ],
+      },
+    ]);
+  });
+
   it('rebuilds the reply from its parts when it came from another provider', () => {
     const converted = toMessages([
       {

@@ -3,10 +3,18 @@
 // The whole file is encrypted with Electron's safeStorage, which uses a key
 // held by the OS (Keychain on macOS, DPAPI on Windows, libsecret on Linux).
 // Only usable after the app's 'ready' event.
+//
+// Under CH_TEST_MODE=1 the app is being run to be tested: in a thread's container, by a model checking a change to the
+// app itself, against the stand-in for Ollama (see scripts/fake-ollama.ts). There it starts as a user who has been
+// through setup and has nothing hosted, so that what it opens on is the app rather than the setup flow, and nothing it
+// does reaches a hosted model whatever keys the environment holds. CH_TEST_SETTINGS, a JSON object of settings, is
+// taken as what was saved where nothing has been. And the settings can be saved: a container has no keyring, so the
+// key is Electron's own, which is fit for a throwaway data folder and for nothing else.
 
 import { app, safeStorage } from 'electron';
 import fs from 'fs';
 import path from 'path';
+import { BRIEF_CONTEXT_LENGTH } from './llm/ollama';
 import * as log from './log';
 import type { PublicSettings, ReadableSettings, Settings, SettingsPatch, SetupSettings } from './types';
 
@@ -23,6 +31,8 @@ export const THEME_VARS = [
 
 const defaultLocalURL = () => process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434/v1';
 
+export const testMode = () => process.env.CH_TEST_MODE === '1';
+
 function defaults(): Settings {
   return {
     anthropic: { apiKey: '', disabledModels: [] },
@@ -32,8 +42,8 @@ function defaults(): Settings {
     sophistication: {},
     // '' lets each workspace decide from its own files (see sandbox/docker.ts)
     sandbox: { image: '' },
-    // Hosted models are on offer until the user says otherwise
-    offline: false,
+    // Hosted models are on offer until the user says otherwise, except to an app being tested
+    offline: testMode(),
     // Local models are preferred until the user asks for speed
     fast: false,
     // Whether a reply that changed files is reviewed by a model as soon as it
@@ -44,8 +54,11 @@ function defaults(): Settings {
     theme: {},
     // Reading anything on the user's computer is asked about until they allow it
     readable: { global: [], workspaces: {} },
-    // Nobody has been led through installing anything yet (see setup/checks.ts)
-    setup: { completed: false, version: 0, skipped: [] },
+    // Nobody has been led through installing anything yet (see setup/checks.ts); an app being tested has been
+    // through every version of it there will be
+    setup: testMode()
+      ? { completed: true, version: Number.MAX_SAFE_INTEGER, skipped: [] }
+      : { completed: false, version: 0, skipped: [] },
   };
 }
 
@@ -90,6 +103,9 @@ export function cleanTheme(value: unknown): Record<string, string> {
   return result;
 }
 
+// A window too small for a brief request is too small for anything
+const cleanMaxContext = (tokens: number) => Math.max(BRIEF_CONTEXT_LENGTH, Math.floor(tokens));
+
 const isLevel = (level: unknown): level is number =>
   typeof level === 'number' && Number.isInteger(level) && level >= 1 && level <= 5;
 
@@ -99,14 +115,17 @@ const filePath = () => path.join(app.getPath('userData'), 'settings.enc');
 
 export function load(): Settings {
   settings = defaults();
-  let encrypted: Buffer;
+  if (testMode() && process.platform === 'linux') safeStorage.setUsePlainTextEncryption(true);
+  let encrypted: Buffer | undefined;
   try {
     encrypted = fs.readFileSync(filePath());
   } catch {
-    return settings; // nothing saved yet
+    // Nothing saved yet
   }
+  const given = testMode() ? process.env.CH_TEST_SETTINGS : undefined;
+  if (!encrypted && !given) return settings;
   try {
-    const saved = JSON.parse(safeStorage.decryptString(encrypted)) as Partial<Settings>;
+    const saved = JSON.parse(encrypted ? safeStorage.decryptString(encrypted) : given!) as Partial<Settings>;
     const base = defaults();
     settings = {
       anthropic: { ...base.anthropic, ...saved.anthropic },
@@ -114,13 +133,14 @@ export function load(): Settings {
       local: { ...base.local, ...saved.local },
       sophistication: { ...saved.sophistication },
       sandbox: { ...base.sandbox, ...saved.sandbox },
-      offline: saved.offline === true,
+      // What was not saved is what it is by default, which for an app being tested is not what it is for a user
+      offline: saved.offline === undefined ? base.offline : saved.offline === true,
       fast: saved.fast === true,
       autoReview: saved.autoReview === true,
       approvalCeiling: isLevel(saved.approvalCeiling) ? saved.approvalCeiling : 5,
       theme: cleanTheme(saved.theme),
       readable: cleanReadable(saved.readable),
-      setup: cleanSetup(saved.setup),
+      setup: saved.setup === undefined ? base.setup : cleanSetup(saved.setup),
     };
   } catch (err) {
     console.error(`Could not read ${filePath()}; using default settings.`, (err as Error).message);
@@ -158,6 +178,10 @@ export function update(patch: SettingsPatch): Settings {
   }
   if (patch.local?.baseURL !== undefined) {
     next.local.baseURL = patch.local.baseURL.trim() || defaultLocalURL();
+  }
+  if (patch.local?.maxContext === null) delete next.local.maxContext;
+  else if (Number.isFinite(patch.local?.maxContext)) {
+    next.local.maxContext = cleanMaxContext(patch.local?.maxContext as number);
   }
   if (patch.sandbox?.image !== undefined) next.sandbox.image = patch.sandbox.image.trim();
   if (patch.offline !== undefined) next.offline = patch.offline === true;
@@ -220,7 +244,11 @@ export function publicView(): PublicSettings {
       hasKey: Boolean(settings.openai.apiKey),
       disabledModels: settings.openai.disabledModels,
     },
-    local: { baseURL: settings.local.baseURL, hasKey: Boolean(settings.local.apiKey) },
+    local: {
+      baseURL: settings.local.baseURL,
+      hasKey: Boolean(settings.local.apiKey),
+      maxContext: settings.local.maxContext,
+    },
     sophistication: settings.sophistication,
     sandbox: settings.sandbox,
     offline: settings.offline,

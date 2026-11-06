@@ -133,7 +133,9 @@ import {
   tools,
 } from '../../src/harness';
 import { ORDER, PROMPTS as PHASE_PROMPTS, spent as phaseSpent } from '../../src/harness/phases';
+import { MAX_GRANTS, TOOL_NAME as MORE_TOOL } from '../../src/harness/allowance';
 import { tool as askTool } from '../../src/tools/ask';
+import { tool as moreTool } from '../../src/tools/steps';
 
 const opus = model({
   id: 'opus',
@@ -883,6 +885,7 @@ describe('what the model is told', () => {
     ['question', 'This is a question'],
     ['general', 'This is a general request'],
     ['coding', 'This is a coding task'],
+    ['suggestion', 'This is a suggestion'],
   ])('tells a %s task what kind of task it is', async (category, said) => {
     mocks.classify.mockResolvedValue(needs(1, { category: category as never }));
     script(answer());
@@ -1146,20 +1149,6 @@ describe('which tools a reply is offered', () => {
       { q: 'timer' },
       expect.objectContaining({ threadId: THREAD, workspace: WORKSPACE })
     );
-  });
-
-  it("never offers a subagent's own tools in a reply, workspace or no workspace", async () => {
-    register('enter_branch', () => 'moved', { agentOnly: true });
-    register('get_time', () => '12:00');
-
-    script(answer());
-    await collect(run(ask, signal()));
-    expect(last().tools!.map((t) => t.name)).toEqual(['get_time']);
-
-    snapshots.length = 0;
-    script(answer());
-    await collect(run(coding, signal()));
-    expect(snapshots[0].tools!.map((t) => t.name)).toEqual(['get_time']);
   });
 
   it('offers a tool for general chats only in a thread that has no workspace', async () => {
@@ -1880,6 +1869,109 @@ describe('a coding change worked through in discrete steps', () => {
     expect(info).not.toHaveBeenCalledWith('phase.spent', expect.anything());
   });
 
+  // The share is a ceiling that can be raised, because the work it is worst
+  // for — cornering a fault — cannot be sized from the request (see
+  // harness/allowance.ts). The step asks, is granted, and its tools answer
+  // again: a grant that left the tools dead would be a grant of nothing.
+  describe('rounds asked for rather than cut off at', () => {
+    // The last turn in front of the model, which is how these tests tell one
+    // spending of the allowance from the next: the step is told it is spent
+    // once per allowance, so the telling is the newest message exactly when it
+    // has just happened
+    const last = (request: ChatRequest) => JSON.stringify(request.messages.at(-1) ?? '');
+
+    const asking = (reason = 'The failure reproduces; one more run would show which call returns undefined.') => [
+      call('ask', MORE_TOOL, { reason }),
+      done('tool_use'),
+    ];
+
+    beforeEach(() => {
+      tools.clear();
+      tools.register(moreTool);
+      mocks.listModels.mockResolvedValue({ models: [roomy], providers: [] });
+    });
+
+    it('grants the finding-out step more rounds when it asks, and its tools answer again', async () => {
+      const info = vi.spyOn(log, 'info');
+      const read = vi.fn(() => 'contents');
+      register('read_file', read);
+      let granted = false;
+      onStream((request) => {
+        const newest = last(request);
+        if (newest.includes('rounds for finding out')) return from(asking());
+        if (newest.includes('Granted:')) {
+          granted = true;
+          return from([call('after', 'read_file', { path: 'src/after.ts' }), done('tool_use')]);
+        }
+        if (granted) return from([text('Written up.'), done()]);
+        return from([call('c', 'read_file', { path: 'src/a.ts' }), done('tool_use')]);
+      });
+      await collect(run(stepped, signal()));
+      expect(info).toHaveBeenCalledWith('allowance.granted', expect.objectContaining({ scope: 'explore' }));
+      // The ask itself was answered rather than dropped as a late call...
+      expect(info).not.toHaveBeenCalledWith('phase.late_call', expect.anything());
+      // ...and the round it bought was a round the tools really ran
+      expect(read).toHaveBeenCalledWith({ path: 'src/after.ts' }, expect.anything());
+    });
+
+    // Two grants and no more: the third ask is a step that is not converging,
+    // and what serves the user then is the write-up of what it ruled out
+    it('refuses the ask after two grants', async () => {
+      const info = vi.spyOn(log, 'info');
+      register('read_file', () => 'contents');
+      onStream((request) => {
+        const newest = last(request);
+        if (newest.includes('No more rounds')) return from([text('Written up.'), done()]);
+        if (newest.includes('rounds for finding out')) return from(asking('Still cornering it.'));
+        return from([call('c', 'read_file', { path: 'src/a.ts' }), done('tool_use')]);
+      });
+      await collect(run(stepped, signal()));
+      const grants = info.mock.calls.filter(([event]) => event === 'allowance.granted');
+      expect(grants).toHaveLength(MAX_GRANTS);
+      expect(info).toHaveBeenCalledWith('allowance.refused', expect.objectContaining({ why: 'grants' }));
+    });
+
+    // The reply's own budget is nobody's allowance to work under, and before
+    // this it ran out in silence: the loop stopped and whatever had been
+    // written was what the user got, mid-change as often as not
+    it('says so on the reply’s last round, and works on when the round is asked for', async () => {
+      const info = vi.spyOn(log, 'info');
+      register('read_file', () => 'contents');
+      const bought = maxSteps('low', true);
+      let asked = false;
+      onStream((request) => {
+        const newest = last(request);
+        if (newest.includes('last round of tool calls this reply has')) {
+          asked = true;
+          return from(asking('The change is half made; the rest needs two rounds.'));
+        }
+        if (asked && newest.includes('Granted:')) return from([text('Written up.'), done()]);
+        return from([call('c', 'read_file', { path: 'src/a.ts' }), done('tool_use')]);
+      });
+      const events = await collect(run({ ...coding, plan: 'never' }, signal()));
+      expect(info).toHaveBeenCalledWith('request.last_round', expect.objectContaining({ limit: bought }));
+      expect(info).toHaveBeenCalledWith('allowance.granted', expect.objectContaining({ scope: 'reply' }));
+      // ...and the reply ran past the budget it was given rather than ending there
+      const ended = events.find((e) => e.type === 'done') as { stopReason: string; steps: number };
+      expect(ended.stopReason).not.toBe('max_steps');
+      expect(ended.steps).toBeGreaterThan(bought);
+    });
+
+    // Asking is not looking. A round charged for the asking would be a round
+    // of the grant spent on getting it. More asks here than the step's whole
+    // allowance of rounds, so a charge for any of them would spend it.
+    it('does not charge the asking against the rounds it is asking for', async () => {
+      const info = vi.spyOn(log, 'info');
+      let asks = 0;
+      onStream(() => {
+        asks++;
+        return from(asks <= 12 ? asking(`Round ${asks}.`) : [text('Written up.'), done()]);
+      });
+      await collect(run(stepped, signal()));
+      expect(info).not.toHaveBeenCalledWith('phase.spent', expect.anything());
+    });
+  });
+
   // A call made once the rounds are gone is dropped whole, with the turn that
   // made it: a call whose result never comes back is a turn some providers refuse
   it('drops a call made after the rounds are spent, rather than running it', async () => {
@@ -2031,6 +2123,21 @@ describe('whether a coding change is planned at all', () => {
     expect(only(events, 'phase').map((e) => (e as { phase: string }).phase)).toEqual(['report']);
   });
 
+  it('suggests in two steps when the classifier judges the message one, without asking the planner', async () => {
+    mocks.classify.mockResolvedValue(needs(3, { category: 'suggestion' }));
+    script([text('Found.'), done()], [text('Suggested.'), done()]);
+    const events = await collect(run({ ...coding, plan: 'auto' }, signal()));
+    expect(mocks.decide).not.toHaveBeenCalled();
+    expect(only(events, 'phase').map((e) => (e as { phase: string }).phase)).toEqual(['explore', 'suggest']);
+  });
+
+  it('marks the explore phase as a suggestion when the classifier judges it one', async () => {
+    mocks.classify.mockResolvedValue(needs(3, { category: 'suggestion' }));
+    script([text('Found.'), done()], [text('Suggested.'), done()]);
+    const events = await collect(run({ ...coding, plan: 'auto' }, signal()));
+    expect(only(events, 'phase')[0]).toEqual({ type: 'phase', phase: 'explore', suggestion: true });
+  });
+
   it('marks the explore phase as an investigation only when Investigate only is on', async () => {
     script([text('Found.'), done()], [text('Report.'), done()]);
     const investigating = await collect(run({ ...coding, investigate: true }, signal()));
@@ -2173,6 +2280,16 @@ describe('bringing a thread level with its workspace', () => {
 
   it('does not bother for a reply that changed nothing', async () => {
     script([call('c1', 'read_file'), done('tool_use')], answer());
+    await collect(run(coding, signal()));
+    expect(mocks.sync).not.toHaveBeenCalled();
+  });
+
+  // A suggestion makes its change in a demo copy that is reverted (see main.ts),
+  // so a sync would push a change the user was only shown back onto their
+  // project: it is skipped, whatever files the suggestion touched.
+  it('does not square a suggestion with the workspace, even when it changed files', async () => {
+    mocks.classify.mockResolvedValue(needs(3, { category: 'suggestion' }));
+    script([call('c1', 'write_file'), done('tool_use')], answer('Suggested it.'));
     await collect(run(coding, signal()));
     expect(mocks.sync).not.toHaveBeenCalled();
   });
@@ -2517,17 +2634,14 @@ describe('a reply that is an agent subagent’s', () => {
     expect(mocks.keepFindings).toHaveBeenCalledWith(THREAD, 'Found in import.ts', 'the importer');
   });
 
-  it('is offered the tools only a subagent has, and refused what the kind refuses', async () => {
+  it('is refused what the kind refuses', async () => {
     register('read_file', () => 'contents');
-    register('create_branch', () => 'branched', { agentOnly: true });
     register('record', () => 'filmed');
     script(answer());
     await collect(run(AS_AGENT, signal()));
     const offered = last().tools?.map(({ name }) => name) ?? [];
     expect(offered).toContain('read_file');
-    // A subagent's own, never offered to a reply of its own
-    expect(offered).toContain('create_branch');
-    // ...and what no subagent may do, whatever else it has
+    // What no subagent may do, whatever else it has
     expect(offered).not.toContain('record');
   });
 
