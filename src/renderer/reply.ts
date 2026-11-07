@@ -15,7 +15,7 @@ import { clock, recordUsage } from './usage.js';
 import { render } from './thread-view.js';
 import { toolOf } from './tool-calls.js';
 import { shorten } from './events.js';
-import { retrySubagent } from './sidebar.js';
+import { retrySubagent, resumedSubagent } from './sidebar.js';
 import { dropSuggestion } from './suggestion.js';
 
 // Sending and receiving
@@ -364,12 +364,12 @@ export function accountOf(turn: Message[]): string[] {
     if (m.role === 'subagent') {
       const given = `subagent ${m.text} (${m.kind ?? 'worker'}), given "${shorten(m.task ?? '', ACCOUNT_INPUT)}"`;
       if (m.failed) return [`${given} did not finish, so nothing came of it.`];
-      // Still working when the app closed: it has been started again, but on
-      // its own, so what it brings back goes in the thread and not to the model
+      // Still working when the app closed: it has been continued, but on its own,
+      // so what it brings back goes in the thread and not to the model
       if (m.finding === undefined) {
         return [
-          `${given} was still working when the app closed. It has been started again and its report will appear in ` +
-            'the thread when it is done; do not hand it out again.',
+          `${given} was still working when the app closed. It has been continued, and its report will ` +
+            'appear in the thread when it is done; do not hand it out again.',
         ];
       }
       return [`${given} reported: ${shorten(m.finding ?? '', ACCOUNT_OUTPUT)}`];
@@ -440,18 +440,19 @@ export function continueReply(thread: Thread, error: Message): void {
   pickUp(thread, asked);
 }
 
-// Subagents the app closed in the middle of, started again from the top. They
-// are run on their own, as one the user asks for again is (see retrySubagent):
-// the conversation of the reply that sent one out is gone with the process, so
-// a reply picked up above is told this one has been started again and carries
-// on without it. Each is started again once; one that has the app closed on it
-// a second time is failed when it is loaded (see load).
+// Subagents the app closed in the middle of, continued from where they left off.
+// They are run on their own, as one the user asks for again is (see
+// retrySubagent), with the account of what each had done so the run that follows
+// carries on rather than starts over: the conversation of the reply that sent
+// one out is gone with the process, so a reply picked up above is told this one
+// has been continued and carries on without it. Each is continued once; one that
+// has the app closed on it a second time is failed when it is loaded (see load).
 export function resumeSubagents(): void {
   for (const thread of state.threads) {
     for (const subagent of thread.messages) {
       if (subagent.role !== 'subagent' || subagent.finding !== undefined) continue;
       subagent.restarts = (subagent.restarts ?? 0) + 1;
-      void retrySubagent(thread, subagent);
+      void retrySubagent(thread, subagent, resumedSubagent(subagent));
     }
   }
 }

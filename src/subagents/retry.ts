@@ -64,6 +64,10 @@ export async function retry(
         emit: (event) => {
           if (event.type === 'subagent_update') emit(event.event);
         },
+        // Where the run is one that picks it up where the app closed on it: what
+        // it had done, so the model carries on rather than starting over (see
+        // ./run.ts and ./thread.ts). A run the user asks for again carries none.
+        resumed: asked.resumed,
       },
       undefined
     );

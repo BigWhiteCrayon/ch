@@ -3,14 +3,14 @@ import { inflight, MAX_OPEN_THREADS, input, startedAgents, automatic, onTab } fr
 import { approvalOf } from './approvals.js';
 import { questionOf } from './questions.js';
 import { render } from './thread-view.js';
-import { LEFT_ALONE } from './reply.js';
+import { LEFT_ALONE, accountOf } from './reply.js';
 import { openRenameWorkspace } from './rename-feedback.js';
 import { openWorkspaceDialog } from './workspace-dialog.js';
-import { openAgentTab } from './agent-tabs.js';
+import { openAgentTab, agentMessages } from './agent-tabs.js';
 import { postReply, watching } from './events.js';
 import { changesThread, drafting, drawChanges } from './changes.js';
 import { openThreadDialog } from './thread-dialog.js';
-import type { Thread, Message } from './types.js';
+import type { Thread, Message, Resumed } from './types.js';
 
 export function workspaceName(workspace: string): string {
   return state.workspaceNames?.[workspace] ?? ownName(workspace);
@@ -406,15 +406,36 @@ export function subagentItem(thread: Thread, subagent: Message): HTMLLIElement {
 // two clicks of the same row are one retry
 export const retryingAgents = new Set<string>();
 
-// Runs one failed subagent again (see ../subagents/retry.ts). What it did
-// before is cleared rather than added to: this is the same piece of work being
-// done over, and half of one account followed by half of another would read
-// as neither.
-export async function retrySubagent(thread: Thread, subagent: Message): Promise<void> {
+// What a subagent had done when the app closed on it, so a run that picks it up
+// carries on where it left off rather than starting over (see resumeSubagents in
+// ./reply.js). Its work is read out of the events the window kept of it, the
+// same way its tab is drawn (see agentMessages): a line per tool call and per
+// subagent, with in brief what came back. None, where it had done nothing to
+// carry on from — then it is started again from the top, as a subagent the user
+// asks for again is.
+export function resumedSubagent(subagent: Message): Resumed | undefined {
+  const turn = agentMessages({ name: subagent.text, task: subagent.task, events: subagent.events, working: false });
+  const did = accountOf(turn);
+  const text = turn.flatMap((m) => (m.role === 'assistant' && m.text ? [m.text] : [])).join('\n\n') || undefined;
+  if (did.length === 0 && !text) return undefined;
+  return { did, text };
+}
+
+// Runs one subagent again, in its thread's own container (see
+// ../subagents/retry.ts). Where an account of what it had done is given, it is
+// picked up where the app left it off and that work is kept, so the run that
+// follows reads on from it. Without one — a subagent the user asks for again —
+// it is the same piece of work being done over, so what it did before is
+// cleared rather than added to: half of one account followed by half of another
+// would read as neither.
+export async function retrySubagent(thread: Thread, subagent: Message, resumed?: Resumed): Promise<void> {
   const id = subagent.thoughtId;
   if (!id || !subagent.task || retryingAgents.has(id)) return;
   retryingAgents.add(id);
-  subagent.events = [];
+  // Picked up, not done over: its work so far is kept, so the run that follows
+  // reads on from it. Done over, and it is cleared, so the new work is not left
+  // mixed in with the old.
+  if (!resumed) subagent.events = [];
   delete subagent.finding;
   delete subagent.failed;
   delete subagent.progress;
@@ -429,6 +450,9 @@ export async function retrySubagent(thread: Thread, subagent: Message): Promise<
     name: subagent.text,
     task: subagent.task,
     kind: subagent.kind,
+    // What it had done, where it is picked up rather than done over: a subagent
+    // the user asks for again carries none, so the key is not written.
+    ...(resumed ? { resumed } : {}),
   };
   const result = await window.llm.retrySubagent(asked).catch((err: Error) => ({ text: err.message, isError: true }));
   retryingAgents.delete(id);

@@ -503,6 +503,16 @@ async function work(
   mailbox.open(context.threadId, name);
 
   const messages: ChatMessage[] = [{ role: 'user', content: task }];
+  // Where the app picked this piece up where it closed on it, what it had done
+  // goes in front of it, so the model carries on rather than starting over. The
+  // small loop has no flow to splice it in for it, so it does the one the flow
+  // does for a reply (see ../harness/index.ts). Imported the same way
+  // ./thread.ts does it, since the flow is what imports this one back.
+  if (context.resumed) {
+    const { pickedUp } = await import('../harness');
+    if (context.resumed.text) messages.push({ role: 'assistant', content: context.resumed.text });
+    messages.push({ role: 'user', content: pickedUp(context.resumed) });
+  }
   // Its own steps share a prompt the way a thread's passes do, and its own
   // prompt is not the thread's, so the key is the subagent's (see
   // ChatRequest.cacheKey)

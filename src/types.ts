@@ -378,6 +378,11 @@ export interface ToolContext {
   // The subagent making the call, where one is: it keeps its own notes rather
   // than writing over the thread's or another subagent's (see sandbox/index.ts)
   agent?: string;
+  // What the subagent had done when the app closed on it, where it is picked up
+  // from where it left off rather than started again (see subagents/retry.ts).
+  // A subagent the user asks for again carries none: it is the same piece of
+  // work done over, and its work is cleared (see retrySubagent).
+  resumed?: Resumed;
   // How far down the chain of subagents this is: 0 in a reply, 1 in a subagent
   // it sent, and so on. An explorer may send explorers of its own, so there has
   // to be a bottom (see MAX_HANDOUT_DEPTH in subagents/kind.ts).
@@ -718,6 +723,10 @@ export interface RetryRequest {
   name: string;
   task: string;
   kind?: string;
+  // What it had done when the app closed on it, so a run that picks it up
+  // carries on where the one before left off rather than starting over. A run
+  // the user asks for again carries none (see retrySubagent).
+  resumed?: Resumed;
 }
 
 // What a subagent brought back, as the window records it

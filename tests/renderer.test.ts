@@ -2665,7 +2665,7 @@ describe('token use', () => {
         $<HTMLElement>('#messages .subagent .open').click();
         await flush();
         expect($('#agent-view').textContent).toContain('Trying again.');
-        // Its old work is not left mixed in with the new
+        // Its old work is cleared, so the new work is not left mixed in with it
         expect($('#agent-view').textContent).not.toContain('Reading them.');
         expect($('#agent-view .message.assistant').textContent).toBe('They use vitest.');
       });
@@ -3038,20 +3038,32 @@ describe('token use', () => {
       expect(mark()).toContain('done');
     });
 
-    it('is started again by an app that closed mid-run, from the top', async () => {
+    it('is continued by an app that closed mid-run, from where it left off', async () => {
       sub('s1', 'tests', 'read the tests');
       did('s1', { type: 'tool_call', id: 'c1', name: 'read_file', input: { path: 'a.ts' } });
+      did('s1', { type: 'tool_result', id: 'c1', name: 'read_file', output: 'export const p = 1;', isError: false });
       llm.retrySubagent.mockImplementation(() => new Promise(() => {}));
+      // Closing the window runs the save it had pending, so the subagent is on
+      // disk with its work, the way a reply the app closed on is (see quit)
+      window.dispatchEvent(new Event('beforeunload'));
       await start();
       expect(llm.retrySubagent).toHaveBeenCalledTimes(1);
+      // It is given what it had done, so the run that follows carries on
       expect(llm.retrySubagent).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 's1', name: 'tests', task: 'read the tests', kind: 'worker' })
+        expect.objectContaining({
+          id: 's1',
+          name: 'tests',
+          task: 'read the tests',
+          kind: 'worker',
+          resumed: expect.objectContaining({ did: expect.arrayContaining([expect.stringContaining('read_file')]) }),
+        })
       );
+      // Its work so far is kept, not cleared, so the run reads on from it
       toggle().click();
       expect($$<HTMLElement>('#thread-list li.subagent .status').map((el) => el.className)).toEqual(['status working']);
     });
 
-    it('says what a subagent started again brought back, in the thread', async () => {
+    it('says what a subagent continued brought back, in the thread', async () => {
       sub('s1', 'tests', 'read the tests');
       llm.retrySubagent.mockResolvedValue({ text: 'They use vitest.', isError: false });
       await start();
@@ -3061,16 +3073,16 @@ describe('token use', () => {
       expect($('#agent-view .message.assistant').textContent).toBe('They use vitest.');
     });
 
-    it('is told to the reply picked up with it that it was started again', async () => {
+    it('is told to the reply picked up with it that it was continued', async () => {
       sub('s1', 'tests', 'read the tests');
       llm.retrySubagent.mockImplementation(() => new Promise(() => {}));
       await start();
       const [line] = sent().resumed!.did;
       expect(line).toContain('subagent tests (worker)');
-      expect(line).toContain('started again');
+      expect(line).toContain('continued');
     });
 
-    it('is failed rather than started again a second time that the app closes on it', async () => {
+    it('is failed rather than continued a second time that the app closes on it', async () => {
       sub('s1', 'tests', 'read the tests');
       did('s1', { type: 'tool_call', id: 'c1', name: 'read_file', input: { path: 'a.ts' } });
       llm.retrySubagent.mockImplementation(() => new Promise(() => {}));
@@ -8792,7 +8804,7 @@ describe('picking up a reply the app closed on', () => {
     expect(resumed().did).toEqual([
       'subagent tests (explorer), given "read the tests" reported: They use vitest.',
       'subagent build (worker), given "read the build" was still working when the app closed. ' +
-        'It has been started again and its report will appear in the thread when it is done; do not hand it out again.',
+        'It has been continued, and its report will appear in the thread when it is done; do not hand it out again.',
     ]);
   });
 

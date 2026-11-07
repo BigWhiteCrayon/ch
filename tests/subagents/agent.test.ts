@@ -102,6 +102,16 @@ describe('what it asks the reply flow for', () => {
     expect(asked()[0].provider).toBeUndefined();
     expect(asked()[0].model).toBeUndefined();
   });
+
+  // Where the app is picking it up where it closed on it, what it had done is
+  // handed to the flow, which splices it in the same way a thread's reply is
+  // picked up (see subagents/thread.ts)
+  it('is given what it had done, where the app is picking it up', async () => {
+    const resumed = { did: ['read_file("a.ts") returned: the file'], text: 'Reading a.ts now.' };
+    turns(answer('Moved it; the tests pass.'));
+    await work(piece(), context({ resumed }), ROUTED, []);
+    expect(asked()[0].resumed).toEqual(resumed);
+  });
 });
 
 describe('what the window is shown of it', () => {
