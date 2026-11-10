@@ -417,7 +417,6 @@ export async function retrySubagent(thread: Thread, subagent: Message): Promise<
   subagent.events = [];
   delete subagent.finding;
   delete subagent.failed;
-  delete subagent.progress;
   startedAgents.set(subagent, Date.now());
   save();
   render();

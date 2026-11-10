@@ -2919,32 +2919,6 @@ describe('token use', () => {
       ]);
     });
 
-    it('fills a ring on its tab as it says how much of its piece is left', async () => {
-      sub('s1', 'tests', 'read the tests');
-      toggle().click();
-      $<HTMLElement>('#thread-list li.subagent').click();
-      await flush();
-      // Nothing said yet, so the dot pulses as it did before
-      expect($<HTMLElement>('#tabs .tab .status').className).toContain('working');
-
-      did('s1', { type: 'progress', percent: 40 });
-      await flush();
-      const ring = $<SVGElement>('#tabs .tab .status.ring');
-      expect(ring.getAttribute('aria-label')).toBe('40% done');
-      // Filled four tenths of the way round, measured in the circumference
-      const [drawn] = String($<SVGElement>('#tabs .tab .status.ring .done').getAttribute('stroke-dasharray')).split(
-        ' '
-      );
-      expect(Number(drawn) / (2 * Math.PI * 4.5)).toBeCloseTo(0.4);
-      // ...and the estimate is a status, not a line of its work
-      expect($('#agent-view').textContent).not.toContain('40');
-
-      // A later estimate replaces it rather than adding to it
-      did('s1', { type: 'progress', percent: 90 });
-      await flush();
-      expect($<SVGElement>('#tabs .tab .status.ring').getAttribute('aria-label')).toBe('90% done');
-    });
-
     it('marks a finished subagent done, and one whose report was cut as neither done nor failed', async () => {
       sub('s1', 'tests', 'read the tests');
       sub('s2', 'docs', 'read the docs');
@@ -4535,7 +4509,11 @@ describe('markdown in a reply', () => {
 
     it('reads the lines of the file when the note is opened, numbered', async () => {
       threads.workspaceFile.mockResolvedValue({
-        path: 'src/main.ts', lines: ['alpha', 'beta'], from: 442, total: 451, more: 9,
+        path: 'src/main.ts',
+        lines: ['alpha', 'beta'],
+        from: 442,
+        total: 451,
+        more: 9,
       });
       const el = await inWorkspace('```file\nsrc/main.ts:442-451\n```\n');
       const details = $<HTMLDetailsElement>('#messages .message.assistant details.file-ref');
@@ -9500,8 +9478,6 @@ describe("reviewing a thread's changes", () => {
 
     emit(sentId(), { type: 'subagent', id: 's1', name: 'c1', task: 'deal with [c1]', kind: 'reviewer' });
     expect($('#changes-files .comment .progress').textContent).toContain('Reviewer working…');
-    emit(sentId(), { type: 'subagent_update', id: 's1', event: { type: 'progress', percent: 40 } });
-    expect($('#changes-files .comment .progress').textContent).toContain('Reviewer working… 40%');
     emit(sentId(), { type: 'subagent_done', id: 's1', text: 'Done.', isError: false });
     expect($('#changes-files .comment .progress').textContent).toContain('Reviewer finished');
 

@@ -186,7 +186,7 @@ export function commentThread(thread: Thread, comment: ReviewComment): HTMLEleme
           : 'Reviewer finished'
         : reviewer.waiting
           ? `Reviewer waiting its turn for ${reviewer.waiting}…`
-          : `Reviewer working…${reviewer.progress === undefined ? '' : ` ${Math.round(reviewer.progress)}%`}`;
+          : 'Reviewer working…';
     const open = document.createElement('button');
     open.type = 'button';
     open.className = 'reply';

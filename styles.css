@@ -859,25 +859,6 @@ main > header {
   background: #ca8a04;
 }
 
-/* How far along it says it is, filling clockwise. A disc rather than a hoop:
-   at 9px a hoop is a smudge. */
-#tabs .tab .status.ring {
-  width: 9px;
-  height: 9px;
-  background: none;
-  overflow: visible;
-}
-
-#tabs .tab .status.ring .track {
-  fill: var(--border);
-}
-
-#tabs .tab .status.ring .done {
-  fill: none;
-  stroke: var(--muted);
-  stroke-width: 9;
-}
-
 :is(#messages, #agent-view) .empty {
   margin: auto;
   color: var(--muted);

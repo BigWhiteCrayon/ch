@@ -646,11 +646,6 @@ export type AgentEvent =
   // asked to say the same thing in less (see subagents/run.ts). As with
   // 'condensing', the app's work rather than the model's.
   | { type: 'shortening' }
-  // How much of what it was given it reckons is done, 0 to 100, which it is
-  // asked for now and then (see PROGRESS in subagents/run.ts). Its own
-  // estimate, so it is a sense of how far along the work is and not a
-  // measurement of it.
-  | { type: 'progress'; percent: number }
   | ToolCallEvent
   | { type: 'tool_result'; id: string; name: string; output: string; isError: boolean; images?: ToolImage[] }
   | RateLimitedEvent
@@ -889,7 +884,6 @@ export type HarnessEvent =
   // again shorter (see subagents/run.ts). Reaches a thread when the agent
   // doing it is the thread itself, as the head explorer is.
   | { type: 'shortening' }
-  | { type: 'progress'; percent: number }
   // A subagent the reply set to work on one piece of a job, so that several
   // pieces are done at once (see subagents/). 'subagent' says one has started,
   // 'subagent_update' is a piece of its work as it happens, and 'subagent_done'
