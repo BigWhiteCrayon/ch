@@ -39,7 +39,8 @@
     "vitest": "^5.0.3"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.131.0"
+    "@anthropic-ai/sdk": "^0.131.0",
+    "undici": "^7.30.1"
   },
   "build": {
     "appId": "com.ch.app",
@@ -79,5 +80,9 @@
       "category": "Development",
       "icon": "assets/icon.png"
     }
+  },
+  "allowScripts": {
+    "electron-winstaller@5.4.0": true,
+    "fsevents@2.3.3": true
   }
 }

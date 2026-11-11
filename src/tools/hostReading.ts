@@ -1,6 +1,8 @@
 import * as child_process from 'child_process';
 import fs from 'fs';
 import * as access from '../harness/access';
+import * as log from '../log';
+import * as seatbelt from '../sandbox/seatbelt';
 import type { Tool } from '../types';
 import { GIT_READS, gitSubcommand, READING, refuse, stages } from './reading';
 import { copyHint } from './sandbox';
@@ -158,6 +160,49 @@ export function sensitive(argv: string[]): string | null {
   return null;
 }
 
+// The environment a stage runs in. Nothing here can answer an editor or a password prompt (see GIT_ENV), and a git
+// that only reads is told not to take the locks it would take to tidy the index as it goes: that is a write, which
+// the sandbox refuses a reading command (see confinement), and one that would hold up the user's own git meanwhile.
+function envFor(argv: string[]): NodeJS.ProcessEnv {
+  if (argv[0] !== 'git') return process.env;
+  return { ...process.env, ...GIT_ENV, ...(writesRepository(argv) ? {} : { GIT_OPTIONAL_LOCKS: '0' }) };
+}
+
+// The folders a git that changes the repository at cwd may write in: the working tree and the repository itself,
+// which a linked worktree keeps somewhere else, and cwd, for the git that makes one there (init, clone). Asked of
+// git, confined to reading, so that the answer is git's own rather than a guess at where .git is.
+async function repositoryFolders(cwd: string, signal?: AbortSignal): Promise<string[]> {
+  const ask = async (flag: string) => {
+    const argv = ['git', 'rev-parse', '--path-format=absolute', flag];
+    const { code, output } = await runHost([argv], cwd, {
+      signal,
+      timeoutMs: TIMEOUT_MS,
+      wrap: (a) => seatbelt.confine(a),
+    });
+    return code === 0 ? output.trim().split('\n')[0] : null;
+  };
+  const found = await Promise.all([ask('--show-toplevel'), ask('--git-common-dir')]);
+  return [cwd, ...found.filter((folder): folder is string => Boolean(folder))];
+}
+
+// How each stage of a command is confined on this computer, where it can be (see ../sandbox/seatbelt.ts): a git
+// that changes the repository may write in that repository, and every other stage writes nothing at all. Where it
+// cannot be, the stages run as they are, and that is said once in the log, being a bound this computer does not have.
+let unconfinedSaid = false;
+async function confinement(
+  pipeline: string[][],
+  cwd: string,
+  signal?: AbortSignal
+): Promise<((argv: string[], at: number) => string[]) | undefined> {
+  if (!seatbelt.available()) {
+    if (!unconfinedSaid) log.warn('host.unconfined', { platform: process.platform });
+    unconfinedSaid = true;
+    return undefined;
+  }
+  const writable = writesRepository(pipeline[0]) ? await repositoryFolders(cwd, signal) : null;
+  return (argv, at) => seatbelt.confine(argv, at === 0 ? writable : null);
+}
+
 // Runs a pipeline of stages directly (no shell) in cwd, with a timeout, each stage a process of its own with its
 // output wired into the next, and returns the last stage's output, cut at MAX_OUTPUT. Every stage's errors are kept
 // too: a pipeline that said nothing because its first stage could not run has to say which stage that was.
@@ -166,10 +211,17 @@ export function sensitive(argv: string[]): string | null {
 // command is parsed well enough to find a program and its arguments, which is a fair bargain for a container (see
 // ./reading.ts) and a poor one for the user's own filesystem. Doing the wiring here keeps the stages as argv — each
 // one a program this tool allows, run with its arguments and nothing expanded, interpolated or re-split.
+//
+// Each stage is given to wrap before it is run, which is how it is confined (see confinement): what is decided about
+// a stage — git's environment, which is the first — is decided from the stage as it was given.
 function runHost(
   pipeline: string[][],
   cwd: string,
-  { signal, timeoutMs }: { signal?: AbortSignal; timeoutMs: number }
+  {
+    signal,
+    timeoutMs,
+    wrap = (argv) => argv,
+  }: { signal?: AbortSignal; timeoutMs: number; wrap?: (argv: string[], at: number) => string[] }
 ): Promise<{ code: number | null; output: string; cut: boolean }> {
   return new Promise((resolve) => {
     let output = '';
@@ -182,18 +234,18 @@ function runHost(
         cut = true;
       }
     };
-    const children = pipeline.map((argv, i) =>
-      child_process.spawn(argv[0], argv.slice(1), {
+    const children = pipeline.map((argv, i) => {
+      const [program, ...args] = wrap(argv, i);
+      return child_process.spawn(program, args, {
         cwd,
         shell: false,
         signal,
-        // Nothing here can answer an editor or a password prompt (see GIT_ENV)
-        env: argv[0] === 'git' ? { ...process.env, ...GIT_ENV } : process.env,
+        env: envFor(argv),
         // Nobody is at the keyboard, so the first stage is given no input at all: one that would have read standard
         // input ends at once instead of waiting out the timeout for input that was never coming.
         stdio: [i === 0 ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-      })
-    );
+      });
+    });
     const last = children[children.length - 1];
     children.forEach((child, i) => {
       // A stage that stops reading early — head, mostly — leaves the one before it writing to a pipe with no other
@@ -255,7 +307,11 @@ and no -c, -C, --git-dir or --work-tree. It may be piped into ${[...FILTERS].sor
 as an absolute path, or one starting from ~. Arguments may not be absolute paths, start with ~, or contain .. as a
 path segment, so what a command touches stays in the folder; a commit message is the one argument this is not asked
 of. Every shell operator is refused — redirections, several commands at once, backquotes, $(…): there is no shell
-here, each program is run directly and the pipes are wired up for them.`,
+here, each program is run directly and the pipes are wired up for them.
+
+On macOS every command runs in a sandbox as well: anything but a git that changes the repository can write nothing
+and reach no network, and that git may write only in its own repository (its hooks too). "Operation not permitted"
+from a command means it tried to do something else.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -363,6 +419,7 @@ here, each program is run directly and the pipes are wired up for them.`,
     const { code, output, cut } = await runHost(pipeline, target, {
       signal: context.signal,
       timeoutMs: writesRepository(pipeline[0]) ? WRITING_TIMEOUT_MS : TIMEOUT_MS,
+      wrap: await confinement(pipeline, target, context.signal),
     });
     return `exit code ${code}\n${output}${cut ? `\n(output cut at ${MAX_OUTPUT} bytes)` : ''}`;
   },

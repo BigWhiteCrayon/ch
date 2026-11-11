@@ -52,7 +52,15 @@ const threads: ThreadsBridge = {
   saveNow: (state) => {
     ipcRenderer.sendSync('threads:save', state);
   },
+  // Sync, as saveNow, so the bytes are on disk by the time the window is gone
+  // (see beforeunload in renderer/threads.ts)
+  saveMedia: (items) => {
+    ipcRenderer.sendSync('threads:save-media', items);
+  },
+  loadMedia: () => ipcRenderer.sendSync('threads:load-media'),
   workspace: (workspace) => ipcRenderer.invoke('workspace:details', workspace),
+  workspaceFile: (workspace, relPath, from, to) =>
+    ipcRenderer.invoke('workspace:file', workspace, relPath, from, to),
   details: (threadId, workspace) => ipcRenderer.invoke('thread:details', threadId, workspace),
   relook: (workspace, threadId) => ipcRenderer.invoke('workspace:relook', workspace, threadId),
   looking: () => ipcRenderer.invoke('workspaces:looking'),

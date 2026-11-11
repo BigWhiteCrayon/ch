@@ -8,12 +8,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const electron = vi.hoisted(() => ({
   userData: '',
   encryptionAvailable: true,
+  setUsePlainTextEncryption: vi.fn(),
 }));
 
 vi.mock('electron', () => ({
   app: { getPath: () => electron.userData },
   safeStorage: {
     isEncryptionAvailable: () => electron.encryptionAvailable,
+    setUsePlainTextEncryption: electron.setUsePlainTextEncryption,
     encryptString: (text: string) => Buffer.from(`enc:${Buffer.from(text).toString('base64')}`),
     decryptString: (data: Buffer) => {
       const text = data.toString();
@@ -36,12 +38,61 @@ async function restart() {
 beforeEach(async () => {
   electron.userData = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-settings-'));
   electron.encryptionAvailable = true;
+  electron.setUsePlainTextEncryption.mockClear();
   vi.stubEnv('LOCAL_LLM_BASE_URL', '');
+  vi.stubEnv('CH_TEST_MODE', '');
+  vi.stubEnv('CH_TEST_SETTINGS', '');
   await restart();
 });
 
 afterEach(() => {
   fs.rmSync(electron.userData, { recursive: true, force: true });
+  vi.unstubAllEnvs();
+});
+
+// The app run to be tested, in a thread's container against the stand-in for Ollama (see ../src/scripts/fake-ollama.ts)
+describe('test mode', () => {
+  const platform = process.platform;
+  afterEach(() => Object.defineProperty(process, 'platform', { value: platform }));
+
+  it('starts past setup and offline, so the app opens on itself and nothing reaches a hosted model', async () => {
+    vi.stubEnv('CH_TEST_MODE', '1');
+    vi.stubEnv('LOCAL_LLM_BASE_URL', 'http://localhost:11500/v1');
+    const loaded = await restart();
+    expect(loaded.offline).toBe(true);
+    expect(loaded.setup.completed).toBe(true);
+    expect(loaded.setup.version).toBeGreaterThan(1000);
+    expect(loaded.local.baseURL).toBe('http://localhost:11500/v1');
+  });
+
+  it('takes CH_TEST_SETTINGS as what was saved, keeping its own defaults for what that leaves out', async () => {
+    vi.stubEnv('CH_TEST_MODE', '1');
+    vi.stubEnv('CH_TEST_SETTINGS', JSON.stringify({ autoReview: true, approvalCeiling: 2 }));
+    const loaded = await restart();
+    expect(loaded).toMatchObject({ autoReview: true, approvalCeiling: 2, offline: true, setup: { completed: true } });
+  });
+
+  it('reads what was saved over CH_TEST_SETTINGS, once something has been', async () => {
+    vi.stubEnv('CH_TEST_MODE', '1');
+    vi.stubEnv('CH_TEST_SETTINGS', JSON.stringify({ fast: false }));
+    await restart();
+    settings.update({ fast: true });
+    expect((await restart()).fast).toBe(true);
+  });
+
+  it("saves with Electron's own key on Linux, where a container has no keyring, and only in test mode", async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    await restart();
+    expect(electron.setUsePlainTextEncryption).not.toHaveBeenCalled();
+    vi.stubEnv('CH_TEST_MODE', '1');
+    await restart();
+    expect(electron.setUsePlainTextEncryption).toHaveBeenCalledWith(true);
+  });
+
+  it('ignores CH_TEST_SETTINGS outside test mode', async () => {
+    vi.stubEnv('CH_TEST_SETTINGS', JSON.stringify({ offline: true }));
+    expect((await restart()).offline).toBe(false);
+  });
 });
 
 describe('defaults', () => {
@@ -61,6 +112,18 @@ describe('defaults', () => {
       setup: { completed: false, version: 0, skipped: [] },
     });
     expect(fs.existsSync(file())).toBe(false);
+  });
+
+  it('keeps a limit on the context of local models until it is taken away', async () => {
+    settings.update({ local: { maxContext: 16384.5 } });
+    expect(settings.get().local.maxContext).toBe(16384);
+    expect(settings.publicView().local.maxContext).toBe(16384);
+    settings.update({ local: { baseURL: 'http://other:1/v1' } });
+    expect(settings.get().local.maxContext).toBe(16384);
+    settings.update({ local: { maxContext: 100 } });
+    expect(settings.get().local.maxContext).toBe(4096);
+    settings.update({ local: { maxContext: null } });
+    expect(settings.get().local).not.toHaveProperty('maxContext');
   });
 
   it('takes the default local server from LOCAL_LLM_BASE_URL', async () => {

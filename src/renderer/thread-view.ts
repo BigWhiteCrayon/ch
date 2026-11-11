@@ -77,6 +77,10 @@ const players = new WeakMap<ToolVideo, HTMLVideoElement>();
 // of the DOM; the data URL it came as where it will not (jsdom, in the tests).
 // Both are allowed to play by the page's policy (see the CSP in index.html).
 function sourceOf(video: ToolVideo): string {
+  // A clip with no bytes behind it (one that fell out of the sidecar's cap) is
+  // not called on, but a name on its own would not play, so there is nothing to
+  // make of it
+  if (!video.data) return '';
   try {
     const bytes = Uint8Array.from(atob(video.data), (char) => char.charCodeAt(0));
     return URL.createObjectURL(new Blob([bytes], { type: video.mediaType }));
@@ -109,6 +113,9 @@ function appendMedia(into: HTMLElement, m: Message): void {
   // words with no picture, which is what dropping them left (see the
   // 'images' event in events.ts).
   for (const image of m.images ?? []) {
+    // One whose bytes fell out of the sidecar's cap is only a name now, and
+    // draws nothing (see reattachMedia in threads.ts)
+    if (!image.data) continue;
     const img = document.createElement('img');
     img.className = 'tool-image';
     img.src = `data:${image.mediaType};base64,${image.data}`;
@@ -116,7 +123,18 @@ function appendMedia(into: HTMLElement, m: Message): void {
     into.append(img);
   }
   // ...and the clips it recorded, under those
-  for (const video of m.videos ?? []) into.append(player(video));
+  for (const video of m.videos ?? []) if (video.data) into.append(player(video));
+}
+
+// The bubble each reply still being written is drawn in, so that its words can
+// be put into it where it stands as they arrive (see drawText)
+const writing = new WeakMap<Message, HTMLElement>();
+
+// A reply's words, and what it took, into its bubble
+function fillReply(div: HTMLElement, m: Message): void {
+  // Replies saved by an earlier version may still carry result tags
+  if (m.text) div.append(renderMarkdown(m.text.replace(/<\/?result>/g, '').trim()));
+  appendMedia(div, m);
 }
 
 export function drawMessages(
@@ -269,9 +287,8 @@ export function drawMessages(
       div.textContent = m.status;
     } else if (m.role === 'assistant' && (m.text || m.images?.length || m.videos?.length)) {
       div.classList.add('markdown');
-      // Replies saved by an earlier version may still carry result tags
-      if (m.text) div.append(renderMarkdown(m.text.replace(/<\/?result>/g, '').trim()));
-      appendMedia(div, m);
+      fillReply(div, m);
+      if (m.streaming) writing.set(m, div);
     } else if (m.streaming && !m.text) {
       // Nothing of the reply has arrived yet: drawn below as a 'Working…'
       // dropdown in the bubble's place
@@ -285,6 +302,9 @@ export function drawMessages(
       }
       div.append(document.createTextNode(m.text || '…'));
       if (m.since !== undefined) div.append(' · ', clock(m.since));
+      // The pictures the user attached, under what they said. Shown even with no
+      // words: a message may be a picture and nothing else.
+      if (m.role === 'user') appendMedia(div, m);
       // A reply the app closed on twice is left alone; this picks it up anyway
       if (thread && m.role === 'error' && m.text === LEFT_ALONE) {
         const carryOn = document.createElement('button');
@@ -594,6 +614,34 @@ export function render(): void {
   if (!following) return;
   if (streaming && streaming !== messagesEl.lastElementChild) {
     streaming.scrollIntoView?.({ block: 'nearest' });
+  } else {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+}
+
+// More of a reply's words have arrived, and only its own bubble is drawn again.
+// A local model sends its reply a token at a time, and drawing the whole thread
+// and the sidebar for each one kept the window busy for longer than the tokens
+// took to arrive on a long thread, until it stopped answering at all. The first
+// words of a reply change more than the bubble — they take the place of its
+// 'Working…' dropdown and fold its thoughts away — so a bubble not yet drawn,
+// or no longer on screen, is drawn the whole way.
+export function drawText(m: Message): void {
+  const bubble = writing.get(m);
+  if (!bubble || !messagesEl.contains(bubble)) {
+    render();
+    return;
+  }
+  // Measured before the bubble grows, as render does
+  const following = !messagesEl.hidden && (toTheEnd || atEnd(messagesEl));
+  setToTheEnd(false);
+  holdSelection();
+  bubble.replaceChildren();
+  fillReply(bubble, m);
+  syncQuote();
+  if (!following) return;
+  if (bubble !== messagesEl.lastElementChild) {
+    bubble.scrollIntoView?.({ block: 'nearest' });
   } else {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }

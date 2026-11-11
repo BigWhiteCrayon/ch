@@ -12,7 +12,7 @@
 // The figures below were measured against anthropic's own count_tokens over
 // 50 real prompts out of the app's log, 2,953 to 47,392 tokens, on 2026-10-28.
 
-import type { ChatMessage, ToolImage } from '../types';
+import type { ChatMessage, ToolImage, ToolSpec } from '../types';
 
 // Roughly how many characters a token comes to. Measured at 2.79 over 45 text
 // prompts (p25 2.65, p50 2.77, p75 2.91, range 2.39 to 3.30): a conversation
@@ -52,6 +52,12 @@ export const IMAGE_TOKENS = 1337;
 
 const patches = (width: number, height: number): number => Math.ceil(width / PATCH) * Math.ceil(height / PATCH);
 
+// A tool as the model is given it: its name, what it is for and the shape of
+// its input. Whatever else a ToolSpec carries is the app's own business and
+// never reaches the prompt, so it is not counted (see the providers, which
+// all send these three).
+const describe = ({ name, description, inputSchema }: ToolSpec) => ({ name, description, inputSchema });
+
 // Python's round(), which the resizing follows: an exact half goes to the even
 // side rather than upwards, and the two disagree about some images.
 function roundTiesToEven(value: number): number {
@@ -90,6 +96,9 @@ function fitted(width: number, height: number): [number, number] {
 // this cannot read. Only the header is decoded, not the picture: a screenshot
 // is a megabyte of base64 and this runs on every message of every estimate.
 export function pixels({ mediaType, data }: ToolImage): { width: number; height: number } | null {
+  // A name with no bytes behind it (a screenshot whose bytes fell out of the
+  // sidecar's cap, see renderer/threads.ts) has no header to read
+  if (!data) return null;
   // Enough for a PNG's IHDR, which is first, and for the frame header of a
   // JPEG that carries a large thumbnail or colour profile ahead of it
   const head = Buffer.from(data.slice(0, 90_000), 'base64');
@@ -134,7 +143,15 @@ export function imageTokens(image: ToolImage): number {
 // ...and what a prompt comes to: the messages as the model will see them,
 // with the tool calls written into them, since a tool loop's prompt is mostly
 // results and the calls they answer, and the images a result carries.
-export function sizeOf(messages: ChatMessage[], system = ''): number {
+//
+// The tools themselves count too, where the request offers any. Their
+// descriptions and schemas are sent with every request and sit in the prompt
+// like anything else, and leaving them out undercounted a reply's prompt by a
+// fixed amount — measured against Ollama's own prompt_eval_count over 88
+// replies offering 24 tools, a median of 3,114 tokens, and 6,178 over the
+// ones offering 18. An undercount is the wrong way to be wrong about a
+// window, so they are counted wherever they are known.
+export function sizeOf(messages: ChatMessage[], system = '', tools?: ToolSpec[]): number {
   let chars = system.length;
   // The images are counted in tokens from the start, having no characters
   let images = 0;
@@ -143,5 +160,6 @@ export function sizeOf(messages: ChatMessage[], system = ''): number {
     if ('toolCalls' in m && m.toolCalls) chars += JSON.stringify(m.toolCalls).length;
     if ('images' in m && m.images) for (const image of m.images) images += imageTokens(image);
   }
+  if (tools?.length) chars += JSON.stringify(tools.map(describe)).length;
   return Math.ceil(chars / CHARS_PER_TOKEN) + images;
 }

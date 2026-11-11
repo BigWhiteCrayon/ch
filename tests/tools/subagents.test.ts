@@ -50,6 +50,39 @@ describe('what the finding-out step may hand out', () => {
   });
 });
 
+// The planning step is a step that changes nothing, so it may send one kind of
+// subagent and no other, for the same reason the finding-out step may (see
+// ../harness/phases.ts, which offers the handout tools to both).
+describe('what the planning step may hand out', () => {
+  it('sends explorers, which read and write notes and cannot change anything', async () => {
+    subagents.run.mockResolvedValue('found it');
+    await expect(hand([piece('parser', 'explorer')], 'plan')).resolves.toBe('found it');
+    expect(subagents.run.mock.calls[0][0].map((task: { name: string }) => task.name)).toEqual(['parser']);
+  });
+
+  it.each([['coder'], ['worker'], ['agent']])('refuses a %s there, and names the kind instead', async (kind) => {
+    subagents.run.mockClear();
+    await expect(hand([piece('change it', kind)], 'plan')).rejects.toThrow(/only hands work to the "explorer"/);
+    // Refused before anything is started: a coder sent from the planning step
+    // would have changed files the step says it cannot touch
+    expect(subagents.run).not.toHaveBeenCalled();
+  });
+
+  // The finding-out and planning steps are told the same about it: one kind, no
+  // account of the others (see the description the finding-out step is given)
+  it('tells the planning step the one kind it may send, and no account of the others', async () => {
+    const said = unwrapped(tool.describe?.('plan') ?? tool.description);
+    expect(said).toContain('every piece goes to an explorer');
+    for (const kind of ['coder', 'worker']) expect(said).not.toContain(kind);
+    // ...and what the planning step may ask for is that kind alone, required
+    const schema = (tool.schemaFor?.('plan') ?? tool.inputSchema) as {
+      properties: { tasks: { items: { properties: { kind: { enum: string[] } }; required: string[] } } };
+    };
+    expect(schema.properties.tasks.items.properties.kind.enum).toEqual(['explorer']);
+    expect(schema.properties.tasks.items.required).toContain('kind');
+  });
+});
+
 describe('what the doing step may hand out', () => {
   it.each([['coder'], ['worker'], ['explorer']])('sends a %s, having every kind', async (kind) => {
     subagents.run.mockResolvedValue('done');
@@ -63,13 +96,13 @@ describe('what the doing step may hand out', () => {
 });
 
 describe('which steps hold the tools at all', () => {
-  it('offers handing out, and waiting, in the two steps that have tools', () => {
-    expect(tool.phases).toEqual(['explore', 'execute']);
+  it('offers handing out, and waiting, in the steps that may send work', () => {
+    expect(tool.phases).toEqual(['explore', 'plan', 'execute', 'suggest']);
     // Work handed out and not waited for has to be collectable in the step
     // that started it
-    expect(waitTool.phases).toEqual(['explore', 'execute']);
+    expect(waitTool.phases).toEqual(['explore', 'plan', 'execute', 'suggest']);
     // ...and writable to, for the same reason
-    expect(messageTool.phases).toEqual(['explore', 'execute']);
+    expect(messageTool.phases).toEqual(['explore', 'plan', 'execute', 'suggest']);
   });
 });
 

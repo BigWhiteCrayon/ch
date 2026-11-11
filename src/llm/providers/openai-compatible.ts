@@ -12,6 +12,7 @@
 // don't.
 
 import type { ChatEvent, ChatMessage, ErrorCode, Provider, ToolImage, Usage } from '../../types';
+import { failure, patientFetch } from '../transport';
 import { stopped } from './stopped';
 
 // How long the server asked to be left alone for, in ms. Retry-After is
@@ -57,10 +58,14 @@ export function toMessages(messages: ChatMessage[]): Record<string, unknown>[] {
     if (!images.length) return;
     out.push({
       role: 'user',
-      content: images.map((image) => ({
-        type: 'image_url',
-        image_url: { url: `data:${image.mediaType};base64,${image.data}` },
-      })),
+      content: images
+        // One whose bytes fell out of the sidecar's cap (see renderer/threads.ts)
+        // is only a name now, and has nothing to send
+        .filter((image) => image.data)
+        .map((image) => ({
+          type: 'image_url',
+          image_url: { url: `data:${image.mediaType};base64,${image.data}` },
+        })),
     });
     images = [];
   };
@@ -83,10 +88,28 @@ export function toMessages(messages: ChatMessage[]): Record<string, unknown>[] {
       });
       continue;
     }
-    out.push({ role: m.role, content: m.content });
+    out.push({
+      role: m.role,
+      content: m.role === 'user' && m.images?.length ? userContent(m) : m.content,
+    });
   }
   flush();
   return out;
+}
+
+// A user turn as a content array: the words first, then an image_url each
+function userContent(m: Extract<ChatMessage, { role: 'user' }>): Record<string, unknown>[] {
+  const parts: Record<string, unknown>[] = [];
+  if (m.content) parts.push({ type: 'text', text: m.content });
+  for (const image of m.images ?? []) {
+    // A name with no bytes behind it has nothing to send
+    if (!image.data) continue;
+    parts.push({
+      type: 'image_url',
+      image_url: { url: `data:${image.mediaType};base64,${image.data}` },
+    });
+  }
+  return parts;
 }
 
 function parseInput(json: string): Record<string, unknown> | null {
@@ -128,6 +151,10 @@ export function createOpenAICompatibleProvider({
   const missingKey = requiresKey && !apiKey;
   const noKeyMessage = `No ${name} API key found. Add one in Settings.`;
   const url = (path: string) => `${baseURL.replace(/\/$/, '')}${path}`;
+  // A server on this computer is waited on without undici's five-minute
+  // limits, which a model loading or a long prompt goes past (see
+  // ../transport.ts). One across the network keeps them.
+  const ask = local ? patientFetch : fetch;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
@@ -138,7 +165,7 @@ export function createOpenAICompatibleProvider({
 
     async status() {
       try {
-        const res = await fetch(url('/models'), { headers });
+        const res = await ask(url('/models'), { headers });
         return res.ok ? 'ready' : 'unreachable';
       } catch {
         return 'unreachable';
@@ -149,7 +176,7 @@ export function createOpenAICompatibleProvider({
       if (missingKey) throw new Error(noKeyMessage);
       let res: Response;
       try {
-        res = await fetch(url('/models'), { headers });
+        res = await ask(url('/models'), { headers });
       } catch {
         throw new Error(`No server reachable at ${baseURL}`);
       }
@@ -213,7 +240,7 @@ export function createOpenAICompatibleProvider({
       try {
         let res: Response;
         try {
-          res = await fetch(url('/chat/completions'), {
+          res = await ask(url('/chat/completions'), {
             method: 'POST',
             headers,
             body: JSON.stringify(body),
@@ -221,7 +248,7 @@ export function createOpenAICompatibleProvider({
           });
         } catch (err) {
           if (signal.aborted) throw err;
-          yield { type: 'error', code: 'unreachable', message: `No server reachable at ${baseURL}` };
+          yield { type: 'error', ...failure(err, baseURL) };
           return;
         }
         if (!res.ok || !res.body) {

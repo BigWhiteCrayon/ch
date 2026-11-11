@@ -134,6 +134,18 @@ export const cases: Case<Input, Classification>[] = [
     category: ['coding'],
   }),
   one(
+    'a suggestion of how to restructure',
+    [user('suggest how I could split the settings module apart without breaking the tests')],
+    { sophistication: [3, 5], category: ['suggestion'] },
+    { workspace: true }
+  ),
+  one(
+    'how a change could be made, shown not done',
+    [user('how would I make the settings screen work offline? show me what it would take, but do not change it')],
+    { sophistication: [4, 5], category: ['suggestion'] },
+    { workspace: true }
+  ),
+  one(
     'debugging from a stack trace',
     [
       user(

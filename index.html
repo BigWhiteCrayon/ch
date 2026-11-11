@@ -68,7 +68,25 @@
           <span id="quote-text"></span><button type="button" id="quote-clear" aria-label="Remove quote">×</button>
         </div>
         <form id="composer">
+          <div id="attachments" hidden></div>
           <textarea id="input" rows="1" placeholder="Type a message…" autofocus></textarea>
+          <button id="attach" type="button" title="Attach an image" aria-label="Attach an image">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              aria-hidden="true"
+            >
+              <path
+                d="M21.44 11.05l-9.19 9.19a5 5 0 01-7.07-7.07
+                 l9.19-9.19a3 3 0 014.24 4.24l-9.2 9.19a1 1 0 01-1.41-1.41l8.49-8.48"
+              />
+            </svg>
+          </button>
+          <input id="attach-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
           <button id="send" type="submit">Send</button>
         </form>
       </main>
@@ -142,6 +160,8 @@
             the rating. Each model shows its level and the ratings it is used for; set a level yourself to change that.
           </p>
 
+          <p id="settings-offline-warning" class="hint" hidden></p>
+
           <section role="tabpanel" id="panel-anthropic" data-panel="anthropic" aria-labelledby="tab-anthropic">
             <label for="anthropic-key">API key</label>
             <div class="row">
@@ -168,6 +188,12 @@
               <input id="local-key" type="password" autocomplete="off" />
               <button type="button" class="remove-key" data-provider="local">Remove</button>
             </div>
+            <label for="local-max-context">Largest context window, in tokens (optional)</label>
+            <input id="local-max-context" type="number" min="4096" step="1024" placeholder="All the model can take" />
+            <p class="hint">
+              Models are loaded with all the context they can take. A big window needs a lot of memory, so set a limit
+              if models load slowly or fill your memory.
+            </p>
             <p id="ollama-status" class="hint"></p>
             <div class="model-list" data-provider="local"></div>
             <div class="row" id="ollama-other">
@@ -247,6 +273,7 @@
           <h2>Token Usage</h2>
           <div class="chips" id="usage-view" role="group" aria-label="What the page shows"></div>
           <div class="chips" id="usage-range" role="group" aria-label="Days shown"></div>
+          <div class="chips" id="usage-breakdown-view" role="group" aria-label="Breakdown shown by"></div>
           <!-- Opened, the dialog puts the focus on its first button; left to
                itself that is a range, and the ring on it reads as the range
                being showing rather than as where the keyboard is -->

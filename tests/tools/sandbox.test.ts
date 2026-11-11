@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { copyHint, makesRepository, pageFor, toolsPrompt, tools, writesFiles } from '../../src/tools/sandbox';
+import {
+  copyHint,
+  makesRepository,
+  pageFor,
+  scratchScript,
+  toolsPrompt,
+  tools,
+  writesFiles,
+} from '../../src/tools/sandbox';
 import { unwrapped } from '../helpers';
 
 describe('the original of a file the thread has a copy of', () => {
@@ -30,6 +38,15 @@ describe('which tool to use for what', () => {
     const said = toolsPrompt([...ALL, 'screenshot']);
     expect(said).toContain('/tmp/demo');
     expect(said).toContain('steps');
+  });
+
+  // The way to run the app goes with the tool that runs it (see ../../src/sandbox/recipes.ts)
+  it("says how the workspace's app is run to a model that can run it, and only to one in a workspace", () => {
+    const said = unwrapped(toolsPrompt([...ALL, 'use_app'], '/projects/none-saved'));
+    expect(said).toContain('no run recipe');
+    expect(said).toContain('save_run_recipe');
+    expect(toolsPrompt(ALL, '/projects/none-saved')).not.toContain('run recipe');
+    expect(toolsPrompt([...ALL, 'use_app'])).not.toContain('run recipe');
   });
 
   it('names only the tools the model has', () => {
@@ -200,5 +217,30 @@ describe('whether a command writes a file the guard is for', () => {
     expect(said).toContain('never reaches them');
     expect(said).toContain('changes for');
     expect(said).not.toMatch(/installing[^.]*, git and the like/);
+  });
+});
+
+// A script of the model's own, run apart from the app, is answered with a word
+// about the app's own tools and the project's tests rather than refused
+describe('whether a command runs a scratch script', () => {
+  it.each([
+    ["cat > /tmp/check.ts <<'EOF'\nimport { load } from '/workspace/src/store';\nEOF"],
+    ['npx tsx /tmp/check.ts'],
+    ['node /tmp/repro.mjs'],
+    ['python3 /tmp/try.py'],
+    [`node -e "const s = require('./dist/store'); console.log(s.load())"`],
+    [`python -c "import app; print(app.run())"`],
+  ])('notices %s', (command) => {
+    expect(scratchScript(command)).toBe(true);
+  });
+
+  it.each([
+    ['npx vitest run'],
+    ['node -e "console.log(process.version)"'],
+    ['node dist/main.js'],
+    ['git --git-dir=/var/lib/ch-baseline.git show HEAD:src/a.ts > /tmp/base.ts'],
+    ['cp -r . /tmp/demo'],
+  ])('leaves %s alone', (command) => {
+    expect(scratchScript(command)).toBe(false);
   });
 });

@@ -19,7 +19,7 @@ const fallback = {
   }),
 } satisfies Provider;
 
-const provider = () =>
+const provider = (settings: { maxContext?: number } = {}) =>
   createOllamaProvider({
     baseURL: 'http://server:11434/v1/',
     apiKey: '',
@@ -29,6 +29,7 @@ const provider = () =>
     briefKeepAlive: '30m',
     replyKeepAlive: '15m',
     fallback,
+    ...settings,
   });
 
 const request: ChatRequest = { provider: 'local', model: 'qwen', messages: [{ role: 'user', content: 'hi' }] };
@@ -49,6 +50,8 @@ const bodies = (path: string) =>
 let isOllama: boolean;
 let reply: () => Response;
 let capabilities: string[] | null;
+// What /api/show reports as the most context the model can take, if anything
+let contextLimit: number | undefined;
 // What /api/tags reports: the models installed, and how big each one is
 let installed: { name: string; size: number }[];
 
@@ -60,6 +63,7 @@ beforeEach(() => {
   fallback.listModels.mockResolvedValue([{ id: 'qwen', name: 'qwen', contextWindow: null, default: false }]);
   isOllama = true;
   capabilities = ['completion', 'tools'];
+  contextLimit = undefined;
   installed = [
     { name: 'qwen', size: 6 * 1024 ** 3 },
     { name: 'tiny:3b', size: 2 * 1024 ** 3 },
@@ -73,7 +77,11 @@ beforeEach(() => {
     if (path === '/api/generate') return jsonResponse({ done: true });
     if (path === '/api/tags') return jsonResponse({ models: installed });
     if (path === '/api/show') {
-      return capabilities ? jsonResponse({ capabilities }) : new Response('not found', { status: 404 });
+      if (!capabilities) return new Response('not found', { status: 404 });
+      const model_info = contextLimit
+        ? { 'general.architecture': 'llama', 'llama.context_length': contextLimit }
+        : undefined;
+      return jsonResponse({ capabilities, model_info });
     }
     return reply();
   });
@@ -106,6 +114,21 @@ describe('toMessages', () => {
       },
       { role: 'tool', tool_name: 'get_time', content: '12:00' },
     ]);
+  });
+
+  it("carries a user turn's pictures as the raw base64 strings, the way a tool result does", () => {
+    expect(
+      toMessages([
+        {
+          role: 'user',
+          content: 'what is this?',
+          images: [
+            { mediaType: 'image/png', data: 'AAAA' },
+            { mediaType: 'image/jpeg', data: 'BBBB' },
+          ],
+        },
+      ])
+    ).toEqual([{ role: 'user', content: 'what is this?', images: ['AAAA', 'BBBB'] }]);
   });
 });
 
@@ -361,6 +384,39 @@ describe('an Ollama server', () => {
       await collect(local.stream({ ...request, model: 'classifier', brief: true }, signal()));
       await collect(local.stream(request, signal()));
       expect(contexts()).toEqual([4096, 4096, 32768]);
+    });
+
+    it('is all the model can take', async () => {
+      contextLimit = 131072;
+      await collect(provider().stream(request, signal()));
+      expect(contexts()).toEqual([131072]);
+    });
+
+    it('is never more than the settings allow', async () => {
+      contextLimit = 131072;
+      await collect(provider({ maxContext: 16384 }).stream(request, signal()));
+      expect(contexts()).toEqual([16384]);
+    });
+
+    it('is the limit in the settings for a model that does not say what it can take, if that is smaller', async () => {
+      await collect(provider({ maxContext: 16384 }).stream(request, signal()));
+      await collect(provider({ maxContext: 65536 }).stream(request, signal()));
+      expect(contexts()).toEqual([16384, 32768]);
+    });
+
+    it('is never more than the model can take', async () => {
+      contextLimit = 8192;
+      const local = provider();
+      await collect(local.stream(request, signal()));
+      expect(contexts()).toEqual([8192]);
+      await local.ensureUp?.('qwen', signal());
+      expect(bodies('/api/generate').map((body) => body.options.num_ctx)).toEqual([8192]);
+    });
+
+    it('leaves a brief request its own length under a limit above it', async () => {
+      contextLimit = 8192;
+      await collect(provider().stream({ ...request, brief: true }, signal()));
+      expect(contexts()).toEqual([4096]);
     });
 
     it('stays wide for a model once it has had the wide one, so that it is not loaded again and again', async () => {
@@ -627,6 +683,40 @@ describe('a local server that is not Ollama', () => {
   });
 });
 
+describe('a chat that does not come back', () => {
+  // Every fetch rejection is a TypeError reading "fetch failed", so the two
+  // look alike to the caller and want opposite things done about them: a
+  // server that isn't there is worth asking again in a moment, and one that
+  // took the request and went quiet is still holding it (see failure in
+  // ../../../src/llm/transport.ts)
+  const rejectWith = (code: string) => {
+    reply = () => {
+      throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(code), { code }) });
+    };
+  };
+  const errorFrom = async () => {
+    const [event] = await collect(provider().stream(request, signal()));
+    return event as { type: string; code: string; message: string };
+  };
+
+  it('says a server that went quiet is running, rather than that it was not reached', async () => {
+    rejectWith('UND_ERR_HEADERS_TIMEOUT');
+    const event = await errorFrom();
+    expect(event).toMatchObject({ type: 'error', code: 'stalled' });
+    expect(event.message).toContain('http://server:11434/v1/');
+    expect(event.message).not.toContain('No server reachable');
+  });
+
+  it('says a refused connection was a server that was not reached', async () => {
+    rejectWith('ECONNREFUSED');
+    expect(await errorFrom()).toEqual({
+      type: 'error',
+      code: 'unreachable',
+      message: 'No server reachable at http://server:11434/v1/',
+    });
+  });
+});
+
 describe('everything but chatting', () => {
   it('is left to the provider it wraps', async () => {
     const local = provider();
@@ -640,6 +730,13 @@ describe('everything but chatting', () => {
     await expect(provider().listModels()).resolves.toEqual([
       { id: 'qwen', name: 'qwen', contextWindow: 32768, default: false, reasons: true, vision: true },
     ]);
+    // ...which is all each model can take, unless the settings say less
+    contextLimit = 8192;
+    await expect(provider().listModels()).resolves.toMatchObject([{ contextWindow: 8192 }]);
+    contextLimit = 131072;
+    await expect(provider().listModels()).resolves.toMatchObject([{ contextWindow: 131072 }]);
+    await expect(provider({ maxContext: 16384 }).listModels()).resolves.toMatchObject([{ contextWindow: 16384 }]);
+    contextLimit = undefined;
 
     isOllama = false;
     await expect(provider().listModels()).resolves.toEqual([

@@ -171,6 +171,7 @@ describe('keywordSearch', () => {
   });
 
   describe('searching only part of the workspace', () => {
+    const globsIn = (args: string[]) => args.filter((_arg, at) => args[at - 1] === '--glob');
     const argsFor = async (path: string) => {
       await keywordSearch(
         '/projects/demo',
@@ -184,13 +185,35 @@ describe('keywordSearch', () => {
     it('searches a plain path by giving it to ripgrep as the place to look', async () => {
       const args = await argsFor('src/search');
       expect(args.at(-1)).toBe('src/search');
-      expect(args).not.toContain('--glob');
+      // Not as a filter. The one filter here is the standing exclusion that
+      // keeps every search out of node_modules (see argsFor)
+      expect(globsIn(args)).toEqual(['!node_modules']);
     });
 
     it('passes a glob to ripgrep as a filter, still searching from the top', async () => {
       const args = await argsFor('src/**/*.test.ts');
       expect(args).toEqual(expect.arrayContaining(['--glob', 'src/**/*.test.ts']));
       expect(args.at(-1)).toBe('.');
+    });
+
+    // The copy this searches is filled from `git ls-files` and has no .git in
+    // it, and ripgrep reads a .gitignore only from inside a repository: left
+    // to itself it walked the node_modules the project's own install had put
+    // in the container, and answered "where is Message declared" out of
+    // postcss. The embeddings never had this, so the wrong answers all came
+    // from the searches that land here.
+    it("reads the project's own .gitignore although the copy it searches is no repository", async () => {
+      expect(await argsFor('src')).toContain('--no-require-git');
+    });
+
+    it('keeps a search out of node_modules even where there is no .gitignore to say so', async () => {
+      expect(globsIn(await argsFor('src'))).toContain('!node_modules');
+    });
+
+    it('searches node_modules when it is pointed there on purpose, rather than answering nothing', async () => {
+      const args = await argsFor('node_modules/postcss');
+      expect(globsIn(args)).not.toContain('!node_modules');
+      expect(args.at(-1)).toBe('node_modules/postcss');
     });
 
     // Given one file rather than a directory, ripgrep leaves the path off its
@@ -201,6 +224,36 @@ describe('keywordSearch', () => {
       const args = await argsFor('src/renderer.ts');
       expect(args.at(-1)).toBe('src/renderer.ts');
       expect(args).toContain('--with-filename');
+    });
+
+    const argsForMany = async (path: string[], exclude?: string[]) => {
+      await keywordSearch(
+        '/projects/demo',
+        'match',
+        { limit: 20, maxPerFile: 10, context: 1, pathsOnly: false, path, exclude },
+        signal
+      );
+      return proc.ran.at(-1)!.args as string[];
+    };
+
+    it('gives ripgrep several plain paths as the places to look, one after another', async () => {
+      const args = await argsForMany(['src/main.ts', 'src/preload.ts']);
+      expect(args.slice(-2)).toEqual(['src/main.ts', 'src/preload.ts']);
+      expect(globsIn(args)).toEqual(['!node_modules']);
+    });
+
+    // ripgrep searches a path it was handed outright whatever the filters
+    // say, so a list with a glob in it goes in as filters alone
+    it('turns a list with a glob in it into filters over the whole workspace', async () => {
+      const args = await argsForMany(['src/main.ts', 'tests/**/*.test.ts']);
+      expect(args.at(-1)).toBe('.');
+      expect(globsIn(args)).toEqual(expect.arrayContaining(['src/main.ts', 'src/main.ts/**', 'tests/**/*.test.ts']));
+    });
+
+    it('leaves out what it was told to, wherever it was told to look', async () => {
+      const args = await argsForMany(['src'], ['src/llm/providers', '**/*.test.ts']);
+      expect(globsIn(args)).toEqual(expect.arrayContaining(['!src/llm/providers', '!**/*.test.ts']));
+      expect(args.at(-1)).toBe('src');
     });
   });
 
@@ -255,6 +308,16 @@ describe('regexSearch', () => {
     expect(args).toEqual(expect.arrayContaining(['--regexp', 'await\\s+fetch\\(']));
     // Someone who writes "[A-Z]" means the capital letters
     expect(args).not.toContain('--ignore-case');
+  });
+
+  it('matches whatever the case where it is asked to, as grep -i does', async () => {
+    await regexSearch('/projects/demo', 'always allow', { ...limits, ignoreCase: true }, signal);
+    expect(proc.ran[0].args).toContain('--ignore-case');
+  });
+
+  it('never ignores the case of a definition, whatever the search was asked', async () => {
+    await definitionSearch('/projects/demo', 'Thread', { ...limits, ignoreCase: true }, signal);
+    expect(proc.ran[0].args).not.toContain('--ignore-case');
   });
 
   it('finds the lines of a pattern narrowed to a single file, rather than answering that nothing matched', async () => {

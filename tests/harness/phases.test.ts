@@ -9,6 +9,7 @@ import { maxSteps } from '../../src/harness';
 import { all } from '../../src/tools';
 import { CODER, specsFor } from '../../src/subagents';
 import { ASK_TOOL } from '../../src/subagents/kind';
+import { MAX_GRANTS, TOOL_NAME as MORE_TOOL, grant } from '../../src/harness/allowance';
 import { unwrapped } from '../helpers';
 import type { Phase } from '../../src/types';
 
@@ -59,6 +60,14 @@ describe('the tools a step that changes nothing is offered', () => {
     // The same, for a page that moves: it draws and encodes under /tmp and
     // touches nothing in the project either
     'record',
+    // Using the running app, which is how the finding-out step reproduces a bug
+    // rather than with a script of its own: the session and the browser's
+    // profile are kept under /tmp, and nothing is written to the project
+    'use_app',
+    // Keeping how the app was got running, for the threads after this one: the
+    // recipe is kept in the app's data folder, beside the workspace's notes, and
+    // what it runs to check itself is what use_app runs
+    'save_run_recipe',
     'add_workspace_note',
     'add_to_context',
     'save_context',
@@ -74,6 +83,10 @@ describe('the tools a step that changes nothing is offered', () => {
     'message_subagent',
     // Puts a question to the user and waits, which changes nothing either
     ASK_TOOL,
+    // Asks for more rounds than the step's allowance holds, which changes
+    // nothing in the project: all it changes is how long the step may go on
+    // (see harness/allowance.ts)
+    MORE_TOOL,
   ]);
 
   it('is only those, out of every tool the app has', () => {
@@ -88,10 +101,14 @@ describe('the tools a step that changes nothing is offered', () => {
   });
 
   // The planning step cannot read, but it can stop to ask the user what the
-  // plan would rest on
-  it('is only the question to the user in the planning step', () => {
-    expect(all.filter((tool) => phases.offers(tool, 'plan')).map(({ name }) => name)).toEqual([ASK_TOOL]);
-    for (const tool of all.filter(({ name }) => name !== ASK_TOOL)) {
+  // plan would rest on, and it can send work out to an explorer — which reads
+  // and writes notes and changes nothing — so the plan is not built on a part of
+  // the project the finding-out step did not reach. Those four are all it offers.
+  it('offers the question to the user and the three tools that hand work out in the planning step', () => {
+    const offered = all.filter((tool) => phases.offers(tool, 'plan')).map(({ name }) => name);
+    expect(offered).toEqual(['hand_to_subagent', 'wait_for_subagent', 'message_subagent', ASK_TOOL]);
+    // Every other tool is kept out of the planning step
+    for (const tool of all.filter(({ name }) => name !== ASK_TOOL && !offered.includes(name))) {
       expect(phases.offers(tool, 'plan'), tool.name).toBe(false);
     }
   });
@@ -113,6 +130,15 @@ describe('the tools a step that changes nothing is offered', () => {
     const hostTool = all.find((one) => one.name === 'run_host_command')!;
     expect(phases.offers(hostTool!, 'explore')).toBe(true);
     expect(phases.offers(hostTool!, 'execute')).toBe(true);
+  });
+
+  // The finding-out prompt sent history questions to run_reading_command,
+  // which runs in a copy with no .git: every git log asked of it found no
+  // repository
+  it('sends questions about the history to run_host_command, not to the copy', () => {
+    const prompt = unwrapped(phases.PROMPTS.explore);
+    expect(prompt).toContain('what a commit did — run_host_command answers it');
+    expect(prompt).not.toMatch(/commit did — run_reading_command/);
   });
 
   // Not even the doing step, which hands its changes to coders: a step holding
@@ -139,6 +165,17 @@ describe('the tools a step that changes nothing is offered', () => {
         specsFor(CODER, { workspace: '/w' } as never, all).map(({ name: n }) => n),
         name
       ).toContain(name);
+    }
+  });
+
+  // The one step that holds the change tools itself is the suggest step: it
+  // makes the change a suggestion is about, in a demo copy that is reverted, so
+  // it needs the tools that write a file and the doing step does not (see
+  // phases.SUGGESTION).
+  it('offers the tools that write a file in the suggest step, where the change is made and reverted', () => {
+    for (const name of ['write_file', 'edit_file']) {
+      const tool = all.find((one) => one.name === name)!;
+      expect(phases.offers(tool!, 'suggest'), `${name} in suggest`).toBe(true);
     }
   });
 
@@ -287,6 +324,46 @@ describe('the steps of an investigation', () => {
   });
 });
 
+// A suggestion finds out how the code stands and then suggests a change to it:
+// two steps, the second of which holds the tools that make the change and is
+// read by the user. The change it makes is in a demo copy that is reverted, so
+// the suggest step is unlike the doing step: it holds the change tools itself
+// and its words are the reply, not a handover.
+describe('the steps of a suggestion', () => {
+  const args = { plan: false, category: 'question', workspace: true, tools: true, resumed: false };
+
+  it('is the finding out and the suggesting', () => {
+    expect(phases.SUGGESTION).toEqual(['explore', 'suggest']);
+    expect(phases.next('explore', phases.SUGGESTION)).toBe('suggest');
+    expect(phases.last('suggest', phases.SUGGESTION)).toBe(true);
+    expect(phases.last('explore', phases.SUGGESTION)).toBe(false);
+  });
+
+  it('is chosen by the classifier as a kind of task, and needs no coding task', () => {
+    expect(phases.forReply({ ...args, category: 'suggestion' })).toBe(phases.SUGGESTION);
+    expect(phases.forReply({ ...args, category: 'suggestion', plan: false })).toBe(phases.SUGGESTION);
+    // A coding task is not a suggestion
+    expect(phases.forReply(args)).toBeNull();
+  });
+
+  it('is only written up, with no finding out, when there is no workspace to read', () => {
+    expect(phases.forReply({ ...args, category: 'suggestion', workspace: false })).toEqual(phases.WRITE_UP);
+    expect(phases.forReply({ ...args, category: 'suggestion', tools: false })).toEqual(phases.WRITE_UP);
+  });
+
+  it('is not picked up again once resumed', () => {
+    expect(phases.forReply({ ...args, category: 'suggestion', resumed: true })).toBeNull();
+  });
+
+  // Unlike the writing up, the suggest step holds the tools that make the
+  // change, and its words are read by the user: it makes a change to show, then
+  // explains it, and the explanation is the reply.
+  it('suggests with the change tools in hand, for the user', () => {
+    expect(phases.hasTools('suggest')).toBe(true);
+    expect(phases.readByUser('suggest')).toBe(true);
+  });
+});
+
 // The planning step is the one whose words the user acts on, and the one step
 // that cannot check anything: it has no tools, and what it says is handed
 // straight to coders. So what it is told to do with an open question is a fact
@@ -328,5 +405,119 @@ describe('what the planning step is told to write', () => {
   // Asked again when the step wrote nothing, so it asks for the same thing
   it('asks for the same plan again when the step ended without one', () => {
     expect(unwrapped(phases.NOTHING_CARRIED.plan)).toContain('settled rather than left for whoever carries it out');
+  });
+});
+
+// Working a fault through is the same four steps as any other change, and the
+// difference is what each of them is told: see it happen before reading for it,
+// carry the diagnosis forward, name the cause in the plan, and settle the fix
+// by doing again what showed the fault.
+describe('a change that is a fix', () => {
+  const explore = unwrapped(phases.PROMPTS.explore);
+  const plan = unwrapped(phases.PROMPTS.plan);
+  const execute = unwrapped(phases.PROMPTS.execute);
+  const respond = unwrapped(phases.PROMPTS.respond);
+
+  // The real application rather than a script of its own, and by the quickest
+  // route to it: the recipe whoever first got it running saved (see
+  // sandbox/recipes.ts), which the doing step, the coder and the tester all
+  // name and this step did not
+  it('is reproduced in the real application, started from the workspace’s run recipe', () => {
+    expect(explore).toContain('use the real application, not a script of your own');
+    expect(explore).toContain('use_app with recipe: true');
+    // The session stays up, so a fault is walked into one move at a time
+    expect(explore).toContain('reproduce the bug one move at a time');
+    // ...and what it worked out about launching is kept where the next thread
+    // to reproduce something finds it
+    expect(explore).toContain('save how you did it with save_run_recipe');
+  });
+
+  it('is reproduced before it is read for', () => {
+    expect(explore).toContain('see it happen before you read for it');
+    // The real thing, not a script of its own: the ways in are the project's
+    // tests, the app, and the command the user ran
+    expect(explore).toContain("the project's tests for a failing test");
+    expect(explore).toContain('use_app for anything the user');
+    // A fault that will not reproduce is a finding, not a licence to plan a fix
+    expect(explore).toContain('Where it will not reproduce, that is itself a finding');
+  });
+
+  // The pictures are taken in the step that runs the thing, because the step
+  // that writes the plan has no tools and the plan is where they are shown
+  it('is screenshot and filmed while finding out, for showing under the plan', () => {
+    expect(explore).toContain('recording of a use_app session');
+    expect(explore).toContain('shown to the user underneath the plan');
+  });
+
+  // The ordinary stopping rule is understanding the code the change touches,
+  // which a fault does not satisfy: an unlocated fault sends coders to the
+  // wrong file with every confidence
+  it('does not let the finding-out step stop at understanding the area', () => {
+    expect(explore).toContain('stop when you have reproduced the fault and can say what causes it');
+    expect(explore).toContain('Where you got as far as ruling things out and no further');
+  });
+
+  // The planning step has no tools and cannot go and look, so what it knows of
+  // the diagnosis is what the finding-out step wrote down
+  it('carries the diagnosis into the write-up the plan is made from', () => {
+    expect(explore).toContain('how to reproduce it, what the cause is, the');
+    expect(explore).toContain('what would show it was wrong, and how sure you are');
+  });
+
+  it('names the cause in the plan, before what changes', () => {
+    expect(plan).toContain('say what the cause is before you say what changes');
+    // An unconfirmed cause is planned for and labelled, rather than asserted
+    // or turned into two plans
+    expect(plan).toContain('rests on a cause not yet confirmed');
+    expect(plan).toContain('One plan either way');
+  });
+
+  it('is checked by doing again what showed the fault', () => {
+    expect(execute).toContain('do again exactly what showed the fault');
+    // The project's own tests cannot settle it: they passed with the bug in
+    expect(execute).toContain('passed with the bug in place');
+    // ...and the check that would have caught it is worth keeping
+    expect(execute).toContain('a test which would have failed before this change');
+  });
+
+  it('is answered with the cause first, since the user already knew the symptom', () => {
+    expect(respond).toContain('the cause is what leads instead');
+    expect(respond).toContain('what they did not know is why');
+  });
+});
+
+// The finding-out step's share of the rounds is a ceiling that can be raised,
+// for the one kind of work whose size cannot be judged from the request (see
+// harness/allowance.ts)
+describe('what a step is told about asking for more rounds', () => {
+  it('is told with its allowance, since a ceiling that can be raised is a different thing to work under', () => {
+    const budget = unwrapped(phases.BUDGET(10));
+    expect(budget).toContain('The ceiling can be raised');
+    expect(budget).toContain(MORE_TOOL);
+    expect(budget).toContain(`${MAX_GRANTS} such grants are all anyone gets`);
+    // ...and what it is for, which is not one more look at a settled question
+    expect(budget).toContain('a guess that has to be tested against the running thing');
+  });
+
+  // A step whose rounds are gone keeps the tools in front of it for the
+  // prompt cache's sake and may call none of them. The one exception is the
+  // asking, so the asking is the one thing named.
+  it('names the one call a spent step may still make, where a grant is to be had', () => {
+    const told = unwrapped(phases.spent('rounds', true));
+    expect(told).toContain('One call is still answered');
+    expect(told).toContain(MORE_TOOL);
+    expect(told).toContain('an experiment rather than another read');
+  });
+
+  // A door that cannot be opened is worse than no door: the model spends a
+  // round finding out
+  it('says nothing of it where there is no grant to be had', () => {
+    for (const why of ['rounds', 'window'] as const) {
+      const told = unwrapped(phases.spent(why));
+      expect(told).not.toContain(MORE_TOOL);
+      expect(told).not.toContain('One call is still answered');
+      // ...and still asks for the write-up, which is what is left either way
+      expect(told).toContain('write it down now');
+    }
   });
 });

@@ -147,12 +147,16 @@ const mocks = vi.hoisted(() => ({
   setup: { status: vi.fn(), installDocker: vi.fn(), cancel: vi.fn(), download: vi.fn() },
   sandbox: {
     registerTools: vi.fn(),
+    init: vi.fn(),
+    sweep: vi.fn(() => Promise.resolve({ removed: [], stopped: [], volumes: [], images: [] })),
     remove: vi.fn(),
     stopAll: vi.fn(),
     readContext: vi.fn(),
     restoreContext: vi.fn(),
     configure: vi.fn(),
     changes: { list: vi.fn(), apply: vi.fn(), snapshot: vi.fn(), revert: vi.fn() },
+    recipes: { init: vi.fn() },
+    readFileInWorkspace: vi.fn(),
     worktree: {
       branches: vi.fn(),
       ensureWorktree: vi.fn(),
@@ -179,7 +183,7 @@ const mocks = vi.hoisted(() => ({
     readable: vi.fn(),
     allowRead: vi.fn(),
   },
-  store: { load: vi.fn(), save: vi.fn() },
+  store: { load: vi.fn(), save: vi.fn(), saveMedia: vi.fn(), threadIds: vi.fn(() => null) },
   log: { init: vi.fn(), watchProcess: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), since: vi.fn() },
 }));
 
@@ -222,6 +226,9 @@ beforeEach(async () => {
   mocks.settings.load.mockReturnValue(saved);
   mocks.settings.get.mockReturnValue(saved);
   mocks.settings.publicView.mockReturnValue({ public: true });
+  // The threads the sweep goes by (see sandbox/docker.ts)
+  mocks.store.threadIds.mockReturnValue(['t1', 't2']);
+  mocks.sandbox.sweep.mockResolvedValue({ removed: [], stopped: [], volumes: [], images: [] });
   // What there is to switch between, which the Offline and Fast switches are
   // greyed out without (see refreshAvailable in main.ts)
   mocks.setup.status.mockResolvedValue({
@@ -249,6 +256,10 @@ describe('startup', () => {
     expect(mocks.tools.registerAll).toHaveBeenCalledWith(mocks.harness.tools);
     // Where the worktrees of the branches a subagent makes are kept
     expect(mocks.tools.branches.init).toHaveBeenCalledWith('/user/userData');
+    // ...and how each workspace's app is run
+    expect(mocks.sandbox.recipes.init).toHaveBeenCalledWith('/user/userData');
+    // ...and where a container that could not be removed is written down
+    expect(mocks.sandbox.init).toHaveBeenCalledWith('/user/userData');
     // What the user has allowed the model to read on their computer is kept in the settings
     expect(mocks.harness.access.configure).toHaveBeenCalledWith({
       readable: mocks.settings.readable,
@@ -318,6 +329,25 @@ describe('startup', () => {
     expect(event.preventDefault).toHaveBeenCalled();
   });
 
+  // What earlier sessions left behind: a container whose thread was deleted
+  // while Docker was down, one a session that was killed left running, and the
+  // caches and images nothing uses (see sweep in sandbox/docker.ts)
+  it('cleans up after earlier sessions, with the threads there still are', () => {
+    expect(mocks.sandbox.sweep).toHaveBeenCalledWith(['t1', 't2']);
+    // After the window: nothing waits on it
+    const swept = mocks.sandbox.sweep.mock.invocationCallOrder[0];
+    expect(swept).toBeGreaterThan(electron.windows[0].loadFile.mock.invocationCallOrder[0]);
+  });
+
+  it('takes no thread container away when the threads cannot be told', async () => {
+    mocks.store.threadIds.mockReturnValue(null);
+    mocks.sandbox.sweep.mockClear();
+    vi.resetModules();
+    await import('../src/main');
+    await electron.ready;
+    expect(mocks.sandbox.sweep).toHaveBeenCalledWith(undefined);
+  });
+
   it('reopens a window on activate only when none is open', () => {
     electron.appEvents.activate();
     expect(electron.windows).toHaveLength(1);
@@ -383,7 +413,19 @@ describe('llm channels', () => {
     mocks.harness.verify.mockResolvedValue(verdict);
     const request = { thread: 't', request: 'Add a flag', output: 'Done.' };
     await expect(electron.handlers['llm:verify']({}, request)).resolves.toEqual(verdict);
-    expect(mocks.harness.verify).toHaveBeenCalledWith(request);
+    expect(mocks.harness.verify).toHaveBeenCalledWith(request, { untouched: expect.any(Function) });
+  });
+
+  // A review that tries the changes has the thread's files put back afterwards, which would throw away the changes of
+  // a reply begun on the thread while it ran (see harness/verifier.ts)
+  it('tells the review whether a reply has started on the thread since it began', async () => {
+    mocks.harness.verify.mockResolvedValue({ passed: true, problems: '', model: 'Opus' });
+    await electron.handlers['llm:verify']({}, { thread: 't', request: 'Add a flag', output: 'Done.' });
+    const { untouched } = mocks.harness.verify.mock.calls[0][1];
+    expect(untouched()).toBe(true);
+    mocks.harness.run.mockReturnValue(from([{ type: 'done', stopReason: 'end_turn', steps: 1, usage: {} }]));
+    await electron.listeners['llm:send']({ sender: sender() }, 'r1', { thread: 't' });
+    expect(untouched()).toBe(false);
   });
 
   it("keeps the user's verdict on a classification", () => {
@@ -656,6 +698,15 @@ describe('thread channels', () => {
     expect(saving.returnValue).toBe(true);
   });
 
+  // The window waits on this one, and stays frozen until it is answered
+  it('saves the media sidecar, answering at once', () => {
+    const items = [{ id: 'a', mediaType: 'image/png', data: 'base64-a' }];
+    const saving: { returnValue?: unknown } = {};
+    electron.listeners['threads:save-media'](saving, items);
+    expect(mocks.store.saveMedia).toHaveBeenCalledWith(items);
+    expect(saving.returnValue).toBe(true);
+  });
+
   it('brings the window forward for a notification the user clicked', () => {
     const win = new (class {
       destroyed = false;
@@ -812,6 +863,28 @@ describe('thread channels', () => {
     mocks.harness.notes.remove.mockReturnValue(false);
     expect(electron.handlers['workspace:forget-note']({}, '/projects/demo', 'The parser')).toBe(false);
     expect(mocks.harness.notes.remove).toHaveBeenCalledWith('/projects/demo', 'The parser', undefined);
+  });
+
+  it('reads a file of a workspace by the name a reply gave it, for the user to open', () => {
+    mocks.sandbox.readFileInWorkspace.mockReturnValue({ path: 'src/main.ts', lines: ['a', 'b'], from: 1, total: 2 });
+    expect(electron.handlers['workspace:file']({}, '/projects/demo', 'src/main.ts', 1, 2)).toEqual({
+      path: 'src/main.ts',
+      lines: ['a', 'b'],
+      from: 1,
+      total: 2,
+    });
+    expect(mocks.sandbox.readFileInWorkspace).toHaveBeenCalledWith('/projects/demo', 'src/main.ts', 1, 2);
+  });
+
+  it('reads a whole file when a reply names no lines', () => {
+    mocks.sandbox.readFileInWorkspace.mockReturnValue({ path: 'a.txt', lines: ['x'], from: 1, total: 1 });
+    expect(electron.handlers['workspace:file']({}, '/projects/demo', 'a.txt')).toEqual({
+      path: 'a.txt',
+      lines: ['x'],
+      from: 1,
+      total: 1,
+    });
+    expect(mocks.sandbox.readFileInWorkspace).toHaveBeenCalledWith('/projects/demo', 'a.txt', undefined, undefined);
   });
 
   it('passes on what the explorer says while it works, so the window can show the work', async () => {

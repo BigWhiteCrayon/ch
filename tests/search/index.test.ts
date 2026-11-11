@@ -134,7 +134,8 @@ describe('the search tool', () => {
     expect(embeddings.search).toHaveBeenCalledWith(
       { workspace: '/projects/demo', thread: THREAD },
       'where are settings loaded',
-      { limit: 20, maxPerFile: 10, context: 1, pathsOnly: false, path: undefined, thread: THREAD },
+      // One line more from each file than is shown, so a file cut short is known to be (see trim)
+      { limit: 20, maxPerFile: 11, context: 1, pathsOnly: false, path: undefined, ignoreCase: false, thread: THREAD },
       signal
     );
   });
@@ -196,7 +197,9 @@ describe('the search tool', () => {
 
     it('counts max_results as files when only the paths are wanted', async () => {
       const output = (await searchCode.run({ query: 'q', paths_only: true, max_results: 2 }, context)) as string;
-      expect(output).toBe('a.ts\nb.ts');
+      expect(output.startsWith('a.ts\nb.ts\n\n')).toBe(true);
+      // ...and says the third was left out, so the list is not taken for all there is
+      expect(unwrapped(output)).toContain('at least 1 further, left out by max_results (2)');
     });
   });
 
@@ -281,7 +284,7 @@ describe('the search tool', () => {
       const asked = embeddings.search.mock.calls[0][2];
       // Asked for exactly what was wanted: the files the path rules out are
       // left out before any of them is read from the container
-      expect(asked).toMatchObject({ limit: 10, path: 'src' });
+      expect(asked).toMatchObject({ limit: 10, path: ['src'] });
       expect(asked.keep('src/a.ts')).toBe(true);
       expect(asked.keep('tests/a.ts')).toBe(false);
       // ...and still returns no more than was asked for
@@ -291,7 +294,9 @@ describe('the search tool', () => {
     });
 
     it('rejects a path that is not a string', async () => {
-      await expect(searchCode.run({ query: 'q', path: 7 }, context)).rejects.toThrow('"path" must be a string.');
+      await expect(searchCode.run({ query: 'q', path: 7 }, context)).rejects.toThrow(
+        '"path" must be a path, a glob, or a list of them.'
+      );
     });
   });
 
@@ -347,7 +352,7 @@ describe('when the search by meaning does not answer', () => {
     expect(ripgrep.keywordSearch).toHaveBeenCalledWith(
       context.workspace,
       'settings load',
-      { limit: 5, maxPerFile: 10, context: 1, pathsOnly: false, path: undefined, thread: THREAD },
+      { limit: 5, maxPerFile: 11, context: 1, pathsOnly: false, path: undefined, ignoreCase: false, thread: THREAD },
       signal
     );
     // What it says: that the answer is keyword matches, and which words they are

@@ -502,6 +502,76 @@ describe('stream', () => {
       expect(seen.at(-1)).toEqual(limited());
       expect(seen.filter((e) => e.type === 'rate_limited')).toHaveLength(1);
     });
+
+    // A server that took the request and then went quiet is the one failure
+    // here that is not asked again: it may still be working on what it was
+    // given, so a second copy of the same question joins the queue behind the
+    // first rather than replacing it (see transport.failure)
+    describe('or the server took the request and went quiet', () => {
+      const stalled = {
+        type: 'error' as const,
+        code: 'stalled' as const,
+        message: 'http://x took the request and then sent nothing back for five minutes.',
+      };
+
+      it('hands the failure back at once instead of asking again', async () => {
+        let asked = 0;
+        provider('anthropic').stream = async function* () {
+          asked++;
+          yield stalled;
+        };
+        const seen = await run();
+        expect(asked).toBe(1);
+        expect(seen.filter((e) => e.type === 'rate_limited')).toEqual([]);
+        expect(seen.at(-1)).toEqual(stalled);
+      });
+    });
+
+    describe('or there is no server to ask', () => {
+      const gone = { type: 'error' as const, code: 'unreachable' as const, message: 'No server reachable at http://x' };
+      // Finds nothing there the first `times` times, then answers properly
+      const away = (times: number) => {
+        let asked = 0;
+        provider('anthropic').stream = async function* () {
+          if (++asked <= times) {
+            yield gone;
+            return;
+          }
+          yield { type: 'text', delta: 'hi' };
+          yield { type: 'done', stopReason: 'end_turn' };
+        };
+        return () => asked;
+      };
+
+      it('waits and asks again, saying which it was', async () => {
+        const asked = away(1);
+        const seen = await run();
+        expect(asked()).toBe(2);
+        expect(seen[0]).toEqual({
+          type: 'rate_limited',
+          attempt: 1,
+          of: 4,
+          after: expect.any(Number),
+          message: gone.message,
+          unreachable: true,
+        });
+        expect(seen.at(-1)).toEqual({ type: 'done', stopReason: 'end_turn' });
+      });
+
+      it('gives up after four goes and hands back the failure', async () => {
+        const asked = away(99);
+        const seen = await run();
+        expect(asked()).toBe(4);
+        expect(seen.at(-1)).toEqual(gone);
+      });
+
+      it.each([['brief'], ['priority']])('does not hold up a %s request that a reply is waiting on', async (kind) => {
+        const asked = away(99);
+        const seen = await run(llm.stream({ ...request('anthropic'), [kind]: true }, signal()));
+        expect(asked()).toBe(1);
+        expect(seen).toEqual([gone]);
+      });
+    });
   });
 
   describe('when the provider says the credit behind it is gone', () => {

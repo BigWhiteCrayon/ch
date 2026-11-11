@@ -11,7 +11,7 @@ import {
 } from './shared.js';
 import { activate, save, saveSoon, state } from './threads.js';
 import { branchKey } from './sidebar.js';
-import { render } from './thread-view.js';
+import { drawText, render } from './thread-view.js';
 import { about, clock, mergeUsage, recordUsage, tokenCount, usedLine } from './usage.js';
 import {
   CATEGORY_NAMES,
@@ -253,13 +253,17 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
   // harness/phases.ts). Shown where a reply with nothing written yet says what
   // it is doing, so it stands until that step writes something.
   if (event.type === 'phase') {
-    message.status = phaseName(event.phase, event.investigation);
+    // The finding-out step of a suggestion is said as an investigation's is: it
+    // reads the code to work out how it stands, and the notes it adds are drawn
+    // under that title (see harness/phases.ts SUGGESTION)
+    const investigating = event.investigation === true || event.suggestion === true;
+    message.status = phaseName(event.phase, investigating);
     // Kept so the notes the step adds can say which step made them (see
     // interject), and be drawn under it
     request.phase = event.phase;
-    request.investigating = event.investigation === true;
+    request.investigating = investigating;
     message.phase = event.phase;
-    message.investigating = event.investigation === true;
+    message.investigating = investigating;
     if (thread.id === state.activeId) render();
     return;
   }
@@ -435,7 +439,7 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     if (!message.text) for (const old of request.thoughts) expanded.delete(old);
     message.text += event.delta;
     request.wrote = true;
-    if (thread.id === state.activeId) render();
+    if (thread.id === state.activeId) drawText(message);
     return;
   }
 
@@ -499,9 +503,10 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     return;
   }
 
-  // A subagent has put the thread on a branch of its own (see tools/branches.ts). Only where the thread's work goes
-  // changes: its container and the changes in it stay as they are, and the branch's worktree is what Apply writes to
-  // and what a reply works from. The sidebar lists the thread under the branch from here, which the re-render does.
+  // The reply or a subagent has put the thread on a branch of its own (see tools/branches.ts). Only where the thread's
+  // work goes changes: its container and the changes in it stay as they are, and the branch's worktree is what Apply
+  // writes to and what a reply works from. The sidebar lists the thread under the branch from here, which the
+  // re-render does.
   if (event.type === 'branch') {
     thread.branch = event.branch;
     // Its group is new to this thread, but a branch of that name may have been left collapsed by another
@@ -634,7 +639,8 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     interject(thread, request, {
       role: 'note',
       text:
-        `Rate limited by the provider; trying again in ${seconds} second${seconds === 1 ? '' : 's'} ` +
+        `${event.unreachable ? 'Could not reach the provider' : 'Rate limited by the provider'}; ` +
+        `trying again in ${seconds} second${seconds === 1 ? '' : 's'} ` +
         `(attempt ${event.attempt + 1} of ${event.of})`,
       blurb: event.message,
       thoughtId: crypto.randomUUID(),

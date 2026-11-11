@@ -1,0 +1,13 @@
+{
+  "about": "A reply that stops to ask the user something, with options as buttons, and goes on once it is answered.",
+  "rules": [
+    {
+      "purpose": "reply",
+      "reply": [
+        { "tool": "ask_user", "input": { "question": "Which colour should it be?", "options": ["Red", "Blue"] } },
+        "Thanks, that settles it."
+      ]
+    },
+    { "purpose": "subagent", "reply": "Done." }
+  ]
+}

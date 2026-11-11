@@ -25,6 +25,11 @@ export interface SearchResult {
   // meaning has these: it finds a piece and then goes for its lines, while
   // ripgrep only ever matches lines it has in front of it.
   unread?: number;
+  // What the limits left out once the result was cut down to them: lines,
+  // or files where only the paths were asked for, and how many files they
+  // were in. Set by the search tool's trim and nowhere else, since it is the
+  // only thing that cuts (see ../tools/search.ts).
+  cut?: { items: number; files: number };
 }
 
 // What a search may ask for beyond the query itself

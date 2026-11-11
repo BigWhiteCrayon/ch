@@ -9,6 +9,17 @@
 // then is recorded (see BASELINE), so that what the thread has changed since
 // can be told and, when the user asks, written back to the workspace (see
 // changes.ts). Nothing is written back otherwise.
+//
+// What the ordinary paths cannot clean up is cleaned up at the next start
+// (see sweep): a container whose thread was deleted while Docker was down, a
+// container an earlier session left running, the workspace caches nothing
+// refers to any more, and the images the app built that nothing uses.
+//
+// Under CH_SANDBOX=local, and only inside a container, a thread's sandbox is a
+// folder instead (see ./local.ts): the app is itself running in a container,
+// being tested there, and there is no Docker to make one with. Everything here
+// that would ask Docker asks the folder instead, at the same few places —
+// prepare, exec, read, adopt, remove — so nothing that uses a sandbox can tell.
 
 import { spawn } from 'child_process';
 import crypto from 'crypto';
@@ -17,6 +28,7 @@ import os from 'os';
 import path from 'path';
 import * as log from '../log';
 import { toolEnv } from './env';
+import * as local from './local';
 
 // What a workspace is worked on in, when the user has not said. A container
 // with no toolchain cannot run a project's tests, and which toolchain it wants
@@ -146,6 +158,8 @@ export const quote = (value: string) => `'${String(value).replace(/'/g, `'\\''`)
 // (see changes.ts).
 export const AGENT_DIR = '.agent';
 const MAX_OUTPUT = 30000; // characters of command output kept
+const DESKTOP_START_MS = 120000; // how long Docker Desktop gets to come up
+const DESKTOP_POLL_MS = 2000; // how often it is asked whether it has
 
 // The container's budget of processes and threads, shared by everything running
 // in it. The cgroup counts threads, not just processes, and a browser runs to
@@ -156,9 +170,82 @@ const MAX_OUTPUT = 30000; // characters of command output kept
 // which is what keeps the browsers themselves from filling it).
 export const PIDS_LIMIT = 1024;
 
+// A command that is only to read runs as a user that owns nothing, rather than
+// as root (see exec's reader). What it may not write is then the kernel's to
+// refuse, whatever the command is: a parser that judged a command by its words
+// let `sort -o` overwrite a file and `rg --pre sh` run every file as a script.
+//
+// Each command gets a user of its own, so that what is killed and deleted
+// after it (see READER_CLEANUP) is only ever its own: a step's reading commands
+// run side by side. None of these users is in the image's passwd, and none
+// needs to be: Docker takes a number.
+const READER_UIDS = { from: 70000, count: 10000 };
+let nextReader = 0;
+// Where anyone may write. A reader's leftovers there are deleted after it.
+const SHARED_DIRS = '/tmp /var/tmp /dev/shm /run/lock';
+// Run as root before a reader, taking away what everyone may write in the
+// project and the shared cache. The cache is made 777 for whoever installs
+// (see dockerfile), and a package unpacked as it was shipped can leave its
+// files writable by all — Electron's own binary among them — so what a user
+// that owns nothing could write is put right each time rather than once:
+// another install may have brought more since. Git does not record the bit,
+// so the project's changes do not show it.
+const READER_SWEEP = `find ${WORKDIR} ${CACHE_DIR} -xdev -perm -o+w ! -type l -exec chmod o-w {} + 2>/dev/null; true`;
+// Run as the reader after it, however it ended: whatever it left running is
+// killed (kill -1 is every process the user may signal, the caller aside),
+// and what it left where anyone may write is deleted.
+const READER_CLEANUP = (uid: number) =>
+  `kill -9 -1 2>/dev/null; find ${SHARED_DIRS} -xdev -user ${uid} -delete 2>/dev/null; true`;
+
+// On every container and image the app makes, so that the user can tell them
+// from their own with `docker ps --filter label=ch.sandbox=1`. Not what the
+// sweep goes by — it has to find what was made before the label was, which
+// carries none — but what a person looking at their Docker goes by.
+const LABEL = 'ch.sandbox=1';
+// On a dependencies image, the image it was built on (see ensureDependencies).
+// Nothing is ever run from a base image once there is a dependencies image on
+// top of it, so this is the only thing that says it is still wanted.
+const BASE_LABEL = 'ch.base';
+
+// The containers are named after their thread, so one can be found from the
+// other either way round (see containerName and threadOf).
+const CONTAINER_PREFIX = 'ch-thread-';
+// The images the app builds, by what they are tagged (see ensureImage and
+// ensureDependencies). Each tag holds a digest of what it was built from, so a
+// changed base or a changed lockfile is a new image and the old one is left
+// behind with nothing to use it.
+const BASE_PREFIX = 'ch-sandbox:';
+const DEPS_PREFIX = 'ch-deps:';
+const IMAGE_PREFIXES = [BASE_PREFIX, DEPS_PREFIX];
+// How long an image nothing uses, or a layer of build cache, is kept. An image
+// is 2GB and a minute to build again, so this errs towards keeping: a week
+// covers a workspace put down on Friday and picked up on Monday.
+const UNUSED_HOURS = 168;
+const UNUSED_MS = UNUSED_HOURS * 3600 * 1000;
+// Containers whose removal could not be made to happen, kept between sessions
+const PENDING_FILE = 'sandbox-pending.json';
+// How many are kept. Past this the oldest are dropped: a list that cannot be
+// drained is a list of containers that are not there any more, and the sweep
+// finds a container whose thread is gone whether it is written down or not.
+const MAX_PENDING = 200;
+
 export function containerName(threadId: string | undefined): string {
   if (!/^[0-9a-f-]{36}$/.test(threadId ?? '')) throw new Error('This message has no thread.');
-  return `ch-thread-${threadId}`;
+  return `${CONTAINER_PREFIX}${threadId}`;
+}
+
+// The thread a container belongs to, from its name
+const threadOf = (name: string) => name.slice(CONTAINER_PREFIX.length);
+
+// The folders of a thread whose sandbox is a folder rather than a container, from the container's name
+const foldersOf = (name: string) => local.folders(threadOf(name));
+
+// Runs a command in a thread's folder, with its paths made the folder's and what it says made the container's again
+// (see ./local.ts)
+async function runLocal(name: string, command: string, options: ExecOptions = {}): Promise<RunResult> {
+  const own = foldersOf(name);
+  const ran = await local.run(own, local.inward(command, own, WORKDIR, BASELINE_DIR), options);
+  return { code: ran.code, output: local.outward(ran.output, own, WORKDIR, BASELINE_DIR) };
 }
 
 // Containers started this session, stopped again on quit
@@ -173,6 +260,57 @@ const workspaces = new Map<string, string>();
 
 // The base image the user asked for, '' to let the workspace decide
 let chosenImage = '';
+
+// Containers that were to be removed and could not be: their thread is gone,
+// so nothing will ask for them again, and nothing would ever try to remove
+// them again either unless it is written down (see remove and sweep). Kept in
+// the app's data folder, in the same way as everything else the app keeps
+// about a workspace (see ./recipes.ts); nothing is kept until init is called,
+// so the sandbox can be used, and tested, without it.
+let pendingFile: string | null = null;
+let pending: string[] = [];
+
+// Starts keeping what could not be removed in the given folder, and takes back
+// up whatever an earlier session left there.
+export function init(dir: string): void {
+  pendingFile = path.join(dir, PENDING_FILE);
+  pending = [];
+  try {
+    const read = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
+    if (Array.isArray(read?.containers))
+      pending = read.containers.filter((name: unknown): name is string => typeof name === 'string').slice(-MAX_PENDING);
+  } catch {
+    // Nothing written down, or nothing readable: what is in Docker is what the
+    // sweep goes by either way, and the list only saves it a guess
+  }
+}
+
+function savePending(): void {
+  if (!pendingFile) return;
+  try {
+    const temporary = `${pendingFile}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify({ containers: pending }, null, 2), { mode: 0o600 });
+    fs.renameSync(temporary, pendingFile);
+  } catch (err) {
+    log.warn('sandbox.pending', { ok: false, error: (err as Error).message });
+  }
+}
+
+// Writes a container down as still to be removed
+function keepPending(name: string): void {
+  if (pending.includes(name)) return;
+  pending.push(name);
+  if (pending.length > MAX_PENDING) pending = pending.slice(-MAX_PENDING);
+  savePending();
+  log.info('sandbox.pending', { container: name, waiting: pending.length });
+}
+
+// ...and takes it off the list, once it is gone
+function donePending(name: string): void {
+  if (!pending.includes(name)) return;
+  pending = pending.filter((waiting) => waiting !== name);
+  savePending();
+}
 
 export function configure(image = ''): void {
   chosenImage = image;
@@ -190,18 +328,10 @@ export async function adopt(threadId: string, workspace: string): Promise<void> 
   setWorkspace(threadId, workspace);
   const name = await ensure(threadId, { create: false });
   if (!name) return;
-  const recorded = await docker(
-    [
-      'exec',
-      '-w',
-      WORKDIR,
-      name,
-      'bash',
-      '-lc',
-      `${BASELINE} init -q && ${BASELINE} commit -q --allow-empty -m baseline`,
-    ],
-    { timeout: 300000 }
-  );
+  const command = `${BASELINE} init -q && ${BASELINE} commit -q --allow-empty -m baseline`;
+  const recorded = local.active()
+    ? await runLocal(name, command, { timeoutSeconds: 300 })
+    : await docker(['exec', '-w', WORKDIR, name, 'bash', '-lc', command], { timeout: 300000 });
   if (recorded.code !== 0) {
     workspaces.delete(threadId);
     throw new Error(`Could not set up the thread's changes: ${recorded.output.trim().slice(-500)}`);
@@ -263,12 +393,28 @@ async function docker(args: string[], options?: RunOptions): Promise<RunResult> 
 // on macOS (see scripts/install-docker.ts), which doesn't start by itself
 // after a reboot — which is why the flow asks to be opened again when it
 // finds a Docker that is installed and down (see wanted in setup/checks.ts).
+// A Docker that came from Docker Desktop has no Colima to start, so the app is
+// opened instead.
 async function startDaemon(): Promise<void> {
   if ((await docker(['info'])).code === 0) return;
   const started = await run('colima', ['start'], { timeout: 300000 }).catch(() => null);
-  if (started?.code !== 0) {
-    throw new Error('Docker is installed but not running. Start it, or use the setup flow in Settings, and try again.');
+  if (started?.code === 0 || (await startDesktop())) return;
+  throw new Error('Docker is installed but not running. Start it, or use the setup flow in Settings, and try again.');
+}
+
+// Opens Docker Desktop on macOS and waits for its daemon, since `open` returns
+// as soon as the app is launched and the daemon takes a while longer. False if
+// there is no such app, or it didn't come up in time.
+async function startDesktop(): Promise<boolean> {
+  if (process.platform !== 'darwin') return false;
+  const opened = await run('open', ['-a', 'Docker'], { timeout: 10000 }).catch(() => null);
+  if (opened?.code !== 0) return false;
+  const deadline = Date.now() + DESKTOP_START_MS;
+  while (Date.now() < deadline) {
+    if ((await docker(['info'], { timeout: DESKTOP_POLL_MS * 4 })).code === 0) return true;
+    await new Promise((resolve) => setTimeout(resolve, DESKTOP_POLL_MS));
   }
+  return false;
 }
 
 // Checked once per session, and again after a failure
@@ -280,6 +426,35 @@ function ensureDaemon(): Promise<void> {
     throw err;
   });
   return daemon;
+}
+
+// The build cache a build leaves behind, which no later build of the app's
+// reads: every image here is tagged with a digest of what it was built from,
+// so a changed base or a changed lockfile builds against nothing it kept.
+// Left for a week all the same, and taken no further than the layers nothing
+// uses (no --all), because the daemon's build cache is the user's too and
+// their own builds are none of this app's business.
+//
+// Started after a build that worked and not waited for: nothing here needs it
+// to have happened, and it is slow enough to be worth not holding a thread's
+// first command behind. One at a time.
+let pruning = false;
+
+function pruneBuildCache(): void {
+  if (pruning) return;
+  pruning = true;
+  const started = performance.now();
+  void docker(['builder', 'prune', '-f', '--filter', `until=${UNUSED_HOURS}h`], { timeout: 600000 })
+    .then(({ code, output }) => {
+      // The last line is what was reclaimed, which is the whole of what is
+      // worth knowing: "Total reclaimed space: 4.956GB"
+      const reclaimed = output.trim().split('\n').at(-1)?.slice(0, 120);
+      log[code === 0 ? 'info' : 'debug']('sandbox.buildCache', { ok: code === 0, ms: log.since(started), reclaimed });
+    })
+    .catch((err: Error) => log.debug('sandbox.buildCache', { ok: false, error: err.message }))
+    .finally(() => {
+      pruning = false;
+    });
 }
 
 // The image a new container is made from: the chosen base with Git on top if
@@ -302,12 +477,16 @@ function ensureImage(base: string): Promise<string> {
       if ((await docker(['image', 'inspect', tag])).code === 0) return tag;
       const started = performance.now();
       // Downloads the base image and Git's packages, which can take a while
-      const built = await docker(['build', '-t', tag, '-'], { input: file, timeout: 600000 }).catch((err: Error) => ({
+      const built = await docker(['build', '--label', LABEL, '-t', tag, '-'], {
+        input: file,
+        timeout: 600000,
+      }).catch((err: Error) => ({
         code: 1,
         output: err.message,
       }));
       if (built.code === 0) {
         log.info('sandbox.image', { ok: true, base, tag, ms: log.since(started) });
+        pruneBuildCache();
         return tag;
       }
       log.warn('sandbox.image', { ok: false, base, ms: log.since(started), error: built.output.trim().slice(-500) });
@@ -320,6 +499,24 @@ function ensureImage(base: string): Promise<string> {
   return building;
 }
 
+// Fetches Electron's own binary into node_modules/electron where the package is
+// there and its binary is not, from the directory it is run in; does nothing
+// otherwise. The package is only a launcher until its postinstall has fetched
+// the binary, and npm installs with --ignore-scripts (see ensureDependencies),
+// so without this an Electron project in a container has nothing to run: the
+// app the model is told to use, with use_app, cannot be started, and what it
+// reaches for instead is a page of the app's HTML served on its own, with
+// nothing behind it. The binary is fetched for the container's own platform,
+// and runs on the libraries the browser layer already put in (see dockerfile).
+//
+// Run after the install in the dependencies' image, and before an app is
+// started in a container made from an image older than that (see
+// ../tools/sandbox.ts). A failed fetch is said rather than raised: the
+// dependencies are no less installed for it.
+export const ELECTRON_INSTALL =
+  '{ [ ! -f node_modules/electron/install.js ] || [ -f node_modules/electron/path.txt ]' +
+  ' || node node_modules/electron/install.js || echo "Electron could not be fetched." >&2; }';
+
 // How a workspace's dependencies are installed, from the files that say what
 // they are. Every file named has to be there, and a Node project needs its
 // lockfile: without one the install is not the same twice, and a digest of
@@ -327,8 +524,14 @@ function ensureImage(base: string): Promise<string> {
 // these fits is left to install its own, as before. In the order tried, so
 // the first that fits is the one used.
 const INSTALLS: { files: string[]; command: string }[] = [
-  { files: ['package.json', 'package-lock.json'], command: 'npm ci --no-audit --no-fund --ignore-scripts' },
-  { files: ['package.json', 'npm-shrinkwrap.json'], command: 'npm ci --no-audit --no-fund --ignore-scripts' },
+  {
+    files: ['package.json', 'package-lock.json'],
+    command: `npm ci --no-audit --no-fund --ignore-scripts && ${ELECTRON_INSTALL}`,
+  },
+  {
+    files: ['package.json', 'npm-shrinkwrap.json'],
+    command: `npm ci --no-audit --no-fund --ignore-scripts && ${ELECTRON_INSTALL}`,
+  },
   { files: ['package.json', 'yarn.lock'], command: 'yarn install --frozen-lockfile' },
   { files: ['package.json', 'pnpm-lock.yaml'], command: 'corepack enable && pnpm install --frozen-lockfile' },
   { files: ['requirements.txt'], command: 'pip install --no-cache-dir -r requirements.txt' },
@@ -348,7 +551,8 @@ const INSTALLS: { files: string[]; command: string }[] = [
 // The context holds only the manifests, so npm runs with --ignore-scripts: a
 // project's postinstall (one that runs tsc, say) fails there with nothing to
 // build. The tradeoff is that packages needing a postinstall step (native
-// builds, binary downloads) are not prepared in the image. yarn and pnpm are
+// builds, binary downloads) are not prepared in the image, Electron's binary
+// excepted (see ELECTRON_INSTALL). yarn and pnpm are
 // unchanged and may fail the same way if a project has a postinstall.
 //
 // Dependencies that cannot be installed this way (a private registry, a
@@ -385,11 +589,19 @@ RUN export NPM_CONFIG_CACHE=/tmp/dl YARN_CACHE_FOLDER=/tmp/dl PIP_CACHE_DIR=/tmp
       const context = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-deps-'));
       try {
         install.files.forEach((name, i) => fs.writeFileSync(path.join(context, name), contents[i]));
-        const built = await docker(['build', '-t', tag, '-f', '-', context], { input: file, timeout: 1800000 }).catch(
-          (err: Error) => ({ code: 1, output: err.message })
-        );
+        // What it was built on, so that a base no container runs — which is
+        // every base, once the dependencies are installed on top of it — is
+        // kept for as long as something built on it is (see sweepImages)
+        const built = await docker(
+          ['build', '--label', LABEL, '--label', `${BASE_LABEL}=${image}`, '-t', tag, '-f', '-', context],
+          {
+            input: file,
+            timeout: 1800000,
+          }
+        ).catch((err: Error) => ({ code: 1, output: err.message }));
         if (built.code === 0) {
           log.info('sandbox.dependencies', { ok: true, tag, command: install.command, ms: log.since(started) });
+          pruneBuildCache();
           return tag;
         }
         log.warn('sandbox.dependencies', {
@@ -537,7 +749,27 @@ async function copyWorkspace(name: string, workspace: string): Promise<void> {
   throw new Error(`Could not copy ${workspace} into the thread's container: ${copied.output.trim()}`);
 }
 
+// A thread's folder, where its sandbox is one, made as a container is: the workspace copied in and recorded
+async function prepareLocal(name: string, create: boolean, workspace?: string): Promise<boolean> {
+  const own = foldersOf(name);
+  if (!local.exists(own)) {
+    if (!create) return false;
+    await local.make(own, workspace, workspace ? await filesToCopy(workspace) : undefined);
+    if (workspace) {
+      const command = `${BASELINE} init -q && ${BASELINE} add -A && ${BASELINE} commit -q --allow-empty -m baseline`;
+      const recorded = await runLocal(name, command, { timeoutSeconds: 300 });
+      if (recorded.code !== 0) {
+        log.warn('sandbox.baseline', { ok: false, folder: own.root, error: recorded.output.trim().slice(-500) });
+      }
+    }
+    log.info('sandbox.local', { folder: own.root, workspace });
+  }
+  running.add(name);
+  return true;
+}
+
 async function prepare(name: string, create: boolean, workspace?: string): Promise<boolean> {
+  if (local.active()) return prepareLocal(name, create, workspace);
   // A container this session started is already known to be running, and
   // asking Docker again costs as much as a third of the command that follows.
   // The answer is only trusted while it holds: a container that goes away
@@ -559,6 +791,8 @@ async function prepare(name: string, create: boolean, workspace?: string): Promi
         name,
         '-w',
         WORKDIR,
+        '--label',
+        LABEL,
         '--pids-limit',
         String(PIDS_LIMIT),
         // Every thread in a workspace shares what its package managers
@@ -668,18 +902,24 @@ export interface ExecOptions {
   input?: string | Buffer;
   signal?: AbortSignal;
   timeoutSeconds?: number;
+  // Run as a user that can write nothing of the project's or the cache's (see
+  // READER_UIDS). Not where the sandbox is a folder (see ./local.ts): there is
+  // only the one user there, and the command runs as it.
+  reader?: boolean;
 }
 
 // Runs a shell command in the thread's container, in /workspace.
 export async function exec(
   threadId: string | undefined,
   command: string,
-  { input, signal, timeoutSeconds = 120 }: ExecOptions = {}
+  { input, signal, timeoutSeconds = 120, reader = false }: ExecOptions = {}
 ): Promise<RunResult> {
   const result = await withContainer(
     threadId,
     true,
     (name) => {
+      if (local.active()) return runLocal(name, command, { input, signal, timeoutSeconds });
+      if (reader) return execReader(name, command, { signal, timeoutSeconds });
       const args = ['exec', '-w', WORKDIR];
       if (input !== undefined) args.push('-i');
       // `timeout` runs inside the container so the command itself gets killed
@@ -700,6 +940,43 @@ export async function exec(
   return result;
 }
 
+// Runs a command in a container as a user of its own that owns nothing (see
+// READER_UIDS): the sweep first, so that there is nothing it could write, then
+// the command, then the cleanup after it. A sweep that did not run leaves the
+// command unrun, since what it would have been kept from writing is not known.
+// The cleanup runs on abort too, which is also what stops the command: a
+// docker exec that is killed leaves what it started running in the container.
+async function execReader(
+  name: string,
+  command: string,
+  { signal, timeoutSeconds }: { signal?: AbortSignal; timeoutSeconds: number }
+): Promise<RunResult> {
+  const swept = await docker(['exec', '--user', '0', name, 'sh', '-c', READER_SWEEP]);
+  if (swept.code !== 0) return swept;
+  const uid = READER_UIDS.from + (nextReader++ % READER_UIDS.count);
+  const user = `${uid}:${uid}`;
+  try {
+    return await docker(
+      ['exec', '-w', WORKDIR, '--user', user, '-e', 'HOME=/tmp', name].concat([
+        'timeout',
+        '-k',
+        '5',
+        String(timeoutSeconds),
+        'bash',
+        '-lc',
+        command,
+      ]),
+      { signal }
+    );
+  } finally {
+    const cleaned = await docker(['exec', '--user', user, name, 'sh', '-c', READER_CLEANUP(uid)]).catch(
+      (err: Error) => ({ code: 1, output: err.message })
+    );
+    if (cleaned.code !== 0)
+      log.warn('sandbox.reader', { container: name, uid, error: cleaned.output.trim().slice(-500) });
+  }
+}
+
 // Runs a shell command in the thread's container and resolves with exactly
 // what it wrote to stdout, however long and whether or not it is text.
 // Resolves with null if the thread has no container; never creates one.
@@ -711,23 +988,27 @@ export async function read(
     threadId,
     false,
     (name) =>
-      new Promise<{ code: number | null; data: Buffer; failed: string }>((resolve, reject) => {
-        const child = spawn('docker', ['exec', '-w', WORKDIR, name, 'bash', '-lc', command], {
-          env: toolEnv(),
-          timeout: 120000,
-          // Docker's own complaints come on stderr, and are kept only to tell
-          // a container that has gone away from a command that merely failed
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        const chunks: Buffer[] = [];
-        let failed = '';
-        child.stdout?.on('data', (chunk: Buffer) => chunks.push(chunk));
-        child.stderr?.on('data', (chunk: Buffer) => {
-          if (failed.length < 400) failed += chunk.toString('utf8');
-        });
-        child.on('error', reject);
-        child.on('close', (code) => resolve({ code, data: Buffer.concat(chunks), failed }));
-      }),
+      local.active()
+        ? local
+            .read(foldersOf(name), local.inward(command, foldersOf(name), WORKDIR, BASELINE_DIR))
+            .then((read) => ({ ...read, failed: '' }))
+        : new Promise<{ code: number | null; data: Buffer; failed: string }>((resolve, reject) => {
+            const child = spawn('docker', ['exec', '-w', WORKDIR, name, 'bash', '-lc', command], {
+              env: toolEnv(),
+              timeout: 120000,
+              // Docker's own complaints come on stderr, and are kept only to tell
+              // a container that has gone away from a command that merely failed
+              stdio: ['ignore', 'pipe', 'pipe'],
+            });
+            const chunks: Buffer[] = [];
+            let failed = '';
+            child.stdout?.on('data', (chunk: Buffer) => chunks.push(chunk));
+            child.stderr?.on('data', (chunk: Buffer) => {
+              if (failed.length < 400) failed += chunk.toString('utf8');
+            });
+            child.on('error', reject);
+            child.on('close', (code) => resolve({ code, data: Buffer.concat(chunks), failed }));
+          }),
     (attempt) => attempt.code !== 0 && VANISHED.test(attempt.failed)
   );
   return result && { code: result.code, data: result.data };
@@ -784,15 +1065,293 @@ export async function readEach(
   return out;
 }
 
+// Removes a container, and says whether it is gone. A container that was not
+// there is gone as far as this is concerned: there is nothing left to remove.
+// Expects a daemon that is up (see remove and sweep, which each see to that in
+// the way that suits them).
+async function removeContainer(name: string): Promise<boolean> {
+  const { code, output } = await docker(['rm', '-f', name]).catch((err: Error) => ({ code: 1, output: err.message }));
+  if (code === 0 || VANISHED.test(output)) return true;
+  log.warn('sandbox.remove', { container: name, ok: false, error: output.trim().slice(-500) });
+  return false;
+}
+
+// Removes a volume, and says whether it is gone. A volume another thread's
+// container still uses is refused by Docker, which is the answer wanted: the
+// workspace's cache goes with the last container that used it, and the caller
+// does not have to work out which that was.
+async function removeVolume(name: string): Promise<boolean> {
+  const { code, output } = await docker(['volume', 'rm', name]).catch((err: Error) => ({
+    code: 1,
+    output: err.message,
+  }));
+  if (code !== 0) log.debug('sandbox.volume', { volume: name, ok: false, error: output.trim().slice(-200) });
+  return code === 0;
+}
+
+// Whether the daemon has already been found to be down while removing
+// something this session. Docker is brought up for a removal — the thread is
+// gone, and a container that is not removed now is only removed by a later
+// session's sweep — but asked to come up once: a user deleting threads with
+// Docker shut would otherwise have it opened for them again on each one.
+let daemonDown = false;
+
+// Removes a thread's container and, with it, the workspace cache nothing else
+// is using any more. A removal that cannot be made to happen is written down
+// and made at the next start (see sweep): the thread is on its way out of the
+// store, so without that its container would be left with nothing to find it
+// by.
 export async function remove(threadId: string): Promise<void> {
   const name = containerName(threadId);
+  const workspace = workspaces.get(threadId);
   running.delete(name);
   workspaces.delete(threadId);
-  await docker(['rm', '-f', name]).catch(() => {});
+  if (local.active()) return local.remove(foldersOf(name));
+  if (!daemonDown) {
+    try {
+      await ensureDaemon();
+    } catch (err) {
+      daemonDown = true;
+      log.warn('sandbox.remove', { container: name, ok: false, error: (err as Error).message });
+    }
+  }
+  // Tried even where the daemon was found down earlier in the session: it may
+  // have been started since, by the user or by a thread that needed it, and a
+  // removal that cannot be made fails in a moment either way.
+  if (!(await removeContainer(name))) {
+    keepPending(name);
+    return;
+  }
+  donePending(name);
+  if (workspace) await removeVolume(cacheVolume(workspace));
+}
+
+export interface Swept {
+  // Containers whose thread is gone, removed
+  removed: string[];
+  // Containers an earlier session left running, stopped
+  stopped: string[];
+  // Workspace caches nothing refers to any more, removed
+  volumes: string[];
+  // Images the app built that nothing uses and nothing has used for a week,
+  // removed
+  images: string[];
+}
+
+const lines = (output: string) =>
+  output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+// Puts right what the ordinary paths could not.
+//
+// A thread's container is removed when the thread is deleted and stopped when
+// the app quits, which covers everything that happens in an app that is
+// running and is told to quit. What it does not cover is a removal that could
+// not be made at the time (Docker down, see remove), an app that was killed
+// rather than quit — before-quit does not run then, and the containers it
+// would have stopped are left running, with whatever a recipe started inside
+// them still going (see ../tools/sandbox.ts) — and everything a container
+// leaves beside itself: the workspace's shared cache volume, and the images
+// the app built for it, neither of which belongs to any one thread.
+//
+// `threads` is every thread there still is. A caller that cannot tell passes
+// nothing, and then nothing is removed for being unknown: taking away the
+// files of every thread there is, on the strength of a store file that would
+// not parse, is the one mistake here that cannot be undone (see threadIds in
+// ../store.ts). What the images and the caches are judged by is Docker's own
+// view of what uses them, so those are swept either way.
+//
+// Never throws, and Docker is not started for it: the user asked for nothing,
+// and what is left is left for the next session that has a daemon anyway.
+export async function sweep(threads?: Iterable<string>): Promise<Swept> {
+  const swept: Swept = { removed: [], stopped: [], volumes: [], images: [] };
+  const live = threads ? new Set(threads) : null;
+  if (local.active()) return sweepFolders(live, swept);
+  const started = performance.now();
+  const all = await docker(['ps', '-a', '--filter', `name=${CONTAINER_PREFIX}`, '--format', '{{.Names}}']).catch(
+    (err: Error) => ({ code: 1, output: err.message })
+  );
+  if (all.code !== 0) {
+    log.debug('sandbox.sweep', { ok: false, error: all.output.trim().slice(-200) });
+    return swept;
+  }
+  // Asked for separately rather than read off `ps -a`, whose State column
+  // older clients do not have
+  const up = await docker(['ps', '--filter', `name=${CONTAINER_PREFIX}`, '--format', '{{.Names}}']).catch(() => ({
+    code: 1,
+    output: '',
+  }));
+  const isUp = new Set(up.code === 0 ? lines(up.output) : []);
+  const there = new Set(lines(all.output));
+  // Written down by an earlier session, and most likely gone already
+  for (const name of [...pending]) {
+    if (there.has(name)) continue; // dealt with below, as the container it is
+    if (await removeContainer(name)) donePending(name);
+  }
+  for (const name of there) {
+    // Never one this session is using. A thread made moments ago may not be
+    // in what the caller read, and a container being made right now is in
+    // neither that nor `running` yet (see ensure).
+    if (running.has(name) || preparing.has(name)) continue;
+    if (live && !live.has(threadOf(name))) {
+      if (await removeContainer(name)) {
+        donePending(name);
+        swept.removed.push(name);
+      }
+      continue;
+    }
+    // Left running by a session that never quit. Its files are kept, and the
+    // thread starts it again when it is next used (see prepare).
+    //
+    // A second instance of the app running beside this one would have its
+    // containers stopped here, having not started them itself. It costs that
+    // instance a `docker start` on the thread's next command, which is what a
+    // stopped container costs anybody.
+    if (isUp.has(name)) {
+      const { code, output } = await docker(['stop', '-t', '0', name]).catch((err: Error) => ({
+        code: 1,
+        output: err.message,
+      }));
+      if (code === 0) swept.stopped.push(name);
+      else log.debug('sandbox.sweep', { container: name, stopped: false, error: output.trim().slice(-200) });
+    }
+  }
+  swept.volumes = await sweepVolumes();
+  swept.images = await sweepImages();
+  log.info('sandbox.sweep', {
+    ok: true,
+    ms: log.since(started),
+    containers: there.size,
+    known: live ? live.size : null,
+    removed: swept.removed.length,
+    stopped: swept.stopped.length,
+    volumes: swept.volumes.length,
+    images: swept.images.length,
+  });
+  return swept;
+}
+
+// The workspace caches no container refers to any more. Docker's own answer to
+// which those are: a stopped container still refers to its own, so a cache is
+// only here once every thread that shared it is gone (see cacheVolume).
+async function sweepVolumes(): Promise<string[]> {
+  const listed = await docker([
+    'volume',
+    'ls',
+    '--filter',
+    'name=ch-cache-',
+    '--filter',
+    'dangling=true',
+    '--format',
+    '{{.Name}}',
+  ]).catch(() => ({ code: 1, output: '' }));
+  if (listed.code !== 0) return [];
+  const gone: string[] = [];
+  for (const name of lines(listed.output)) if (await removeVolume(name)) gone.push(name);
+  return gone;
+}
+
+// The images the app built that no container was made from and that have been
+// there a week. Found by name rather than by label, so that the ones built
+// before the label existed are found too (see LABEL).
+async function sweepImages(): Promise<string[]> {
+  const listed = await docker(['images', '--format', '{{.Repository}}:{{.Tag}}']).catch(() => ({
+    code: 1,
+    output: '',
+  }));
+  if (listed.code !== 0) return [];
+  const mine = lines(listed.output).filter(
+    (tag) => IMAGE_PREFIXES.some((prefix) => tag.startsWith(prefix)) && !tag.endsWith(':<none>')
+  );
+  if (mine.length === 0) return [];
+  const containers = await docker(['ps', '-a', '--format', '{{.Image}}']).catch(() => ({ code: 1, output: '' }));
+  // Which images are in use has to be known before any is removed: not
+  // knowing is a reason to remove nothing
+  if (containers.code !== 0) return [];
+  const used = new Set(lines(containers.output));
+  // What each was built, and what on (the label is absent, and the field
+  // empty, on an image built before there was one)
+  const built = new Map<string, { at: number; base: string }>();
+  for (const tag of mine) {
+    const inspected = await docker([
+      'image',
+      'inspect',
+      '-f',
+      `{{.Created}} {{index .Config.Labels "${BASE_LABEL}"}}`,
+      tag,
+    ]).catch(() => ({ code: 1, output: '' }));
+    const [created, base = ''] = inspected.code === 0 ? inspected.output.trim().split(/\s+/) : [];
+    built.set(tag, { at: Date.parse(created ?? ''), base: base.startsWith('ch-') ? base : '' });
+  }
+  const keep = new Set(
+    mine.filter((tag) => {
+      // An image a container was made from, or one this session built and may
+      // be about to make a container from (see ensureImage and
+      // ensureDependencies, whose keys are these tags)
+      if (used.has(tag) || images.has(tag) || dependencyImages.has(tag)) return true;
+      const at = built.get(tag)?.at;
+      // An image whose age cannot be told is left alone: the age is the whole
+      // of what keeps a workspace put down for the weekend from paying for its
+      // dependencies again on Monday
+      return !Number.isFinite(at) || Date.now() - (at as number) < UNUSED_MS;
+    })
+  );
+  // ...and what a kept image was built on is as much in use as it is. One step
+  // is all there is: the dependencies go on the base, and nothing goes on them.
+  for (const tag of [...keep]) {
+    const base = built.get(tag)?.base;
+    if (base) keep.add(base);
+  }
+  // A dependencies image built before the base label existed does not say what
+  // it stands on, and what cannot be told is left alone: while one of those is
+  // still here, every base is kept. They go the way of any other image once
+  // nothing has used them for a week, and what replaces them carries the label,
+  // so this is how it was before and not how it stays.
+  if ([...keep].some((tag) => tag.startsWith(DEPS_PREFIX) && !built.get(tag)?.base))
+    for (const tag of mine) if (tag.startsWith(BASE_PREFIX)) keep.add(tag);
+  const gone: string[] = [];
+  for (const tag of mine) {
+    if (keep.has(tag)) continue;
+    const { code, output } = await docker(['image', 'rm', tag]).catch((err: Error) => ({
+      code: 1,
+      output: err.message,
+    }));
+    if (code === 0) gone.push(tag);
+    else log.debug('sandbox.image', { image: tag, removed: false, error: output.trim().slice(-200) });
+  }
+  return gone;
+}
+
+// The same for the threads whose sandbox is a folder (see ./local.ts), where
+// what is left behind is a folder in ROOT and there is no Docker to ask
+function sweepFolders(live: Set<string> | null, swept: Swept): Swept {
+  if (!live) return swept;
+  let ids: string[] = [];
+  try {
+    ids = fs.readdirSync(local.ROOT);
+  } catch {
+    return swept; // none made yet
+  }
+  for (const id of ids) {
+    const name = `${CONTAINER_PREFIX}${id}`;
+    if (live.has(id) || running.has(name) || preparing.has(name)) continue;
+    try {
+      local.remove(local.folders(id));
+      swept.removed.push(name);
+    } catch (err) {
+      log.debug('sandbox.sweep', { folder: id, removed: false, error: (err as Error).message });
+    }
+  }
+  if (swept.removed.length) log.info('sandbox.sweep', { ok: true, folders: swept.removed.length });
+  return swept;
 }
 
 // Stops this session's containers without waiting; their files are kept.
 export function stopAll(): void {
+  // A folder has nothing to stop
+  if (local.active()) return running.clear();
   if (running.size === 0) return;
   const child = spawn('docker', ['stop', '-t', '0', ...running], {
     detached: true,

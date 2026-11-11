@@ -163,13 +163,14 @@ export function fileAccessCard(requestId: string, event: FileAccessEvent): HTMLE
     button('approve primary', 'Allow once', 'once'),
     button('approve', 'Allow for this thread', 'thread'),
     // Where the workspace is what the answer is remembered for, the two ways
-    // of remembering it: just this, or everything in its folder
+    // of remembering it: just this, or everything in its folder. Both are for
+    // this workspace only, so they say so (see settings.ts allowRead).
     ...(event.canRemember && event.isFolder
-      ? [button('approve', `Always allow this folder`, 'folder')]
+      ? [button('approve', `Always allow this folder in this workspace`, 'folder')]
       : event.canRemember
         ? [
-            button('approve', 'Always allow this file', 'file'),
-            button('approve', `Always allow ${event.folder}`, 'folder'),
+            button('approve', 'Always allow this file in this workspace', 'file'),
+            button('approve', `Always allow ${event.folder} in this workspace`, 'folder'),
           ]
         : [])
   );
@@ -248,6 +249,8 @@ export async function verifyReply(thread: Thread, asked: Message): Promise<void>
       output,
       provider: asked.answeredBy?.provider,
       model: asked.answeredBy?.model,
+      // With a workspace the changes are tried in the thread's container as well as read
+      ...(thread.workspace ? { workspace: thread.workspace } : {}),
     })
     .catch((err: Error) => err);
   reviewing.delete(thread.id);
@@ -279,13 +282,16 @@ export async function verifyReply(thread: Thread, asked: Message): Promise<void>
   const over = result.unreviewed
     ? ` · ${result.unreviewed} ${result.unreviewed === 1 ? 'file' : 'files'} not reviewed`
     : '';
+  // What the reviewer did to check them, under the note, where it tried them
+  const checked = result.checked ? { summary: result.checked } : {};
+  const how = result.tested ? ' · tried in the thread' : '';
   if (result.passed) {
-    insert({ role: 'note', text: `Review passed · ${result.model}${over}` });
+    insert({ role: 'note', text: `Review passed · ${result.model}${how}${over}`, ...checked });
     save();
     render();
     return;
   }
-  insert({ role: 'note', text: `Review found problems · ${result.model}${over}` });
+  insert({ role: 'note', text: `Review found problems · ${result.model}${how}${over}`, ...checked });
   // The user has moved on while it was being checked: the problems are said, but
   // the thread is not set off on them underneath whatever it is doing now
   if (thread.messages.findLast((m) => m.role === 'user') !== asked || inflight.has(thread.id)) {
@@ -293,11 +299,13 @@ export async function verifyReply(thread: Thread, asked: Message): Promise<void>
     render();
     return;
   }
+  // How it found them goes too, so that the fix can be checked the same way
+  const seen = result.checked ? `\n\nWhat the reviewer did to check them:\n\n${result.checked}` : '';
   const fix = addMessage(
     thread,
     'user',
     `A reviewer checked your changes against my request and found these problems:\n\n` +
-      `${result.problems}\n\nFix each of them, then say what you changed.`
+      `${result.problems}${seen}\n\nFix each of them, then say what you changed.`
   );
   fix.fromApp = true;
   save();
@@ -312,8 +320,8 @@ export function reviewCard(thread: Thread, asked: Message): HTMLElement {
   card.setAttribute('role', 'group');
   const text = document.createElement('p');
   text.textContent =
-    'Have a model at least as capable as the one that wrote these changes check them. ' +
-    'If it finds problems, they go back to the thread to be fixed.';
+    'Have a model at least as capable as the one that wrote these changes check them: read them, run the ' +
+    "project's checks and try them in the app. If it finds problems, they go back to the thread to be fixed.";
   const check = document.createElement('button');
   check.type = 'button';
   check.className = 'check primary';

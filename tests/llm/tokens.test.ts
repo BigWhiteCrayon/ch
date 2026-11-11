@@ -117,6 +117,27 @@ describe('sizeOf', () => {
     expect(sizeOf([call])).toBeGreaterThan(sizeOf([user('')]));
   });
 
+  // The tools are sent with every request and the model reads them like the
+  // rest of the prompt. Leaving them out undercounted a reply by a fixed
+  // few thousand tokens, which is the wrong way to be wrong about a window.
+  it('counts the tools the request offers', () => {
+    const tool = {
+      name: 'read_file',
+      description: 'Reads a file.',
+      inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+    };
+    const bare = sizeOf([user('hi')]);
+    expect(sizeOf([user('hi')], '', [tool])).toBeGreaterThan(bare);
+    // ...and only what the model is given of them: whatever else a ToolSpec
+    // carries never reaches the prompt
+    expect(sizeOf([user('hi')], '', [{ ...tool, phases: ['doing'], needsWorkspace: true }] as never)).toBe(
+      sizeOf([user('hi')], '', [tool])
+    );
+    // No tools offered is the prompt on its own, as it was before
+    expect(sizeOf([user('hi')], '', [])).toBe(bare);
+    expect(sizeOf([user('hi')], '', undefined)).toBe(bare);
+  });
+
   it('counts a result’s images by their dimensions rather than by the count of them', () => {
     const result = (images: ToolImage[]): ChatMessage => ({
       role: 'tool',

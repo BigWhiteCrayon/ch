@@ -68,6 +68,21 @@ describe('toMessages', () => {
       { role: 'tool', tool_call_id: 'c1', content: '12:00' },
     ]);
   });
+
+  it('builds a content array with a text part and an image_url when a user message has images', () => {
+    const converted = toMessages([
+      { role: 'user', content: 'look', images: [{ mediaType: 'image/jpeg', data: 'base64data' }] },
+    ]);
+    expect(converted).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'look' },
+          { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,base64data' } },
+        ],
+      },
+    ]);
+  });
 });
 
 describe('listModels', () => {

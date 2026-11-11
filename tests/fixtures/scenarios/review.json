@@ -1,0 +1,25 @@
+{
+  "about": "A change for the reviewer to catch: in a workspace thread on the sample workspace, say 'change' and the greeting becomes Hi without its test being updated. Then press Review changes: the reviewer runs the workspace's tests, sees the failure, and reports it.",
+  "rules": [
+    { "purpose": "classification", "reply": "3 coding" },
+    {
+      "purpose": "reply",
+      "when": "change",
+      "reply": [
+        { "tool": "edit_file", "input": { "path": "src/greet.js", "old_text": "Hello", "new_text": "Hi" } },
+        "Changed the greeting to Hi."
+      ]
+    },
+    {
+      "purpose": "subagent",
+      "when": "<request>",
+      "reply": [
+        {
+          "text": "Running the project's tests first.",
+          "tools": [{ "tool": "run_command", "input": { "command": "npm test 2>&1 | tail -n 15" } }]
+        },
+        "Checked:\n- ran `npm test`: the greet test fails, expecting \"Hello, Ada!\" and getting \"Hi, Ada!\"\n\nPROBLEMS\n- src/greet.test.js still expects \"Hello, Ada!\", so the change breaks the project's own test: ran `npm test` and saw it fail."
+      ]
+    }
+  ]
+}

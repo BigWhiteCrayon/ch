@@ -14,16 +14,26 @@ import {
   run,
   waitFor,
 } from '../subagents';
-import type { Tool } from '../types';
+import type { Phase, Tool } from '../types';
 
 // The kinds the model may ask for, as a line each, so that the choice is
 // described where it is made
 const choices = KINDS.map(({ name, summary }) => `- ${name}: ${summary}`).join('\n');
 
 // The one kind of subagent that cannot change anything, and so the only kind
-// the finding-out step may send: an explorer reads and writes notes, in its own
-// window rather than in the step's (see ../subagents/explorer.ts).
+// a step that changes nothing may send: an explorer reads and writes notes, in
+// its own window rather than in the step's (see ../subagents/explorer.ts). Both
+// the finding-out step and the planning step are such a step — the plan holds no
+// tool that writes a file, so a coder sent from either would make its own
+// instructions untrue — and both may send explorers only.
 const READS_ONLY = 'explorer';
+
+// The steps that hold no tool that changes anything, and so may send one kind
+// of subagent only: the finding-out step and the planning step (see offers in
+// ../harness/phases.ts, which offers the handout tools to both). What a step that
+// may send no coder is told about handing out, and what its call is refused for,
+// are the same in the two.
+const explorerOnly = (phase?: Phase) => phase === 'explore' || phase === 'plan';
 
 // The description in the parts a step may or may not be told. The finding-out
 // step may send one kind and no other (see run below), so it is given neither
@@ -170,23 +180,29 @@ const READERS_ONLY_SCHEMA = schema([READS_ONLY]);
 
 export const tool: Tool = {
   name: TOOL_NAME,
-  // In the doing step, and in the finding-out step as well — where it is the
-  // way out of reading a project into a window that has a plan to fit in
-  // afterwards. What it may hand out there is checked in run below.
-  phases: ['explore', 'execute'],
+  // In the doing step, in the finding-out step, in the planning step, and in the
+  // suggest step: the four are the steps a plan or a suggestion is worked through
+  // and before it. In the two that change nothing (finding out, planning) it is
+  // the way out of reading a project into a window that has a plan to fit in, and
+  // there only an explorer may be sent (see run below). In the suggest step the
+  // change being made in a demo copy that is reverted, so it falls to EVERY_KIND,
+  // the change reaching the files through whoever is handed the piece (see
+  // phases.SUGGESTION). What it may hand out in the changeless steps is checked in
+  // run below.
+  phases: ['explore', 'plan', 'execute', 'suggest'],
   description: described(EVERY_KIND),
   describe: (phase) =>
-    described(phase === 'explore' ? READERS_ONLY : phase === 'execute' ? MAKES_THE_CHANGE : EVERY_KIND),
+    described(explorerOnly(phase) ? READERS_ONLY : phase === 'execute' ? MAKES_THE_CHANGE : EVERY_KIND),
   inputSchema: EVERY_KIND_SCHEMA,
-  schemaFor: (phase) => (phase === 'explore' ? READERS_ONLY_SCHEMA : EVERY_KIND_SCHEMA),
+  schemaFor: (phase) => (explorerOnly(phase) ? READERS_ONLY_SCHEMA : EVERY_KIND_SCHEMA),
 
   async run(input, context) {
     const pieces = parse(input);
-    // The finding-out step cannot change anything, and neither may anything it
-    // sends: a coder handed out from there would make the step's own
-    // instructions untrue (see ../harness/phases.ts). Refused by naming the
-    // kind it should have asked for, which is a thing the model can act on.
-    if (context.phase === 'explore') {
+    // A step that changes nothing cannot change anything it sends either: a coder
+    // handed out from the finding-out or planning step would make the step's own
+    // instructions untrue (see ../harness/phases.ts). Refused by naming the kind
+    // it should have asked for, which is a thing the model can act on.
+    if (explorerOnly(context.phase)) {
       const wrong = pieces.filter((piece) => piece.kind.name !== READS_ONLY);
       if (wrong.length > 0) {
         throw new Error(
@@ -209,7 +225,7 @@ export const waitTool: Tool = {
   name: WAIT_TOOL,
   // Wherever work can be handed out, since work handed out and not waited for
   // has to be collectable in the same step (see tool above)
-  phases: ['explore', 'execute'],
+  phases: ['explore', 'plan', 'execute', 'suggest'],
   description: `Wait for subagents you handed out with ${TOOL_NAME} and did not wait for, and get what they found.
 Returns when they have all finished, with a report from each, the same as if you had waited for them in the first
 place.
@@ -247,7 +263,7 @@ are done.`,
 export const messageTool: Tool = {
   // Wherever work can be handed out: a subagent that cannot be written to from
   // the step that started it cannot be written to at all (see tool above)
-  phases: ['explore', 'execute'],
+  phases: ['explore', 'plan', 'execute', 'suggest'],
   name: MESSAGE_TOOL,
   description: `Write to a subagent of yours that is still working, and get back what it says.
 

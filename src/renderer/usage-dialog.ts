@@ -8,6 +8,7 @@ import type { Section } from './tool-calls.js';
 export const usageDialog = element<HTMLDialogElement>('usage');
 export const usageRangeChips = element('usage-range');
 export const usageViewChips = element('usage-view');
+export const usageBreakdownChips = element('usage-breakdown-view');
 export const usageEmpty = element('usage-empty');
 export const usageTiles = element('usage-tiles');
 export const usageEarlier = element('usage-earlier');
@@ -28,6 +29,53 @@ export let usageRange: UsageRange = 7;
 // and what the biggest spender is biggest in.
 export type UsageView = 'cost' | 'tokens';
 export let usageView: UsageView = 'cost';
+// Which of the two breakdowns is on the page at a time: the models, or what
+// they were used for. Default to the model table, as it was on its own.
+export type UsageBreakdownView = 'model' | 'purpose';
+export let usageBreakdownView: UsageBreakdownView = 'model';
+// What the legend has chosen to show. The name on an entry singles one series
+// out to its own ("solo"); its colour box puts that one back or takes another
+// off. A solo wins over a set of hidden series, so the two never fight, and
+// each reading keeps its own choices, so reading the models does not reach in
+// and hide a purpose.
+const legendHidden: Record<UsageBreakdownView, Set<string>> = { model: new Set(), purpose: new Set() };
+const legendSolo: Record<UsageBreakdownView, string | null> = { model: null, purpose: null };
+// The series the chart last drew, per reading: the one the colour box is
+// checked against, so it will not take the last one off and leave a bar of
+// nothing. Filled in as the chart is built.
+let chartSeries: Record<UsageBreakdownView, string[]> = { model: [], purpose: [] };
+// Whether a series shows on the chart at all: a soloed one is the only thing
+// on it, or, with no solo, every one the legend has not been told to hide.
+const legendShown = (view: UsageBreakdownView, key: string): boolean => {
+  const solo = legendSolo[view];
+  return solo !== null ? key === solo : !legendHidden[view].has(key);
+};
+// Re-draws only the chart and its legend, which are the two the legend acts on.
+const redrawChart = (): void => {
+  hideUsageTip();
+  drawUsageChart(usageSpan());
+};
+// The colour box on a legend entry: put that series back, or take it off, and
+// drop any solo, since the reader is now fine-tuning what is shown. The last
+// series on the chart is not taken off: a chart of nothing tells nothing.
+const toggleLegendSeries = (view: UsageBreakdownView, key: string): void => {
+  const hidden = legendHidden[view];
+  if (hidden.has(key)) {
+    hidden.delete(key);
+  } else {
+    const shown = chartSeries[view].filter((k) => !hidden.has(k));
+    if (shown.length === 1 && shown[0] === key) return;
+    hidden.add(key);
+  }
+  legendSolo[view] = null;
+  redrawChart();
+};
+// The name on a legend entry: show that series on its own; the same name again
+// lets the others back on.
+const soloLegendSeries = (view: UsageBreakdownView, key: string): void => {
+  legendSolo[view] = legendSolo[view] === key ? null : key;
+  redrawChart();
+};
 
 // A colour per model: a hue for its provider, nudged by the model's rank among that provider's models.
 export const PROVIDER_SLOT: Record<string, number> = { anthropic: 1, openai: 2, local: 3 };
@@ -64,6 +112,43 @@ export const paintSeries = (el: HTMLElement, provider: string, model: string): v
   el.style.setProperty('--series-shift', String(((rank % 3) - 1) * 9));
 };
 
+// A colour per purpose: one hue a purpose keeps from one render to the next,
+// so its place in a bar is as stable as a model's. The top-level purpose's
+// name is what it turns on; "subagent" sits at the top like a provider, with
+// its kinds rolled up under it, and an "Earlier (purpose not recorded)" bucket
+// its own neutral grey.
+export const PURPOSE_HUE: Record<string, number> = {
+  classification: 285,
+  planning: 55,
+  reply: 210,
+  summary: 165,
+  description: 330,
+  compaction: 95,
+  subagent: 30,
+  verification: 120,
+};
+const EARLIER_HUE = 270;
+export const purposeHue = (key: string): number =>
+  key === 'earlier' ? EARLIER_HUE : (PURPOSE_HUE[key] ?? ((Object.keys(PURPOSES).indexOf(key) + 1) * 47) % 360);
+// Paints a purpose's colour onto an element, the way paintSeries does for a model.
+export const paintPurpose = (el: HTMLElement, key: string): void => {
+  const rank = key === 'earlier' ? 3 : Object.keys(PURPOSES).indexOf(key);
+  el.style.setProperty('--series-hue', String(purposeHue(key)));
+  el.style.setProperty('--series-shift', String(((rank % 3) - 1) * 9));
+};
+// A purpose swatch with its name beside it, as swatched does for a model.
+export function purposeSwatched(label: string, key: string, tag: 'span' | 'div'): HTMLElement {
+  const wrapper = document.createElement(tag);
+  const swatch = document.createElement('i');
+  paintPurpose(swatch, key);
+  wrapper.append(swatch, document.createTextNode(label));
+  return wrapper;
+}
+
+// A purpose's name on the page, the fixed labels first and then the key itself,
+// as drawUsagePurposes reads it (PURPOSES has a fixed shape, not an index).
+export const purposeName = (key: string): string =>
+  key === 'earlier' ? 'Earlier (purpose not recorded)' : ((PURPOSES as Record<string, string>)[key] ?? key);
 // What a provider is called. The fixed names come first: a provider whose key
 // has since been removed is no longer among the listed models, but may well
 // still be in the record.
@@ -197,6 +282,15 @@ export const markView = chips<UsageView>(
   () => usageView,
   (measure) => (usageView = measure)
 );
+export const markBreakdown = chips<'model' | 'purpose'>(
+  usageBreakdownChips,
+  [
+    ['Model', 'model'],
+    ['Purpose', 'purpose'],
+  ],
+  () => usageBreakdownView,
+  (view) => (usageBreakdownView = view)
+);
 
 // The numbers that should need no reading off a chart: what the range cost,
 // and the tokens that went into and came out of it
@@ -248,23 +342,131 @@ export function drawUsageTiles(days: string[], totals: ModelTotal[]): void {
   );
 }
 
+// The parts of one day's column when the chart is read by purpose: one part per
+// top-level purpose, its subagent kinds rolled up under a single "Subagent"
+// total, and whatever the purposes leave out as an "Earlier" bucket, as the
+// "By purpose" table has it (see drawUsagePurposes).
+const purposePartsForDay = (
+  day: string
+): {
+  key: string;
+  label: string;
+  title: string;
+  value: number;
+  paint: (el: HTMLElement) => void;
+}[] => {
+  const measure = (total: PurposeTotal) => (usageView === 'cost' ? total.cost : tokensOf(total));
+  const totals: Record<string, PurposeTotal> = {};
+  for (const [key, total] of Object.entries(state.dailyPurpose?.[day] ?? {})) {
+    const into = (totals[key] ??= { input: 0, output: 0, cost: 0 });
+    into.input += total.input;
+    into.output += total.output;
+    into.cost += total.cost;
+    if (total.cacheRead !== undefined) into.cacheRead = (into.cacheRead ?? 0) + total.cacheRead;
+    if (total.cacheWrite !== undefined) into.cacheWrite = (into.cacheWrite ?? 0) + total.cacheWrite;
+  }
+  // A "subagent/kind" key rolls up into its "subagent" total, the way the table
+  // nests its kinds under the row, so the bar shows one Subagent part.
+  for (const key of Object.keys(totals)) {
+    if (!key.startsWith('subagent/')) continue;
+    const into = (totals['subagent'] ??= { input: 0, output: 0, cost: 0 });
+    into.input += totals[key].input;
+    into.output += totals[key].output;
+    into.cost += totals[key].cost;
+    if (totals[key].cacheRead !== undefined) into.cacheRead = (into.cacheRead ?? 0) + totals[key].cacheRead;
+    if (totals[key].cacheWrite !== undefined) into.cacheWrite = (into.cacheWrite ?? 0) + totals[key].cacheWrite;
+    delete totals[key];
+  }
+  const top = Object.keys(totals).filter((key) => !key.includes('/'));
+  const parts = top.map((key) => ({
+    key,
+    label: purposeName(key),
+    title: purposeName(key),
+    value: measure(totals[key]),
+    paint: (el: HTMLElement) => paintPurpose(el, key),
+  }));
+  // Whatever the purposes leave out of the day's total: usage from before they
+  // were recorded, the same bucket the "By purpose" table owns up to.
+  const recorded = top.reduce((n, key) => n + measure(totals[key]), 0);
+  const dayTotal = Object.values(state.daily?.[day] ?? {});
+  const measureDay =
+    usageView === 'cost' ? totalOf(dayTotal, 'cost') : totalOf(dayTotal, 'input') + totalOf(dayTotal, 'output');
+  const earlier = measureDay - recorded;
+  if (measureDay > 0 && earlier > 1e-9) {
+    parts.push({
+      key: 'earlier',
+      label: 'Earlier (purpose not recorded)',
+      title: 'Earlier (purpose not recorded)',
+      value: earlier,
+      paint: (el: HTMLElement) => paintPurpose(el, 'earlier'),
+    });
+  }
+  return parts.sort((a, b) => b.value - a.value);
+};
+
 // The chart: a column per day, stacked by model under its provider, so that a day's height is
 // what the day came to and the colours say where it went
 export function drawUsageChart(days: string[]): void {
-  // Aggregate per day by provider/model pair
+  const byPurpose = usageBreakdownView === 'purpose';
+  const view: UsageBreakdownView = byPurpose ? 'purpose' : 'model';
+  // Each day is a column; the parts that stack up its height, each carrying the
+  // colour it keeps from day to day. Read by model the parts are provider/model
+  // pairs; read by purpose they are one part per purpose (see purposePartsForDay).
+  // The legend's entries are the parts themselves, gathered here as the days are
+  // built, so the two readings each spell out their own colours.
+  const series = new Map<
+    string,
+    { key: string; label: string; title: string; paint: (el: HTMLElement) => void; provider?: string; model?: string }
+  >();
   const perDay = days.map((day) => {
-    // Keyed "provider/model", summing measureOf(total)
-    const byModel = new Map<string, { provider: string; model: string; value: number }>();
-    for (const total of Object.values(state.daily?.[day] ?? {})) {
-      const key = `${total.provider}/${total.model}`;
-      byModel.set(key, {
-        provider: total.provider,
-        model: total.model,
-        value: (byModel.get(key)?.value ?? 0) + measureOf(total),
-      });
+    let parts: {
+      key: string;
+      label: string;
+      title: string;
+      value: number;
+      paint: (el: HTMLElement) => void;
+      provider?: string;
+      model?: string;
+    }[];
+    if (!byPurpose) {
+      // Keyed "provider/model", summing measureOf(total)
+      const byModel = new Map<string, { provider: string; model: string; value: number }>();
+      for (const total of Object.values(state.daily?.[day] ?? {})) {
+        const key = `${total.provider}/${total.model}`;
+        byModel.set(key, {
+          provider: total.provider,
+          model: total.model,
+          value: (byModel.get(key)?.value ?? 0) + measureOf(total),
+        });
+      }
+      parts = [...byModel.values()]
+        .filter((part) => part.value > 0)
+        .sort(byProviderThenModel)
+        .map(({ provider, model, value }) => ({
+          key: `${provider}/${model}`,
+          label: model,
+          title: providerLabel(provider),
+          value,
+          provider,
+          model,
+          paint: (el: HTMLElement) => paintSeries(el, provider, model),
+        }));
+    } else {
+      parts = purposePartsForDay(day);
     }
-    return { day, byModel, sum: [...byModel.values()].reduce((n, v) => n + v.value, 0) };
+    for (const part of parts) {
+      series.set(part.key, { ...part });
+    }
+    // The parts the legend has left in, and what the column comes to with them.
+    const shown = parts.filter((part) => legendShown(view, part.key));
+    return { day, shown, sum: shown.reduce((n, p) => n + p.value, 0) };
   });
+  // A series the reader singled out, but that is no longer on this range, is
+  // let go so the chart is not waiting on a bar that is no longer there.
+  if (legendSolo[view] !== null && ![...series.keys()].includes(legendSolo[view]!)) {
+    legendSolo[view] = null;
+  }
+  chartSeries[view] = [...series.keys()];
   const top = axisTop(Math.max(0, ...perDay.map((d) => d.sum)));
 
   // The scale down the left, and the hairlines it is read against
@@ -281,7 +483,7 @@ export function drawUsageChart(days: string[]): void {
 
   const columns = document.createElement('div');
   columns.className = 'chart-cols';
-  for (const { day, byModel, sum } of perDay) {
+  for (const { day, shown } of perDay) {
     const column = document.createElement('div');
     column.className = 'chart-col';
     // The whole height of the column takes the pointer, not just the part
@@ -291,14 +493,12 @@ export function drawUsageChart(days: string[]): void {
     column.addEventListener('mouseleave', hideUsageTip);
     const stack = document.createElement('div');
     stack.className = 'chart-stack';
-    // Stack by provider, then by the model's rank, so a model keeps its place from day to day
-    const parts = [...byModel.values()].filter((part) => part.value > 0).sort(byProviderThenModel);
-    for (const { provider, model, value } of parts) {
+    for (const { label, value, paint } of shown) {
       const segment = document.createElement('div');
       segment.className = 'seg';
-      paintSeries(segment, provider, model);
+      paint(segment);
       segment.style.height = `${(value / top) * 100}%`;
-      segment.title = `${dayLabel(day, true)} · ${model}: ${axisTick(value)}`;
+      segment.title = `${dayLabel(day, true)} · ${label}: ${axisTick(value)}`;
       stack.append(segment);
     }
     column.append(stack);
@@ -345,19 +545,63 @@ export function drawUsageChart(days: string[]): void {
   const offset = scroll.getBoundingClientRect().left - usageChart.getBoundingClientRect().left;
   if (offset > 0) usageLegend.style.setProperty('--usage-axis-w', `${offset}px`);
 
-  // One entry per model on show, in the order the segments stack
-  const present = new Map<string, { provider: string; model: string }>();
-  for (const { byModel } of perDay)
-    for (const [key, { value, provider, model }] of byModel) if (value > 0) present.set(key, { provider, model });
-  const legend = [...present.values()].sort(byProviderThenModel);
+  // One entry per series on the range, in the order the segments stack, each
+  // painted the colour its bar keeps. Read by model the series are the models;
+  // read by purpose they are the purposes. Every series stays in the legend so
+  // one taken off its colour box can be put back, and one read of the models
+  // never reaches in and changes a choice made reading the purposes.
+  const legend = byPurpose
+    ? [...series.values()].sort((a, b) => a.key.localeCompare(b.key))
+    : [...series.values()].sort((a, b) =>
+        byProviderThenModel({ provider: a.provider!, model: a.model! }, { provider: b.provider!, model: b.model! })
+      );
   usageLegend.hidden = legend.length < 2;
-  usageLegend.replaceChildren(
-    ...legend.map(({ provider, model }) => {
-      const entry = swatched(model, provider, model, 'span');
-      entry.title = providerLabel(provider);
-      return entry;
-    })
-  );
+  usageLegend.replaceChildren(...legend.map((s) => legendEntry(view, s)));
+}
+
+// A colour box beside a name, each the way to change what the chart shows: the
+// box takes its series off or puts it back, the name singles that series out to
+// its own. A series left off is dimmed and struck through; the one singled out
+// is the only one on the bars, its name stood out from the rest.
+function legendEntry(
+  view: UsageBreakdownView,
+  s: { key: string; label: string; title: string; paint: (el: HTMLElement) => void }
+): HTMLElement {
+  const entry = document.createElement('span');
+  entry.className = 'legend-item';
+  const shown = legendShown(view, s.key);
+  const soloed = legendSolo[view] === s.key;
+  if (!shown) entry.classList.add('is-off');
+  if (soloed) entry.classList.add('is-solo');
+
+  // The colour box: its series' colour, and the way to take it off or put it back.
+  const swatch = document.createElement('button');
+  swatch.type = 'button';
+  swatch.className = 'legend-swatch';
+  swatch.title = `${s.title} · ${shown ? 'take off the chart' : 'show on the chart'}`;
+  const dot = document.createElement('i');
+  s.paint(dot);
+  swatch.append(dot);
+  swatch.setAttribute('aria-pressed', String(shown));
+  swatch.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleLegendSeries(view, s.key);
+  });
+
+  // The name: show this series on its own, or, if it already is, let the rest back.
+  const name = document.createElement('button');
+  name.type = 'button';
+  name.className = 'legend-name';
+  name.textContent = s.label;
+  name.title = s.title;
+  name.setAttribute('aria-pressed', String(soloed));
+  name.addEventListener('click', (e) => {
+    e.stopPropagation();
+    soloLegendSeries(view, s.key);
+  });
+
+  entry.append(swatch, name);
+  return entry;
 }
 
 // A piece of text with its model's colour beside it
@@ -557,6 +801,7 @@ export function drawUsageEarlier(): void {
 export function drawUsage(): void {
   markRange();
   markView();
+  markBreakdown();
   hideUsageTip();
   drawUsageEarlier();
 
@@ -570,8 +815,8 @@ export function drawUsage(): void {
   usageEmpty.hidden = !empty;
   usageTiles.hidden = empty;
   element('usage-chart-section').hidden = empty;
-  element('usage-breakdown-section').hidden = empty;
-  element('usage-purpose-section').hidden = empty;
+  element('usage-breakdown-section').hidden = empty || usageBreakdownView === 'purpose';
+  element('usage-purpose-section').hidden = empty || usageBreakdownView === 'model';
   element('usage-days-section').hidden = empty;
   if (empty) {
     // Hidden is not enough: the last range's chart and tables would still be
@@ -591,17 +836,34 @@ export function drawUsage(): void {
 
 // What one day's column stands for, in full, following the pointer
 export function showUsageTip(at: MouseEvent, day: string): void {
-  const totals = Object.values(state.daily?.[day] ?? {}).sort(biggest);
   const head = document.createElement('div');
   head.className = 'label';
-  head.textContent = `${dayLabel(day, true)} · ${totals.length ? usageLine(totals) : 'nothing used'}`;
-  const rows = totals.map((total) => {
-    const row = swatched(total.model, total.provider, total.model, 'div');
-    const used = document.createElement('small');
-    used.textContent = usageLine([total]);
-    row.append(used);
-    return row;
-  });
+  let rows: HTMLElement[];
+  if (usageBreakdownView === 'purpose') {
+    // Read by purpose: one line per purpose, its subagent kinds rolled up under
+    // one line, as the chart and the "By purpose" table have it. Each part is
+    // read in the measure the chart is, so a purpose's figure matches its bar.
+    const dayTotal = Object.values(state.daily?.[day] ?? {});
+    const parts = purposePartsForDay(day);
+    head.textContent = `${dayLabel(day, true)} · ${parts.length ? usageLine(dayTotal) : 'nothing used'}`;
+    rows = parts.map(({ key, label, value }) => {
+      const row = purposeSwatched(label, key, 'div');
+      const used = document.createElement('small');
+      used.textContent = axisTick(value);
+      row.append(used);
+      return row;
+    });
+  } else {
+    const totals = Object.values(state.daily?.[day] ?? {}).sort(biggest);
+    head.textContent = `${dayLabel(day, true)} · ${totals.length ? usageLine(totals) : 'nothing used'}`;
+    rows = totals.map((total) => {
+      const row = swatched(total.model, total.provider, total.model, 'div');
+      const used = document.createElement('small');
+      used.textContent = usageLine([total]);
+      row.append(used);
+      return row;
+    });
+  }
   usageTip.replaceChildren(head, ...rows);
   usageTip.hidden = false;
   placeUsageTip(at);

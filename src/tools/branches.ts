@@ -1,11 +1,11 @@
-// The two tools a subagent puts its thread on a branch of its own with: one makes the branch, the other moves the
-// thread onto it. They are the branch counterpart of the workspace pair next door (./workspaces.ts), and are split
-// for the same reason: making one is a thing a model can do and then think better of, or do twice because the name was
-// taken, while moving on is the step that changes where the thread's work ends up.
+// The two tools a reply or a subagent puts its thread on a branch of its own with: one makes the branch, the other
+// moves the thread onto it. They are the branch counterpart of the workspace pair next door (./workspaces.ts), and are
+// split for the same reason: making one is a thing a model can do and then think better of, or do twice because the
+// name was taken, while moving on is the step that changes where the thread's work ends up.
 //
-// They are a subagent's and not a reply's (`agentOnly`). A reply has the user there to choose a branch for it, which
-// is what the new-thread dialog is for; a subagent is the one that finds, part way through a piece of work, that what
-// it is doing wants a branch rather than whatever the user has checked out.
+// The user can choose a branch for a thread when starting it, in the new-thread dialog; these are for when it is found
+// only part way through — by the reply, or by a subagent it sent — that the work wants a branch of its own rather
+// than whatever the user has checked out.
 //
 // What the move does and does not change is the whole of the design. It does not touch the container: the files stay
 // as they are, and so does the baseline the thread's changes are measured against (see sandbox/docker.ts). It does not
@@ -14,8 +14,8 @@
 // branch's worktree. That is sound because the branch starts at the commit the thread's folder has checked out, so
 // what reads as a change against the old folder reads as the same change against the new one.
 //
-// Several subagents work at once, and the thread has one place to live, so the first one to move wins and the rest are
-// told so rather than each moving the thread somewhere else.
+// The reply and several subagents may work at once, and the thread has one place to live, so the first one to move
+// wins and the rest are told so rather than each moving the thread somewhere else.
 
 import { existsSync } from 'fs';
 import { join } from 'path';
@@ -76,7 +76,6 @@ export const tools: Tool[] = [
     // Both change something outside the thread, so they belong to the step that changes things and to no other
     // (see ../harness/phases.ts)
     phases: ['execute'],
-    agentOnly: true,
     needsWorkspace: true,
     description: `Make a new branch in this workspace's repository, starting from what this thread is working on,
 ready for the thread to move onto. Use it when the work you have been given belongs on a branch of its own rather than
@@ -114,12 +113,11 @@ it, and ${ENTER_TOOL} is what puts this thread on it. A name already in use is r
   {
     name: ENTER_TOOL,
     phases: ['execute'],
-    agentOnly: true,
     needsWorkspace: true,
     description: `Put this thread on a branch made with ${CREATE_TOOL}. The files in your working directory do not
 change: what has been written in them becomes a change to that branch, and that is where the thread's work is written
 back to from now on. The thread is listed under the branch in the user's sidebar. Only one branch per thread: if
-another subagent working alongside you has already moved it, you will be told so.`,
+a subagent or reply working alongside you has already moved it, you will be told so.`,
     inputSchema: {
       type: 'object',
       properties: {

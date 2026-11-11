@@ -1,4 +1,4 @@
-import type { Message, Resumed, Thread } from './types.js';
+import type { Message, Resumed, Thread, ToolImage } from './types.js';
 import {
   idleTimers,
   inflight,
@@ -30,6 +30,7 @@ export const PHASES: Record<import('./types').Phase, string> = {
   execute: 'Making the changes…',
   respond: 'Writing the answer…',
   report: 'Writing up the investigation…',
+  suggest: 'Making the suggestion…',
 };
 // ...and the same steps once they are over
 export const PHASES_DONE: Record<import('./types').Phase, string> = {
@@ -38,6 +39,7 @@ export const PHASES_DONE: Record<import('./types').Phase, string> = {
   execute: 'Made the changes',
   respond: 'Wrote the answer',
   report: 'Wrote up the investigation',
+  suggest: 'Made the suggestion',
 };
 // The explore step of an investigation is named for investigating, not for
 // touching things: what it is doing and what it did are said the same way
@@ -66,13 +68,14 @@ export const CATEGORY_NAMES: Record<string, string> = {
   coding: 'Coding',
   question: 'Question',
   investigation: 'Investigation',
+  suggestion: 'Suggestion',
   general: 'General',
 };
 
-export async function send(text: string): Promise<void> {
+export async function send(text: string, images?: ToolImage[]): Promise<void> {
   const thread = activeThread();
   setToTheEnd(true);
-  const asked = addMessage(thread, 'user', text);
+  const asked = addMessage(thread, 'user', text, images);
   render();
   await reply(thread, asked);
 }
@@ -106,7 +109,15 @@ export const NO_REPLY_KEPT =
 // it was marked, has no such mark, so there the last words before the next user
 // message stand for the answer instead. Always alternating from the user's side:
 // see NO_REPLY_KEPT.
-export function conversation(messages: Message[]): { role: 'user' | 'assistant'; content: string }[] {
+//
+// A user's turn with pictures and no words is conversation too (see the `images`
+// a user message carries), so a turn is kept for what it said or for its
+// pictures; the pictures ride along on the turn they were attached to.
+export function conversation(messages: Message[]): {
+  role: 'user' | 'assistant';
+  content: string;
+  images?: ToolImage[];
+}[] {
   const answers = new Set<Message>();
   let turn: Message[] = [];
   const close = (): void => {
@@ -121,12 +132,12 @@ export function conversation(messages: Message[]): { role: 'user' | 'assistant';
   }
   close();
 
-  const out: { role: 'user' | 'assistant'; content: string }[] = [];
+  const out: { role: 'user' | 'assistant'; content: string; images?: ToolImage[] }[] = [];
   for (const m of messages) {
-    if ((m.role !== 'user' && m.role !== 'assistant') || !m.text) continue;
+    if ((m.role !== 'user' && m.role !== 'assistant') || (!m.text && !(m.images?.length))) continue;
     if (m.role === 'assistant' && !answers.has(m)) continue;
     if (m.role === 'user' && out.at(-1)?.role === 'user') out.push({ role: 'assistant', content: NO_REPLY_KEPT });
-    out.push({ role: m.role, content: m.text });
+    out.push({ role: m.role, content: m.text, ...(m.images?.length ? { images: m.images } : {}) });
   }
   return out;
 }

@@ -48,10 +48,21 @@ app.setName(APP_NAME);
 // set, and each ignores what it has no use for.
 const ICON = path.join(__dirname, '..', 'assets', 'icon.png');
 
+// A capture runs the app on a virtual display of its own and grabs the whole
+// screen (see appShotCommand in tools/sandbox.ts). A screen with no window
+// manager shows a window smaller than it as a black bar on its right and bottom,
+// so a capture names the display's size through these two and the window is made
+// to fill it. A run the user starts sets neither, and the window opens at the
+// sizes below, as the app has always done.
+function envSize(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
+}
+
 function createWindow(): void {
   const win = new BrowserWindow({
-    width: 1000,
-    height: 700,
+    width: envSize('CH_WINDOW_WIDTH', 1000),
+    height: envSize('CH_WINDOW_HEIGHT', 700),
     minWidth: 600,
     minHeight: 400,
     // Until the page sets its own, which adds the project (see renderer.ts)
@@ -196,8 +207,14 @@ ipcMain.handle('llm:describe', (_event, request: DescriptionRequest) => harness.
 ipcMain.handle('llm:suggest', (_event, request: SuggestionRequest) => harness.suggest(request));
 
 // A reply's changes are checked by a model at least as capable as the one that
-// wrote them, at the user's asking (see harness/verifier.ts)
-ipcMain.handle('llm:verify', (_event, request: VerificationRequest) => harness.verify(request));
+// wrote them, at the user's asking (see harness/verifier.ts). One that tries them
+// in the thread's container has its files put back afterwards, unless a reply
+// has started on the thread since, whose changes would go with them: a request
+// starting is what moves beforeRequest on.
+ipcMain.handle('llm:verify', (_event, request: VerificationRequest) => {
+  const latest = beforeRequest.get(request.thread)?.request;
+  return harness.verify(request, { untouched: () => beforeRequest.get(request.thread)?.request === latest });
+});
 
 // The thread as it was when its latest request started: its files, and the
 // context note it keeps in its container. Both are kept so that an attempt
@@ -227,9 +244,17 @@ ipcMain.on('llm:send', async (event, requestId: string, request: HarnessRequest)
   });
   // How the reply ended; stays as it is if the harness never said
   let outcome: log.Fields = { ok: false, error: 'The reply ended without finishing.' };
+  // Whether the reply was a suggestion, read from the classification event as it
+  // is said. A suggestion makes its change in a demo copy to be shown, not kept,
+  // so however the reply ends its files go back to how they were at the start of
+  // the request (see the revert in finally): the user is shown the suggestion,
+  // and is never left with it as a change to their project.
+  let suggested = false;
   try {
     for await (const chatEvent of harness.run(request, controller.signal, requestId)) {
-      if (chatEvent.type === 'done') {
+      if (chatEvent.type === 'classification') {
+        if (!chatEvent.failed && chatEvent.category === 'suggestion') suggested = true;
+      } else if (chatEvent.type === 'done') {
         const { stopReason, steps, usage } = chatEvent;
         outcome = {
           ok: true,
@@ -258,6 +283,25 @@ ipcMain.on('llm:send', async (event, requestId: string, request: HarnessRequest)
     throw err;
   } finally {
     active.delete(requestId);
+    // A suggestion is shown, not kept: however it ended, its files go back to
+    // how they were when the request started, and the context note it wrote is
+    // put back too, so the next message is not told what this one suggested. The
+    // snapshot and the note were held for this the moment the request started
+    // (see beforeRequest), for the same reason as the revert the user asks for
+    // on a thrown-away attempt (see thread:revert).
+    if (suggested) {
+      const threadId = request.thread;
+      const held = threadId ? beforeRequest.get(threadId) : undefined;
+      if (threadId && held && held.request === requestId) {
+        beforeRequest.delete(threadId);
+        const back = await sandbox.changes.revert(threadId, held.tree);
+        // After the files, which carry a note of their own in the tree they are
+        // put back from (see thread:revert): this is the last word on what the
+        // note says either way.
+        await sandbox.restoreContext(threadId, held.context);
+        log.info('request.reverted', { ...where, suggestion: true, back });
+      }
+    }
     // However it ended, there is no next step of this reply to keep a local
     // model's prompt for, and the next message in the thread is as far off as
     // the user is. Said here rather than in the harness because every way a
@@ -409,6 +453,16 @@ const shownNote = (note: harness.notes.Note, drift?: harness.notes.Checked): Wor
     : {}),
 });
 
+// What a file in a workspace is, read by the relative name a reply gave it. A
+// reference in a reply (see renderer/file-ref.ts) points the user at a part of
+// the code by name, and the window shows what it pointed at when the user opens
+// it. It is the user's own workspace, read at the user's own click, so nothing
+// is asked about it; a path that would reach outside the workspace is refused
+// (see sandbox.readFileInWorkspace).
+ipcMain.handle('workspace:file', (_event, workspace: string, relPath: string, from?: number, to?: number) =>
+  sandbox.readFileInWorkspace(workspace, relPath, from, to)
+);
+
 // What is known about a workspace, for the user to read: the note on its
 // project and the detailed notes behind it, which are otherwise only ever
 // shown to the models working in it
@@ -542,6 +596,20 @@ ipcMain.on('threads:save', (event, state: string) => {
   event.returnValue = true;
 });
 
+// The screenshots and clips a reply took, kept in a sidecar beside the threads
+// so the JSON stays small (see store.saveMedia). Written as the JSON is, and
+// read back when the JSON is, so the two always say the same thing.
+// The window waits for the answer (see preload.ts), and one never given leaves
+// it frozen until the event happens to be garbage collected here.
+ipcMain.on('threads:save-media', (event, items: { id: string; mediaType: string; data: string }[]) => {
+  store.saveMedia(items);
+  event.returnValue = true;
+});
+
+ipcMain.on('threads:load-media', (event) => {
+  event.returnValue = store.loadMedia();
+});
+
 ipcMain.handle('ollama:status', () => ollama.status(settings.get().local));
 
 // Model name -> AbortController for every download in progress
@@ -628,6 +696,10 @@ app.whenReady().then(() => {
   harness.project.init(app.getPath('userData'));
   // The detail behind that note, kept beside it (see harness/notes.ts)
   harness.notes.init(app.getPath('userData'));
+  // How each workspace's app is run, kept beside them (see sandbox/recipes.ts)
+  sandbox.recipes.init(app.getPath('userData'));
+  // Where a removal that could not be made is written down (see sandbox/docker.ts)
+  sandbox.init(app.getPath('userData'));
   // What the user has allowed the model to read on their computer is kept in the settings
   harness.access.configure({ readable: settings.readable, allow: settings.allowRead });
   search.init(app.getPath('userData'));
@@ -645,6 +717,15 @@ app.whenReady().then(() => {
   showMenu();
   void refreshAvailable();
   createWindow();
+  // What earlier sessions left behind: a container whose thread was deleted
+  // while Docker was down, a container a session that was killed left running,
+  // and the caches and images nothing uses any more (see sweep in
+  // sandbox/docker.ts). After the window, since nothing waits on it, and with
+  // the threads as the store has them — which is how a container with no
+  // thread is told from one whose thread simply has not been opened yet. Null
+  // from the store is "cannot tell", and then nothing is removed for being
+  // unknown.
+  void sandbox.sweep(store.threadIds() ?? undefined);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

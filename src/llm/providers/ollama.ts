@@ -14,14 +14,17 @@
 import type { ChatEvent, ChatMessage, Provider, Usage } from '../../types';
 import type { ChatRequest } from '../../types';
 import { ensureLoaded, rootURL } from '../ollama';
+import { failure, patientFetch } from '../transport';
 import { stopped } from './stopped';
 
 export interface OllamaOptions {
   // The server's OpenAI-compatible URL (".../v1"), as in the settings
   baseURL: string;
   apiKey: string;
-  // Tokens of context a model is loaded with
+  // Tokens of context a model is loaded with if it doesn't say what it can take
   contextLength: number;
+  // The most context any model is loaded with, whatever it can take
+  maxContext?: number;
   // The same, for a model that has only been asked brief things
   briefContextLength: number;
   // Up to what size, in bytes, a model is small enough to serve a brief
@@ -45,7 +48,9 @@ export function toMessages(messages: ChatMessage[]): Record<string, unknown>[] {
         role: 'tool',
         tool_name: m.name,
         content: m.content,
-        images: m.images.map((i) => i.data),
+        // One whose bytes fell out of the sidecar's cap (see renderer/threads.ts)
+        // is only a name now, and has nothing to send
+        images: m.images.filter((i) => i.data).map((i) => i.data),
       };
     }
     if (m.role === 'assistant' && m.toolCalls?.length) {
@@ -56,6 +61,12 @@ export function toMessages(messages: ChatMessage[]): Record<string, unknown>[] {
           function: { name: call.name, arguments: call.input ?? {} },
         })),
       };
+    }
+    // A user turn with pictures carries them the way a tool result does; a
+    // word-only turn is unchanged. A name with no bytes behind it is left out,
+    // as in the tool path above.
+    if (m.role === 'user' && m.images?.length) {
+      return { role: 'user', content: m.content, images: m.images.filter((i) => i.data).map((i) => i.data) };
     }
     return { role: m.role, content: m.content };
   });
@@ -84,10 +95,24 @@ function toInput(args: unknown): Record<string, unknown> | null {
   }
 }
 
+// What /api/show says of a model, as far as this provider cares
+interface ModelFacts {
+  able: string[];
+  contextLimit?: number;
+}
+
+// The most context a model was made for, which Ollama files under the name of
+// the model's architecture ("llama.context_length"). Undefined if it doesn't say.
+function contextLimitOf(info?: Record<string, unknown> | null): number | undefined {
+  const limit = info?.[`${info['general.architecture']}.context_length`];
+  return typeof limit === 'number' && limit > 0 ? limit : undefined;
+}
+
 export function createOllamaProvider({
   baseURL,
   apiKey,
   contextLength,
+  maxContext,
   briefContextLength,
   smallModelBytes,
   briefKeepAlive,
@@ -101,7 +126,7 @@ export function createOllamaProvider({
   // Asked once; a server that couldn't be reached is asked again next time
   let ollama: Promise<boolean> | null = null;
   function isOllama(): Promise<boolean> {
-    ollama ??= fetch(`${root}/api/version`, { headers, signal: AbortSignal.timeout(3000) }).then(
+    ollama ??= patientFetch(`${root}/api/version`, { headers, signal: AbortSignal.timeout(3000) }).then(
       (res) => res.ok,
       () => {
         ollama = null;
@@ -112,29 +137,39 @@ export function createOllamaProvider({
   }
 
   // What each model can do, as Ollama reports it: "completion" for the models
-  // that answer messages, "thinking", "tools", "embedding" and so on. Asked
-  // about once per model; a model that couldn't be asked about is asked about
-  // again next time, and comes back as nothing known in the meantime.
-  const abilities = new Map<string, Promise<string[]>>();
-  function capabilities(model: string, signal?: AbortSignal): Promise<string[]> {
+  // that answer messages, "thinking", "tools", "embedding" and so on, and the
+  // most context it can take. Asked about once per model; a model that
+  // couldn't be asked about is asked about again next time, and comes back as
+  // nothing known in the meantime.
+  const abilities = new Map<string, Promise<ModelFacts>>();
+  function factsAbout(model: string, signal?: AbortSignal): Promise<ModelFacts> {
     let asking = abilities.get(model);
     if (!asking) {
-      asking = fetch(`${root}/api/show`, { method: 'POST', headers, body: JSON.stringify({ model }), signal }).then(
+      asking = patientFetch(`${root}/api/show`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model }),
+        signal,
+      }).then(
         async (res) => {
-          if (!res.ok) return [];
+          if (!res.ok) return { able: [] };
           // An Ollama too old to list a model's capabilities says nothing here
-          const body = (await res.json().catch(() => ({}))) as { capabilities?: string[] | null };
-          return body.capabilities ?? [];
+          const body = (await res.json().catch(() => ({}))) as {
+            capabilities?: string[] | null;
+            model_info?: Record<string, unknown> | null;
+          };
+          return { able: body.capabilities ?? [], contextLimit: contextLimitOf(body.model_info) };
         },
         () => {
           abilities.delete(model);
-          return [];
+          return { able: [] };
         }
       );
       abilities.set(model, asking);
     }
     return asking;
   }
+  const capabilities = async (model: string, signal?: AbortSignal) => (await factsAbout(model, signal)).able;
 
   // A model that answers messages at all. An embedding model does not: it
   // turns text into a vector and has no reply in it, so offering one to the
@@ -156,7 +191,7 @@ export function createOllamaProvider({
   const sizes = new Map<string, number>();
   async function readSizes(): Promise<void> {
     try {
-      const res = await fetch(`${root}/api/tags`, { headers, signal: AbortSignal.timeout(3000) });
+      const res = await patientFetch(`${root}/api/tags`, { headers, signal: AbortSignal.timeout(3000) });
       if (!res.ok) return;
       const { models } = (await res.json()) as { models?: { name: string; size: number }[] | null };
       sizes.clear();
@@ -218,12 +253,16 @@ export function createOllamaProvider({
 
   // Models that have been given the full context length. Changing a model's
   // context length makes Ollama load it again, so once a model has had the
-  // full length it keeps it, even for brief requests.
+  // full length it keeps it, even for brief requests. Neither is more than the
+  // model can take: Ollama would load it with less than it was asked for, and a
+  // length that never matches what is loaded means loading it every time.
+  const fullLength = (contextLimit?: number) => Math.min(contextLimit ?? contextLength, maxContext ?? Infinity);
   const wide = new Set<string>();
-  function contextFor(req: Pick<ChatRequest, 'model' | 'brief'>): number {
-    if (req.brief && !wide.has(req.model)) return briefContextLength;
-    wide.add(req.model);
-    return contextLength;
+  async function contextFor(req: Pick<ChatRequest, 'model' | 'brief'>, signal?: AbortSignal): Promise<number> {
+    const brief = req.brief && !wide.has(req.model);
+    if (!brief) wide.add(req.model);
+    const full = fullLength((await factsAbout(req.model, signal)).contextLimit);
+    return brief ? Math.min(briefContextLength, full) : full;
   }
 
   return {
@@ -246,18 +285,19 @@ export function createOllamaProvider({
     concurrent: (req) => briefAndSmall(req) && (running.get(req.model)?.full ?? 0) === 0,
 
     // Ollama loads each model with the context length it is asked for here,
-    // whatever the model could take, and says which of them can reason. The
+    // all it can take unless the settings say less, and says which of them can
+    // reason. The
     // models that cannot answer a message at all are left out (see completes).
     async listModels() {
       const models = await fallback.listModels();
       if (!(await isOllama())) return models;
       await readSizes();
-      const described = await Promise.all(models.map(async (m) => ({ model: m, able: await capabilities(m.id) })));
+      const described = await Promise.all(models.map(async (m) => ({ model: m, ...(await factsAbout(m.id)) })));
       return described
         .filter(({ able }) => able.length === 0 || able.includes('completion'))
-        .map(({ model, able }) => ({
+        .map(({ model, able, contextLimit }) => ({
           ...model,
-          contextWindow: contextLength,
+          contextWindow: fullLength(contextLimit),
           reasons: able.includes('thinking'),
           vision: able.includes('vision'),
         }));
@@ -266,8 +306,14 @@ export function createOllamaProvider({
     },
 
     // A local model has to be loaded into memory before it can answer
-    ensureUp: (model, signal, req) =>
-      ensureLoaded({ baseURL, apiKey }, model, signal, contextFor(req ?? { model }), keepAliveFor(req ?? { model })),
+    ensureUp: async (model, signal, req) =>
+      ensureLoaded(
+        { baseURL, apiKey },
+        model,
+        signal,
+        await contextFor(req ?? { model }, signal),
+        keepAliveFor(req ?? { model })
+      ),
 
     async *stream(req, signal): AsyncGenerator<ChatEvent> {
       const ended = began(req.model, Boolean(req.brief));
@@ -298,7 +344,7 @@ export function createOllamaProvider({
     }
     const messages = toMessages(req.messages);
     if (req.system) messages.unshift({ role: 'system', content: req.system });
-    const options: Record<string, unknown> = { num_ctx: contextFor(req) };
+    const options: Record<string, unknown> = { num_ctx: await contextFor(req, signal) };
     if (req.maxTokens) options.num_predict = req.maxTokens;
     const body: Record<string, unknown> = { model: req.model, messages, stream: true, options };
     // Ollama puts a model back on its default five-minute clock on every
@@ -321,10 +367,18 @@ export function createOllamaProvider({
     try {
       let res: Response;
       try {
-        res = await fetch(`${root}/api/chat`, { method: 'POST', headers, body: JSON.stringify(body), signal });
+        // What the request is for goes with it, as the log has it: Ollama takes no notice, and the stand-in the
+        // app is tested against answers by it (see ../../scripts/fake-ollama.ts)
+        const purpose = req.log?.purpose;
+        res = await patientFetch(`${root}/api/chat`, {
+          method: 'POST',
+          headers: typeof purpose === 'string' ? { ...headers, 'X-Ch-Purpose': purpose } : headers,
+          body: JSON.stringify(body),
+          signal,
+        });
       } catch (err) {
         if (signal.aborted) throw err;
-        yield { type: 'error', code: 'unreachable', message: `No server reachable at ${baseURL}` };
+        yield { type: 'error', ...failure(err, baseURL) };
         return;
       }
       if (!res.ok || !res.body) {

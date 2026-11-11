@@ -3,6 +3,14 @@
 // it changed and, as context only, what the reply said, and says whether the
 // changes hold up.
 //
+// In a thread with a workspace it does that as a person reviewing them would:
+// as a subagent in the thread's container, which reads the changes, runs the
+// project's checks and uses the app to try them (see test, and the tester in
+// ../subagents/tester.ts). Reading the diffs alone could say whether the code
+// read as right and nothing about whether it was, so that review is now what is
+// done where the tested one cannot be: no workspace, or a reviewer that did not
+// come back with a verdict (see readOver).
+//
 // The changes are read from the thread's container rather than sent by the
 // window, so that what is checked is what would be written back.
 //
@@ -18,10 +26,34 @@ import { priced } from '../llm/pricing';
 import { bySophistication } from '../llm/sophistication';
 import * as log from '../log';
 import * as changes from '../sandbox/changes';
-import type { FileChange, ModelInfo, ThreadChanges, Usage, Verification, VerificationRequest } from '../types';
+import { findings, TESTER } from '../subagents';
+import type {
+  FileChange,
+  HarnessEvent,
+  ModelInfo,
+  ThreadChanges,
+  Usage,
+  Verification,
+  VerificationRequest,
+} from '../types';
 import { cheapestFirst } from './router';
 
-const TIMEOUT_MS = 300000;
+// How long the reviewer has in front of the model, per batch. It does not cover
+// the wait for its turn (see clock).
+//
+// An online model is given ten minutes because a review is slower than it looks:
+// the model reasons over every diff before it writes a word of its verdict, which
+// was measured at 49 to 242 seconds for changes of 5,000 to 7,000 tokens. At five
+// minutes the reviews that finished were clearing the limit by half a minute. This
+// is here for a server that has stopped answering, not to hurry a reviewer that is
+// working.
+//
+// A local model is given half an hour instead: it answers one request at a time
+// and reasons a word at a time, so a change a server reviews in minutes can take
+// an order of magnitude longer on a machine of its own, and a limit that fits a
+// server cuts off a local reviewer that is still working.
+const ONLINE_TIMEOUT_MS = 10 * 60 * 1000;
+const LOCAL_TIMEOUT_MS = 30 * 60 * 1000;
 // Room for the whole reply, thinking included. A reviewer thinks before it
 // writes a word, and a brief request only turns off the account of that
 // thinking, not the thinking itself (see ../llm/providers/anthropic.ts), so
@@ -40,6 +72,14 @@ const MAX_BATCH_LENGTH = 20000;
 // large change cannot run up an unbounded number of calls. What is left over
 // is counted and reported rather than passed over quietly.
 const MAX_BATCHES = 10;
+// How long the tested review has, all of it: reading, the project's checks, and
+// using the app. Bounded for an app that never comes up or a check that never
+// ends; the reviewer's own rounds are what bound it otherwise (see TESTER).
+const TEST_TIMEOUT_MS = 20 * 60 * 1000;
+// Characters of the diffs put in the tester's task. It reads the rest itself,
+// with thread_diff, which a reviewer holding a tool can do where one without
+// could only be given less.
+const MAX_TASK_DIFFS = 40000;
 
 export const PROMPT = `You are checking another model's work. You are given what the user asked for, every path it
 changed, and the diffs of the files you are to check. Decide whether the code changes really do what was asked: that
@@ -59,7 +99,8 @@ Report only real problems in the code: something missing, wrong or broken. Do no
 not suggest improvements nobody asked for.
 
 If you find nothing wrong, reply with the single word PASS. Otherwise reply with the word PROBLEMS on the first line,
-then each problem on a line of its own starting with "- ", saying what is wrong and where.`;
+then each problem on a line of its own starting with "- ", saying what is wrong and where. You have no tools here and
+cannot read or run anything: everything you are to judge is in this message, so give your verdict now.`;
 
 // The least capable model that is as capable as the one that wrote the reply
 // (a local one if there is a tie, as it is free to run). Where that model is
@@ -76,22 +117,52 @@ function clip(text: string, length: number): string {
   return trimmed.length > length ? `${trimmed.slice(0, length)} [...]` : trimmed;
 }
 
-// The verdict in the reviewer's reply: its first line says PASS or PROBLEMS,
-// as asked, in whatever Markdown a model dresses that in. null if it says
-// neither, or finds problems without naming any.
+// The verdict in the reviewer's reply: the line that says PASS or PROBLEMS, as
+// asked, in whatever Markdown a model dresses that in. null if no line says
+// either, or if it finds problems without naming any.
+//
+// Looked for from the end, because a model that reasons in its reply reasons
+// its way to the verdict rather than opening with it. Reading the first line
+// alone threw away a review that had read every diff, found a real bug and
+// closed with the PROBLEMS block it was asked for, because it began by saying
+// what it was about to look at.
 export function parse(reply: string): { passed: boolean; problems: string } | null {
-  const lines = reply.trim().split('\n');
-  const verdict = lines[0]
-    .replace(/[*_`#]/g, '')
-    .replace(/[\s.!:]+$/, '')
+  const found = verdictIn(reply);
+  return found && { passed: found.passed, problems: found.problems };
+}
+
+// The verdict, and what was said before it: a tester says what it checked
+// there (see ../subagents/tester.ts). The "Checked:" it is asked to head that
+// with is left off, since the note it is shown under says as much.
+export function report(reply: string): { passed: boolean; problems: string; checked: string } | null {
+  const found = verdictIn(reply);
+  if (!found) return null;
+  const checked = found.before
     .trim()
-    .toUpperCase();
-  if (verdict === 'PASS') return { passed: true, problems: '' };
-  if (!verdict.startsWith('PROBLEMS')) return null;
-  // Said on the same line as the word, if it was
-  const first = lines[0].replace(/^[\s*_`#]*problems[\s*_`#]*:?[\s*_`#]*/i, '');
-  const problems = [first, ...lines.slice(1)].join('\n').trim();
-  return problems ? { passed: false, problems } : null;
+    .replace(/^[\s*_#]*checked[\s*_#]*:?[\s*_#]*\n?/i, '')
+    .trim();
+  return { passed: found.passed, problems: found.problems, checked };
+}
+
+function verdictIn(reply: string): { passed: boolean; problems: string; before: string } | null {
+  const lines = reply.trim().split('\n');
+  const before = (i: number) => lines.slice(0, i).join('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const verdict = lines[i]
+      .replace(/[*_`#]/g, '')
+      .replace(/[\s.!:]+$/, '')
+      .trim()
+      .toUpperCase();
+    if (verdict === 'PASS') return { passed: true, problems: '', before: before(i) };
+    if (!verdict.startsWith('PROBLEMS')) continue;
+    // Said on the same line as the word, if it was, and on the lines under it
+    const first = lines[i].replace(/^[\s*_`#]*problems[\s*_`#]*:?[\s*_`#]*/i, '');
+    const problems = [first, ...lines.slice(i + 1)].join('\n').trim();
+    if (problems) return { passed: false, problems, before: before(i) };
+    // A line that says PROBLEMS and names none is no verdict, though one
+    // further up may still be
+  }
+  return null;
 }
 
 // The changed files in batches, each batch's diffs no longer than
@@ -147,7 +218,34 @@ export function combine(verdicts: { passed: boolean; problems: string }[]): { pa
   return { passed: verdicts.every((verdict) => verdict.passed), problems };
 }
 
-export async function verify(request: VerificationRequest): Promise<Verification> {
+// The limit on one batch, which does not run while the request is waiting its
+// turn. A local server answers one request at a time, so a review asked for
+// while a reply is being written waits behind it: those waits were measured at
+// 135, 147 and 249 seconds, and a limit that covered them was spent before the
+// model had read a word. llm.stream says when a wait is over ('waited'), and
+// the limit starts again from there.
+function clock(ms: number): { signal: AbortSignal; restart(): void; clear(): void } {
+  const controller = new AbortController();
+  let timer = setTimeout(() => controller.abort(), ms);
+  return {
+    signal: controller.signal,
+    restart() {
+      clearTimeout(timer);
+      timer = setTimeout(() => controller.abort(), ms);
+    },
+    clear: () => clearTimeout(timer),
+  };
+}
+
+export interface VerifyOptions {
+  // Whether nothing has started on the thread since the review did. The thread's
+  // files are put back after the tester only while this holds: a reply begun in
+  // the meantime has changes of its own in them, which putting the files back
+  // would throw away (see 'llm:verify' in ../main.ts). Unset, it is taken to hold.
+  untouched?: () => boolean;
+}
+
+export async function verify(request: VerificationRequest, options: VerifyOptions = {}): Promise<Verification> {
   const started = performance.now();
   const failed = (error: string, model?: string): never => {
     log.warn('verification', { ok: false, ms: log.since(started), model, error });
@@ -162,6 +260,115 @@ export async function verify(request: VerificationRequest): Promise<Verification
   const model = pickModel(models, request);
   if (!model) return failed('There is no model to review the changes with.');
 
+  if (request.workspace) {
+    const tested = await test(request, found, model, models, options);
+    if (tested) {
+      log.info('verification', {
+        ok: true,
+        ms: log.since(started),
+        model: model.id,
+        passed: tested.passed,
+        tested: true,
+        files: found.files.length,
+        input: tested.usage?.input,
+        output: tested.usage?.output,
+      });
+      return tested;
+    }
+  }
+  return readOver(request, found, model, models, started, failed);
+}
+
+// What the tester is given: what was asked for, what the reply said (as context
+// only, as for the reviewer without tools), every path that changed, and as
+// much of the diffs as is worth putting in front of it before it has looked at
+// anything. It reads the rest with thread_diff.
+export function testTask(request: VerificationRequest, found: ThreadChanges): string {
+  let diffs = changes.describeChanges(found);
+  const cut = diffs.length > MAX_TASK_DIFFS;
+  if (cut) diffs = diffs.slice(0, MAX_TASK_DIFFS);
+  return (
+    `<request>\n${clip(request.request, MAX_REQUEST_LENGTH)}\n</request>\n\n` +
+    `<reply>\n${clip(request.output, MAX_REPLY_LENGTH)}\n</reply>\n\n` +
+    `<files>\n${paths(found)}\n</files>\n\n` +
+    `<changes>\n${diffs}\n</changes>\n\n` +
+    (cut ? 'The diffs are cut short there; read the rest with thread_diff.\n\n' : '') +
+    'The reply above is only what the model said it did, for context: what you are reviewing is the change ' +
+    'itself, and whether it does what the user asked for. Review it now.'
+  );
+}
+
+// The review a person would make: by a tester in the thread's container (see
+// ../subagents/tester.ts). Null where it came back without a verdict — it
+// failed, ran out of time, or did not say one — and the review is then made by
+// reading the diffs instead, so that asking for one never comes to nothing for
+// want of a reviewer that could use tools.
+async function test(
+  request: VerificationRequest,
+  found: ThreadChanges,
+  model: ModelInfo,
+  models: ModelInfo[],
+  { untouched }: VerifyOptions
+): Promise<Verification | null> {
+  const started = performance.now();
+  const before = await changes.snapshot(request.thread);
+  const limit = new AbortController();
+  const timer = setTimeout(() => limit.abort(), TEST_TIMEOUT_MS);
+  const spent: Usage[] = [];
+  // Only what each of its calls used: the rest of what it says as it works is
+  // for a window, and nobody is watching a review go
+  const emit = (event: HarnessEvent) => {
+    if (event.type === 'usage') spent.push(event);
+  };
+  try {
+    const [finding] = await findings([{ name: 'review', task: testTask(request, found), kind: TESTER }], {
+      signal: limit.signal,
+      threadId: request.thread,
+      workspace: request.workspace,
+      model: { provider: model.provider, model: model.id },
+      sophistication: model.sophistication,
+      emit,
+    });
+    const verdict = finding && !finding.isError ? report(finding.text) : null;
+    if (!verdict) {
+      log.warn('verification.tested', {
+        ok: false,
+        ms: log.since(started),
+        model: model.id,
+        error: finding?.isError ? finding.text.slice(0, 300) : 'The tester did not say PASS or PROBLEMS.',
+      });
+      return null;
+    }
+    const usage = spent.length > 0 ? spent.reduce(addUsage) : undefined;
+    return {
+      ...verdict,
+      tested: true,
+      model: model.name,
+      usage: usage && priced('verification', model.provider, model.id, usage, models),
+    };
+  } catch (err) {
+    log.warn('verification.tested', { ok: false, ms: log.since(started), error: (err as Error).message });
+    return null;
+  } finally {
+    clearTimeout(timer);
+    // What the tester's commands wrote, put back. Not where there was no
+    // snapshot to go back to — reverting to nothing would be reverting to the
+    // container as it was made, the reply's changes and all — and not where a
+    // reply has started on the thread since, whose changes are in there too.
+    if (before && (untouched?.() ?? true)) await changes.revert(request.thread, before);
+  }
+}
+
+// The review made by reading the diffs: a model with no tools, a batch of files
+// at a time
+async function readOver(
+  request: VerificationRequest,
+  found: ThreadChanges,
+  model: ModelInfo,
+  models: ModelInfo[],
+  started: number,
+  failed: (error: string, model?: string) => never
+): Promise<Verification> {
   // Everything the reply changed, in the batches it will be reviewed in, and
   // how many files are left over where there are more batches than are run
   const batches = batch(found.files);
@@ -171,10 +378,15 @@ export async function verify(request: VerificationRequest): Promise<Verification
 
   const verdicts: { passed: boolean; problems: string }[] = [];
   const spent: Usage[] = [];
+  // A local model is given twice the time a server is, for the reason the
+  // constants above give. It is the reviewer's own clock, and the figure the
+  // "out of time" message below reports, so it is named here once.
+  const timeoutMs = model.local ? LOCAL_TIMEOUT_MS : ONLINE_TIMEOUT_MS;
   // One call per batch, in turn rather than at once: a review the user is
   // waiting on should not take a provider's whole rate limit with it, and the
   // batches of a large change would be enough to.
   for (const files of reviewed) {
+    const limit = clock(timeoutMs);
     const events = llm.stream(
       {
         provider: model.provider,
@@ -192,19 +404,44 @@ export async function verify(request: VerificationRequest): Promise<Verification
         ],
         maxTokens: MAX_TOKENS,
         brief: true,
+        // A local model told not to reason does its checking out loud: it says
+        // what it will look at next and calls tools it was never offered,
+        // which is no verdict. This does nothing on a hosted model, where a
+        // brief request doesn't reason whatever it is told.
+        think: true,
         log: { purpose: 'verification' },
       },
-      AbortSignal.timeout(TIMEOUT_MS)
+      limit.signal
     );
     let reply = '';
     let stopReason: string | undefined;
-    for await (const event of events) {
-      if (event.type === 'text') reply += event.delta;
-      if (event.type === 'done') {
-        stopReason = event.stopReason;
-        if (event.usage) spent.push(event.usage);
+    try {
+      for await (const event of events) {
+        // Its turn came: what it has spent of the limit so far went on waiting
+        // rather than on reviewing (see clock)
+        if (event.type === 'waited') limit.restart();
+        if (event.type === 'text') reply += event.delta;
+        if (event.type === 'done') {
+          stopReason = event.stopReason;
+          if (event.usage) spent.push(event.usage);
+        }
+        if (event.type === 'error') return failed(event.message, model.id);
       }
-      if (event.type === 'error') return failed(event.message, model.id);
+    } catch (err) {
+      // The limit reaches the request through its signal, which a provider
+      // reports as a cancelled ending where the request had got far enough to
+      // have one and raises where it had not (see ../llm/providers/ollama.ts)
+      if (!limit.signal.aborted) throw err;
+    } finally {
+      limit.clear();
+    }
+    // Out of time, with however little of a verdict it had written. The model
+    // was still working: one cut off this way had already decided and was
+    // double-checking a PASS it never got to write. Said as itself rather than
+    // as a reply that could not be read, which is what this used to report and
+    // which pointed at the parser instead of at the clock.
+    if (limit.signal.aborted || stopReason === 'cancelled') {
+      return failed(`The reviewer did not reach a verdict within ${Math.round(timeoutMs / 60000)} minutes.`, model.id);
     }
     // A reply cut off for room is not a verdict, whatever can be read of it:
     // the problems it had got to are not all the problems it found, and

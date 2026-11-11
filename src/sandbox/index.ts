@@ -193,7 +193,10 @@ export async function keepFindings(threadId: string | undefined, findings: strin
 
 // What a thread has changed, and writing that back to its workspace
 export { changes };
+// A file in a workspace, read by the name a reply gave it (see readfile.ts)
+export { readFileInWorkspace, resolveInWorkspace } from './readfile';
 export * as worktree from './worktree';
+export * as recipes from './recipes';
 // Folders the app makes for threads that were not started in one
 export * as workspaces from './workspace';
 
@@ -203,3 +206,7 @@ export const configure = docker.configure;
 export const setWorkspace = docker.setWorkspace;
 export const remove = docker.remove;
 export const stopAll = docker.stopAll;
+// Where what could not be removed is written down, and what is left over from
+// an earlier session cleaned up (see sweep in ./docker.ts)
+export const init = docker.init;
+export const sweep = docker.sweep;

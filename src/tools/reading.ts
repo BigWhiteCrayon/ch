@@ -187,14 +187,53 @@ const VERSION_FLAGS = new Set(['--version', '-v', '-V', 'version']);
 // refused wherever the shell would act on it and nowhere else: a pattern like
 // "a\\|b", "=>" or "&&" is an argument, not a second command.
 const FORBIDDEN: [RegExp, string][] = [
-  [/[>]/, 'a redirection (>), which writes'],
-  [/[<]/, 'a redirection (<)'],
-  [/[;\n]/, 'more than one command (; or a newline)'],
-  [/&/, 'a & — commands joined this way, or put in the background, are not allowed'],
-  [/`/, 'a backquote, which runs a command inside another'],
-  [/\$\(/, 'a $(…), which runs a command inside another'],
-  [/\$\{/, 'a ${…} expansion'],
+  [/>/g, 'a redirection (>), which writes'],
+  [/</g, 'a redirection (<)'],
+  [/[;\n]/g, 'more than one command (; or a newline)'],
+  [/&/g, 'a & — commands joined this way, or put in the background, are not allowed'],
+  [/`/g, 'a backquote, which runs a command inside another'],
+  [/\$\(/g, 'a $(…), which runs a command inside another'],
+  [/\$\{/g, 'a ${…} expansion'],
 ];
+
+// The two redirections that write nothing: throwing a program's errors away,
+// or sending them where its output goes. Every model reaches for 2>/dev/null
+// out of habit, and refusing it cost a round each time for nothing — three
+// refusals in a day's log, all of them this. Matched against the masked
+// command, so only one the shell would act on counts, and only as a word of
+// its own.
+const HARMLESS_REDIRECTION = /(?<=^|\s)2>(?:\s*\/dev\/null|&1)(?=[\s|<>]|$)/g;
+
+// A command and its mask with the harmless redirections blanked out of both,
+// one space per character so that positions in the two still line up
+function withoutHarmless(command: string, masked: string): { command: string; masked: string } {
+  let text = command;
+  for (const found of masked.matchAll(HARMLESS_REDIRECTION)) {
+    const at = found.index ?? 0;
+    text = text.slice(0, at) + ' '.repeat(found[0].length) + text.slice(at + found[0].length);
+  }
+  return { command: text, masked: masked.replace(HARMLESS_REDIRECTION, (found) => ' '.repeat(found.length)) };
+}
+
+// The shell's tokens, roughly, as the mask leaves them: a redirection with its
+// descriptors (2>, >>, &>, 2>&1), a run of joining punctuation, a newline, or a
+// word. Quoted text is already masked into its word.
+const TOKEN = /&?\d*[<>][<>&]*\d*|[;&|]+|\n|[^\s;&|<>]+/g;
+
+// What to show the model of where a forbidden character is: the token it is
+// in, and for a redirection the word after it too, since that is what it
+// would write to or read from
+function fragment(command: string, masked: string, at: number): string {
+  const tokens = [...masked.matchAll(TOKEN)].map((t) => ({ from: t.index ?? 0, to: (t.index ?? 0) + t[0].length }));
+  const i = tokens.findIndex((t) => t.from <= at && at < t.to);
+  if (i < 0) return JSON.stringify(command[at]);
+  if (command[at] === '\n') return 'a newline';
+  const { from } = tokens[i];
+  let { to } = tokens[i];
+  const next = tokens[i + 1];
+  if (/[<>]/.test(masked.slice(from, to)) && next && /^[^;&|<>\n]/.test(masked[next.from])) to = next.to;
+  return JSON.stringify(command.slice(from, to));
+}
 
 // The command with every character the shell would not act on replaced by a
 // placeholder, one for one so that positions still line up with the original.
@@ -310,88 +349,174 @@ export interface Allows {
 // reason is written for the model: it says what was wrong and what to use
 // instead, since a refusal it cannot act on costs it the round and teaches it
 // nothing.
+//
+// Everything wrong with it is said at once, each part quoted. A refusal that
+// named only the first thing it found sent the model guessing at the rest: one
+// was told of a redirection, dropped the echo beside it instead, and said the
+// echo had been the trouble.
 export function refuse(command: string, allows: Allows = {}): string | null {
   const given = command.trim();
   if (!given) return 'The command is empty.';
-  const masked = mask(given);
+  const { command: checked, masked } = withoutHarmless(given, mask(given));
+  const found: string[] = [];
   for (const [pattern, what] of FORBIDDEN) {
-    if (pattern.test(masked)) {
-      return (
-        `That command contains ${what}. This tool runs one reading program at a time, optionally piped into ` +
-        'another; use run_command in the doing step for anything else.'
-      );
-    }
+    const where = [...masked.matchAll(pattern)].map((match) => fragment(checked, masked, match.index ?? 0));
+    if (where.length) found.push(`${what}: ${[...new Set(where)].join(', ')}`);
   }
-  for (const parts of stages(given)) {
-    const program = parts[0];
-    if (!program) return 'There is an empty command between two pipes.';
-    if (program.includes('/')) {
-      return (
-        `"${program}" names a program by its path. Give the name alone, and only one of the programs this tool ` +
-        'runs.'
+  if (found.length) {
+    // ...and the programs it names on either side of them, which would have
+    // been the next refusal
+    const programs = [
+      ...new Set(
+        pieces(checked, masked).flatMap((piece) => {
+          const parts = words(piece).map(unquote);
+          const program = parts[0];
+          // What follows a $( or a backquote is not a program of the command's
+          // own, and is already said above
+          if (!program || (!PROGRAM_NAME.test(program) && !program.includes('/'))) return [];
+          const why = stageProblem(parts, allows);
+          return why ? [why] : [];
+        })
+      ),
+    ];
+    const hints: string[] = [];
+    if (/>/.test(masked)) {
+      hints.push(
+        'Nothing needs writing: the output comes back to you. 2>/dev/null and 2>&1 are allowed, to drop error ' +
+          'messages or keep them with the output (grep -s also drops them).'
       );
     }
-    if (program === 'git') {
-      const sub = gitSubcommand(parts);
-      const writes = allows.git === 'writes';
-      const unsafe = gitUnsafeFlag(parts);
-      if (unsafe) {
-        return (
-          `"${unsafe}" would have git run a program of its own, or work in a repository other than the folder it ` +
-          'was given, so it is not allowed here. Name the subcommand and its own arguments and nothing else.'
-        );
-      }
-      // `git --version` is the one form with no subcommand to check
-      if (!sub) {
-        if (parts.slice(1).some((part) => VERSION_FLAGS.has(part))) continue;
-        return writes
-          ? 'Say which git subcommand to run.'
-          : 'Say which git subcommand to run, and one that reads: ' + [...GIT_READS].sort().join(', ') + '.';
-      }
-      if (writes) {
-        if (!GIT_RUNS_CODE.has(sub)) continue;
-        return (
-          `"git ${sub}" runs a program of its own, or leaves one behind for a later command to run, which is the ` +
-          'one thing this tool will not do whatever it is pointed at. Run the git that does the work itself: ' +
-          `${[...GIT_READS].sort().join(', ')}, and the subcommands that change the repository.`
-        );
-      }
-      if (!GIT_READS.has(sub)) {
-        return (
-          `"git ${sub}" is not one of the git subcommands that only read. Those are: ` +
-          `${[...GIT_READS].sort().join(', ')}. Anything that changes the repository belongs in the doing step, ` +
-          'through run_command.'
-        );
-      }
-      continue;
-    }
-    if (READING.has(program)) continue;
-    if (VERSION_ONLY.has(program)) {
-      const rest = parts.slice(1);
-      if (rest.length === 1 && VERSION_FLAGS.has(rest[0])) continue;
-      return (
-        `"${program}" runs code of its own, so this tool will only ask it its version ("${program} --version"). ` +
-        'Running it for real belongs in the doing step, through run_command.'
-      );
-    }
-    // What the model actually did four times in one reply: gave the thing it
-    // wanted to search for in place of the program that would search for it
-    // ("llm:cancel", "llm\\.onEvent"). The list below says what it may run and
-    // it kept guessing from the list; this says what it looks like it meant.
-    if (!PROGRAM_NAME.test(program)) {
-      return (
-        `"${program}" does not name a program; it looks like something to search for. To find it, use ` +
-        `search_workspace, or run a search: grep -rn ${JSON.stringify(program)} .`
-      );
-    }
-    return (
-      `"${program}" is not one of the programs this tool runs. Those are: ` +
-      `${[...READING, 'git'].sort().join(', ')}, and "--version" from a language or package manager. For searching ` +
-      'and reading files use search_workspace, list_workspace and read_file; for anything that builds, installs or ' +
-      'changes something, run_command in the doing step.'
-    );
+    if (/[;\n&]/.test(masked)) hints.push('To run several commands, make several calls; they can go in the same turn.');
+    return [
+      `That command contains ${found.join('; ')}.`,
+      ...programs,
+      ...hints,
+      'This tool runs one reading program at a time, optionally piped into another; use run_command in the doing ' +
+        'step for anything else.',
+    ].join(' ');
+  }
+  for (const parts of stages(checked)) {
+    const why = stageProblem(parts, allows);
+    if (why) return why;
   }
   return null;
+}
+
+// The pieces a command would run as, cut at every pipe, ; , & and newline the
+// shell would act on: for saying what each names when it was refused for
+// joining them
+function pieces(command: string, masked: string): string[] {
+  const out: string[] = [];
+  let from = 0;
+  for (let i = 0; i <= masked.length; i++) {
+    if (i === masked.length || /[|;&\n]/.test(masked[i])) {
+      if (command.slice(from, i).trim()) out.push(command.slice(from, i));
+      from = i + 1;
+    }
+  }
+  return out;
+}
+
+// Why one stage of a command, as its program and arguments, is not one this
+// tool runs, or null if it is
+function stageProblem(parts: string[], allows: Allows): string | null {
+  const program = parts[0];
+  if (!program) return 'There is an empty command between two pipes.';
+  if (program.includes('/')) {
+    return (
+      `"${program}" names a program by its path. Give the name alone, and only one of the programs this tool ` + 'runs.'
+    );
+  }
+  if (program === 'git') {
+    const sub = gitSubcommand(parts);
+    const writes = allows.git === 'writes';
+    const unsafe = gitUnsafeFlag(parts);
+    if (unsafe) {
+      return (
+        `"${unsafe}" would have git run a program of its own, or work in a repository other than the folder it ` +
+        'was given, so it is not allowed here. Name the subcommand and its own arguments and nothing else.'
+      );
+    }
+    // `git --version` is the one form with no subcommand to check
+    if (!sub) {
+      if (parts.slice(1).some((part) => VERSION_FLAGS.has(part))) return null;
+      return writes
+        ? 'Say which git subcommand to run.'
+        : 'Say which git subcommand to run, and one that reads: ' + [...GIT_READS].sort().join(', ') + '.';
+    }
+    if (writes) {
+      if (!GIT_RUNS_CODE.has(sub)) return null;
+      return (
+        `"git ${sub}" runs a program of its own, or leaves one behind for a later command to run, which is the ` +
+        'one thing this tool will not do whatever it is pointed at. Run the git that does the work itself: ' +
+        `${[...GIT_READS].sort().join(', ')}, and the subcommands that change the repository.`
+      );
+    }
+    if (!GIT_READS.has(sub)) {
+      return (
+        `"git ${sub}" is not one of the git subcommands that only read. Those are: ` +
+        `${[...GIT_READS].sort().join(', ')}. Anything that changes the repository belongs in the doing step, ` +
+        'through run_command.'
+      );
+    }
+    return null;
+  }
+  if (READING.has(program)) return null;
+  if (VERSION_ONLY.has(program)) {
+    const rest = parts.slice(1);
+    if (rest.length === 1 && VERSION_FLAGS.has(rest[0])) return null;
+    return (
+      `"${program}" runs code of its own, so this tool will only ask it its version ("${program} --version"). ` +
+      'Running it for real belongs in the doing step, through run_command.'
+    );
+  }
+  // What the model actually did four times in one reply: gave the thing it
+  // wanted to search for in place of the program that would search for it
+  // ("llm:cancel", "llm\\.onEvent"). The list below says what it may run and
+  // it kept guessing from the list; this says what it looks like it meant.
+  if (!PROGRAM_NAME.test(program)) {
+    return (
+      `"${program}" does not name a program; it looks like something to search for. To find it, use ` +
+      `search_workspace with literal: true, which lists every line it is on, or run a search: grep -rn ` +
+      `${JSON.stringify(program)} .`
+    );
+  }
+  return (
+    `"${program}" is not one of the programs this tool runs. Those are: ` +
+    `${[...READING, 'git'].sort().join(', ')}, and "--version" from a language or package manager. For searching ` +
+    'and reading files use search_workspace, list_workspace and read_file; for anything that builds, installs or ' +
+    'changes something, run_command in the doing step.'
+  );
+}
+
+// A command that begins by moving into the project: `cd /workspace && grep …`.
+// Fifteen of the refusals in a week of threads were this and nothing else, a
+// model writing what it writes in any shell, and the && was refused before
+// anything after it was looked at. A cd writes nothing, so it is taken off
+// and the rest checked on its own. Into the working directory it is dropped,
+// since that is where a command runs already; into a folder under it, it is
+// put back in front of the command when it runs, so that the paths after it
+// mean what they were written to mean. Anywhere else is refused: this tool is
+// for the project, and the name of a folder outside it is nothing to search.
+const LEADING_CD = /^\s*cd\s+(\S+)\s*&&\s*/;
+export function withoutCd(command: string): { dir?: string; rest: string } | { refused: string } {
+  const found = LEADING_CD.exec(command);
+  if (!found) return { rest: command };
+  const rest = command.slice(found[0].length);
+  const dir = found[1].replace(/^(['"])(.*)\1$/, '$2').replace(/\/+$/, '');
+  const inside =
+    /^[\w./-]+$/.test(dir) &&
+    !dir.split('/').includes('..') &&
+    (dir === docker.WORKDIR || dir.startsWith(`${docker.WORKDIR}/`) || !dir.startsWith('/'));
+  if (!inside) {
+    return {
+      refused:
+        `This tool runs in the project's copy (${docker.WORKDIR}) and nowhere else, so "cd ${found[1]}" is not ` +
+        "somewhere it can go. Name paths inside the project instead; for a folder on the user's computer, use " +
+        'run_host_command.',
+    };
+  }
+  return dir === docker.WORKDIR || dir === '.' || dir === '' ? { rest } : { dir, rest };
 }
 
 export const tool: Tool = {
@@ -403,16 +528,19 @@ the questions about the project that are quickest answered by running something:
 (wc, grep -c), what is installed (node --version), what a command prints.
 
 It runs these programs and no others: ${[...READING].sort().join(', ')}, git with a subcommand that reads, and
-"--version" from a language or package manager. Two of them may be joined with a pipe. Redirections, several
-commands at once, backquotes and $(…) are refused, as is anything that runs code of its own — so this cannot change
-the project, and the step that holds it is a step that changes nothing.
+"--version" from a language or package manager. Two of them may be joined with a pipe. Redirections (other than
+2>/dev/null and 2>&1), several commands at once, backquotes and $(…) are refused, as is anything that runs code of
+its own — so this cannot change the project, and the step that holds it is a step that changes nothing. To run several
+commands, make several calls. It runs in ${docker.WORKDIR}, so paths are relative to the project and there is no need
+to cd there first.
 
 The copy holds the project's files and no .git, so git run here reports no repository, whatever the project itself is
 kept in. For what the history says — git log, git show, git blame — use run_host_command in the project's folder on
 the user's computer, which is where the repository is.
 
 To read one file, or search the project, search_workspace, list_workspace and read_file do that better, and are not
-bounded like this. To search, count or run git in a folder on the user's own computer, use run_host_command: this
+bounded like this: search_workspace with literal lists every line a name is on, as grep -rn does, and takes grep's
+own patterns with regex. To search, count or run git in a folder on the user's own computer, use run_host_command: this
 tool cannot see that folder. For building, installing, running tests or anything that writes, use run_command, which
 belongs to the step that makes the change.`,
   inputSchema: {
@@ -431,9 +559,12 @@ belongs to the step that makes the change.`,
     if (typeof given !== 'string' || !given.trim()) {
       throw new Error('"command" must be a non-empty string.');
     }
-    const why = refuse(given);
+    const moved = withoutCd(given);
+    if ('refused' in moved) throw new Error(moved.refused);
+    const why = refuse(moved.rest);
     if (why) throw new Error(why);
-    const { code, output } = await docker.exec(threadId, given, { signal });
+    const command = moved.dir ? `cd ${docker.quote(moved.dir)} && ${moved.rest}` : moved.rest;
+    const { code, output } = await docker.exec(threadId, command, { signal, reader: true });
     return `exit code ${code}\n${output}`;
   },
 };

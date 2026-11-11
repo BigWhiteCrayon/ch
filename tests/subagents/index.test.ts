@@ -28,6 +28,9 @@ import * as cachelock from '../../src/llm/cachelock';
 import * as tools from '../../src/harness/tools';
 import { SUBAGENT_PROMPT } from '../../src/harness/notes';
 import * as discoveries from '../../src/harness/discoveries';
+import * as log from '../../src/log';
+import { grant } from '../../src/harness/allowance';
+import { tool as moreTool } from '../../src/tools/steps';
 
 const THREAD = '0ad34c48-11d6-466f-8567-79d2df9819bc';
 const small = model({ id: 'llama:3b', sophistication: 1 });
@@ -1678,5 +1681,70 @@ describe('a subagent that is written to while it works', () => {
       expect(system, kind.name).toContain('can write to you while you work');
       expect(system, kind.name).toContain('You cannot start one of these yourself');
     }
+  });
+});
+
+// A subagent's rounds are a ceiling it can ask past as well. The pieces that
+// need rounds nobody could have counted are the ones that run something: a
+// test that will not come up, a fault that takes three guesses to corner (see
+// harness/allowance.ts).
+describe('a subagent that asks for more rounds', () => {
+  const looked = () => seen.filter((e) => e.type === 'subagent_update').length;
+
+  it('works on past the rounds its effort bought it', async () => {
+    const info = vi.spyOn(log, 'info');
+    const look = vi.fn(() => 'Looked.');
+    tools.register({ name: 'look', description: 'Looks.', inputSchema: { type: 'object' }, run: look });
+    tools.register(moreTool);
+    // A worker of low effort gets half its kind's rounds, and asks on the
+    // first of them for as many again
+    const bought = Math.round(WORKER.steps / 2);
+    const round = (id: string): ChatEvent[] => [call(id, 'look', {}), done('tool_use')];
+    answers({
+      'do a': [
+        [
+          call('ask', moreTool.name, { reason: 'The app will not come up; two more runs would say why.' }),
+          done('tool_use'),
+        ],
+        ...Array.from({ length: bought + grant(bought) - 2 }, (_, n) => round(`n${n}`)),
+        [text('Done.'), done()],
+      ],
+    });
+    await run([{ ...task('a', 'do a'), effort: 'low' }]);
+    expect(info).toHaveBeenCalledWith('allowance.granted', expect.objectContaining({ kind: WORKER.name }));
+    // More rounds of looking than it was ever given, and it was not cut off:
+    // the report is its own words rather than the one the cut writes
+    expect(look.mock.calls.length).toBeGreaterThan(bought);
+    expect(looked()).toBeGreaterThan(0);
+  });
+
+  // The round that asks for the report is the only round on which a subagent
+  // can be sure it needed more, so the asking is answered there although every
+  // other call made there is read as no report (see work in run.ts)
+  it('is answered on the round that asked it for its report', async () => {
+    const info = vi.spyOn(log, 'info');
+    const look = vi.fn(() => 'Looked.');
+    tools.register({ name: 'look', description: 'Looks.', inputSchema: { type: 'object' }, run: look });
+    tools.register(moreTool);
+    const bought = Math.round(WORKER.steps / 2);
+    const round = (id: string): ChatEvent[] => [call(id, 'look', {}), done('tool_use')];
+    answers({
+      'do a': [
+        // Every round it has, and then the asking on the one that wants the report
+        ...Array.from({ length: bought - 1 }, (_, n) => round(`n${n}`)),
+        [
+          call('ask', moreTool.name, { reason: 'The fault is cornered; one more run would show the line.' }),
+          done('tool_use'),
+        ],
+        ...Array.from({ length: grant(bought) - 1 }, (_, n) => round(`m${n}`)),
+        [text('Done.'), done()],
+      ],
+    });
+    const report = await run([{ ...task('a', 'do a'), effort: 'low' }]);
+    expect(info).toHaveBeenCalledWith('allowance.granted', expect.objectContaining({ subagent: 'a' }));
+    // It worked on past the round it was asked to report on, and reported in
+    // its own words rather than being cut off there
+    expect(look.mock.calls.length).toBeGreaterThan(bought);
+    expect(report).toContain('Done.');
   });
 });

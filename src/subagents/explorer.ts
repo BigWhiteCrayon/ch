@@ -26,6 +26,7 @@
 // was asked the wrong question (see ./coder.ts), and keeping it to reading
 // means it can safely run alongside coders working in the same container.
 
+import { TOOL_NAME as MORE_TOOL } from '../harness/allowance';
 import { TOOL_NAME, type Kind } from './kind';
 
 // Looking, reading, and writing down what was found. An allow-list rather
@@ -79,6 +80,10 @@ export const ALLOWED = new Set([
   // far that can go is a matter of depth, not of refusal (see
   // MAX_HANDOUT_DEPTH in ./kind.ts).
   TOOL_NAME,
+  // Asking for more rounds than its piece was given, which changes nothing
+  // either: an area that turns out to be larger than whoever sent it thought
+  // is one of the cases the asking is for (see ../harness/allowance.ts)
+  MORE_TOOL,
 ]);
 
 export const PROMPT = `You are an explorer. You have been given one thing to find out about the project in this

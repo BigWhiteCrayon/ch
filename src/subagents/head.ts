@@ -62,7 +62,8 @@ Hand an area out the moment you can name it, with ${TOOL_NAME}, as explorers. Do
 found them all before you send anybody: an area that only shows itself later can go out in a second round, and the
 time you spend making sure is time the whole project is being explored by one agent instead of five. An area is a
 part of the project someone can look into knowing nothing else: how the tests are written and run, how the project is
-built and started, how one substantial module works, how its data or its configuration is handled. Send one for every
+built and started and where the running app keeps its data, how one substantial module works, how its data or its
+configuration is handled. Send one for every
 part there is to look into: a large project may want eight, a small one two, and nothing is gained by holding any of
 them back — they all read at the same time. Write each task so that it stands on its own — the explorer cannot see
 this conversation — and say what to find out and what to write down. Do not give two explorers the same ground.
@@ -84,6 +85,11 @@ files and little else, and this is what tells it what that container needs.
 - What the tests are: where they live, the command that runs them, what a test in this project looks like, and what
 the project's own conventions for them are. Not just that they exist — how they are written, so that a test added
 later looks like the ones already there.
+- How to use the running app in this container: the command or address that starts it there, where it keeps its
+data and how to start it with data of your own (a fixtures folder, a seed command, a data directory flag such as
+Electron's --user-data-dir), and how its main screens can be found in the page (the ids, test ids or classes the
+code gives them). That is what lets an assistant here try a change in the app itself rather than write a script to
+imitate it.
 - Anything else that every thread here will need whatever it is working on, and would not think to go looking for.
 
 Nothing else belongs in it. How one module works, what one command does in detail, the trap in one corner of the

@@ -1,0 +1,78 @@
+{
+  "about": "Replies that call tools: say 'files' for list_workspace, 'read' for read_file of package.json, 'run' for run_command, 'both' for two calls at once, 'change' for an edit to src/greet.js (the sample workspace's). All but 'run' need a workspace.",
+  "rules": [
+    {
+      "purpose": "classification",
+      "reply": "3 coding"
+    },
+    {
+      "when": "both",
+      "reply": [
+        {
+          "text": "Looking at two things at once.",
+          "tools": [
+            {
+              "tool": "list_workspace",
+              "input": {}
+            },
+            {
+              "tool": "run_command",
+              "input": {
+                "command": "echo hello"
+              }
+            }
+          ]
+        },
+        "Both are done."
+      ]
+    },
+    {
+      "when": "files",
+      "reply": [
+        {
+          "tool": "list_workspace",
+          "input": {}
+        },
+        "Those are the files in the workspace."
+      ]
+    },
+    {
+      "when": "read",
+      "reply": [
+        {
+          "tool": "read_file",
+          "input": {
+            "path": "package.json"
+          }
+        },
+        "That is the package.json."
+      ]
+    },
+    {
+      "when": "run",
+      "reply": [
+        {
+          "tool": "run_command",
+          "input": {
+            "command": "echo hello from a tool call"
+          }
+        },
+        "The command ran."
+      ]
+    },
+    {
+      "when": "change",
+      "reply": [
+        {
+          "tool": "edit_file",
+          "input": {
+            "path": "src/greet.js",
+            "old_text": "Hello",
+            "new_text": "Hi"
+          }
+        },
+        "Changed the greeting to Hi."
+      ]
+    }
+  ]
+}

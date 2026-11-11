@@ -1,4 +1,4 @@
-import type { AgentEvent, Message, PlanMode, State, Thread, ThreadPiece, Waits } from './types.js';
+import type { AgentEvent, Message, PlanMode, State, Thread, ThreadPiece, ToolImage, Waits } from './types.js';
 import {
   drafts,
   idleTimers,
@@ -20,6 +20,17 @@ import { endOfTurn } from './reply.js';
 import { isWorking } from './sidebar.js';
 import { dropApproval } from './approvals.js';
 import { dropQuestion } from './questions.js';
+import { clearDraft, loadDraft, stashDraft } from './attachments.js';
+
+// Every screenshot and clip the threads carry, each with a stable id of its
+// own: the key it is written to the sidecar by, and the name the JSON keeps in
+// its place. Given when the item first comes into memory and never changed, so
+// a shot taken twice in one session is written to the sidecar once. Declared
+// here, before the threads are loaded, because the load hangs the saved media
+// back on the threads (see reattachMedia below) and so runs as this module is
+// evaluated.
+const persistedMedia = new Set<string>();
+const idFor = (): string => crypto.randomUUID();
 
 export const state = load();
 
@@ -103,10 +114,91 @@ export function load(): State {
         0,
         MAX_RECENT_WORKSPACES
       );
+      // The screenshots and clips were kept out of this JSON, in a sidecar
+      // beside it (see save). What is here is their id, so the bytes are hung
+      // back on now; one whose bytes have fallen out of the sidecar's cap is
+      // left as a name with no picture behind it, and draws nothing.
+      reattachMedia(saved);
       return saved;
     }
   } catch {}
   return { threads: [], activeId: null };
+}
+
+// The media the JSON will keep only as a name: its id, its bytes and type sent
+// to the sidecar in the same breath. Every item gets an id before the JSON is
+// built, so the replacer and the sidecar agree on which is which.
+function collectMedia(): { id: string; mediaType: string; data: string }[] {
+  const items: { id: string; mediaType: string; data: string }[] = [];
+  for (const thread of state.threads) {
+    for (const message of thread.messages) {
+      for (const image of message.images ?? []) {
+        if (!image.id) image.id = idFor();
+        if (image.data && !persistedMedia.has(image.id)) {
+          items.push({ id: image.id, mediaType: image.mediaType, data: image.data });
+          persistedMedia.add(image.id);
+        }
+      }
+      for (const video of message.videos ?? []) {
+        if (!video.id) video.id = idFor();
+        if (video.data && !persistedMedia.has(video.id)) {
+          items.push({ id: video.id, mediaType: video.mediaType, data: video.data });
+          persistedMedia.add(video.id);
+        }
+      }
+    }
+  }
+  return items;
+}
+
+// Hung back onto the threads as they load: each image or clip the JSON names by
+// id is given its bytes and type from the sidecar, and its id marked as
+// already written so it is not sent over again. An item whose bytes have fallen
+// out of the sidecar's cap is left with no data, which the view draws as
+// nothing (see appendMedia).
+function reattachMedia(saved: State): void {
+  let byId: Record<string, { mediaType: string; data: string }> = {};
+  const text = window.threads.loadMedia?.();
+  if (text) {
+    try {
+      byId = JSON.parse(text) as Record<string, { mediaType: string; data: string }>;
+    } catch {
+      byId = {};
+    }
+  }
+  // A screenshot and a clip share the same shape for this, and the sidecar came
+  // back as parsed JSON, so the type it gives back is a plain string, which is
+  // one of the media types (see collectMedia)
+  const fill = (items?: { id?: string; mediaType: string; data?: string }[]) => {
+    for (const item of items ?? []) {
+      if (item.data !== undefined || !item.id) continue;
+      const bytes = byId[item.id];
+      if (!bytes) continue;
+      item.mediaType = bytes.mediaType;
+      item.data = bytes.data;
+      persistedMedia.add(item.id);
+    }
+  };
+  for (const thread of saved.threads) {
+    for (const message of thread.messages) {
+      fill(message.images);
+      fill(message.videos);
+    }
+  }
+}
+
+// The thread state as it is written to disk: the same as in memory, but a
+// screenshot or clip is reduced to its id, its bytes and type living in the
+// sidecar. Kept to the id alone, so neither the bytes nor their type — a
+// clip's is 'video/webm' — touches the thread's JSON, which is written on every
+// change and must stay small.
+function serialize(): string {
+  return JSON.stringify(state, (key, value: unknown) => {
+    if ((key === 'images' || key === 'videos') && Array.isArray(value)) {
+      return value.map((item: { id?: string }) => ({ id: item.id }));
+    }
+    return value;
+  });
 }
 
 // Saved to a file by the main process, so that the threads outlive the app
@@ -114,12 +206,14 @@ export function load(): State {
 export function save(): void {
   clearTimeout(saveTimer);
   setSaveTimer(undefined);
-  // Pictures a tool returned are shown while the app is open, not kept on
-  // disk: a thread of screenshots would be tens of megabytes of JSON, and one
-  // of clips hundreds
-  window.threads.save(
-    JSON.stringify(state, (key, value: unknown) => (key === 'images' || key === 'videos' ? undefined : value))
-  );
+  // The screenshots and clips a reply took are kept out of the thread's own
+  // JSON, which is written to disk on every change and so must stay small:
+  // their bytes go to a sidecar beside it (see the main process's store), and
+  // the JSON names each one by id. The two are written together, so a thread
+  // that outlives the app carries its pictures with it the same way it carries
+  // its words, whichever way the app goes down.
+  window.threads.saveMedia(collectMedia());
+  window.threads.save(serialize());
   indexSoon();
 }
 
@@ -167,10 +261,13 @@ export function searchPieces(): ThreadPiece[] {
   );
 }
 
-// Closing the window mid-reply keeps what had arrived
+// Closing the window mid-reply keeps what had arrived. The same serialization as
+// save, so the two ways the app goes down — a save on its own, and this one on
+// the close — leave the JSON and its sidecar saying the same thing
 window.addEventListener('beforeunload', () => {
   clearTimeout(saveTimer);
-  window.threads.saveNow(JSON.stringify(state));
+  window.threads.saveMedia(collectMedia());
+  window.threads.saveNow(serialize());
 });
 
 // There is always at least one thread, and one of them is always active
@@ -186,10 +283,12 @@ export function activate(thread: Thread): void {
     if (state.threads.some((t) => t.id === state.activeId)) {
       if (input.value) drafts.set(state.activeId as string, input.value);
       else drafts.delete(state.activeId as string);
+      stashDraft(state.activeId as string);
     }
     input.value = drafts.get(thread.id) ?? '';
     input.style.height = 'auto';
     input.style.height = `${input.scrollHeight}px`;
+    loadDraft(thread.id);
   }
   state.activeId = thread.id;
   delete thread.unread;
@@ -276,6 +375,7 @@ export function deleteThread(id: string): void {
   }
   window.threads.remove(id);
   drafts.delete(id);
+  clearDraft(id);
   state.threads = state.threads.filter((t) => t.id !== id);
   // What was branched off it is not deleted with it, and goes into the sidebar as a thread like any other
   for (const t of state.threads) if (t.offshootOf === id) delete t.offshootOf;
@@ -299,8 +399,13 @@ export function deleteThread(id: string): void {
   save();
 }
 
-export function addMessage(thread: Thread, role: Message['role'], text: string): Message {
-  const message: Message = { role, text };
+export function addMessage(
+  thread: Thread,
+  role: Message['role'],
+  text: string,
+  images?: ToolImage[]
+): Message {
+  const message: Message = { role, text, ...(images?.length ? { images } : {}) };
   thread.messages.push(message);
   // Name the thread after its first message
   if (thread.messages.length === 1) thread.title = text.slice(0, 40);

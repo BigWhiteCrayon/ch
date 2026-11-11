@@ -4,6 +4,7 @@ import { state, save, saveSoon, activeThread, addMessage, sourceOf } from './thr
 import { render } from './thread-view.js';
 import { reply } from './reply.js';
 import { openAgentTab } from './agent-tabs.js';
+import { renderMarkdown } from './markdown.js';
 
 export const changesDialog = element<HTMLDialogElement>('changes-dialog');
 export const changesFiles = element('changes-files');
@@ -58,6 +59,8 @@ export interface DiffRow {
   text: string;
   kind: 'add' | 'del' | 'context' | 'hunk';
   line: number | null;
+  oldLine: number | null;
+  newLine: number | null;
 }
 
 export function diffRows(diff: string): DiffRow[] {
@@ -68,13 +71,20 @@ export function diffRows(diff: string): DiffRow[] {
     if (hunk) {
       before = Number(hunk[1]);
       after = Number(hunk[2]);
-      return { text, kind: 'hunk', line: null };
+      return { text, kind: 'hunk', line: null, oldLine: null, newLine: null };
     }
-    if (text.startsWith('+')) return { text, kind: 'add', line: after++ };
-    if (text.startsWith('-')) return { text, kind: 'del', line: before++ };
-    if (!text.startsWith(' ')) return { text, kind: 'hunk', line: null };
-    before++;
-    return { text, kind: 'context', line: after++ };
+    if (text.startsWith('+')) {
+      const newLine = after++;
+      return { text, kind: 'add', line: newLine, oldLine: null, newLine };
+    }
+    if (text.startsWith('-')) {
+      const oldLine = before++;
+      return { text, kind: 'del', line: oldLine, oldLine, newLine: null };
+    }
+    if (!text.startsWith(' ')) return { text, kind: 'hunk', line: null, oldLine: null, newLine: null };
+    const oldLine = before++;
+    const newLine = after++;
+    return { text, kind: 'context', line: newLine, oldLine, newLine };
   });
 }
 
@@ -103,11 +113,11 @@ export function commentForm(thread: Thread): HTMLFormElement {
     const review = (thread.review ??= []);
     const existing = review.find((c) => c.id === drafting?.commentId);
     if (existing) {
-      existing.entries.push({ from: 'user', text });
+      existing.entries.push({ from: 'user', text, at: Date.now() });
     } else {
       thread.reviewCount = (thread.reviewCount ?? 0) + 1;
       const { path, row, line } = drafting;
-      review.push({ id: `c${thread.reviewCount}`, path, row, line, entries: [{ from: 'user', text }] });
+      review.push({ id: `c${thread.reviewCount}`, path, row, line, entries: [{ from: 'user', text, at: Date.now() }] });
     }
     drafting = null;
     save();
@@ -133,7 +143,7 @@ export function commentThread(thread: Thread, comment: ReviewComment): HTMLEleme
     const who = document.createElement('strong');
     who.textContent = entry.from === 'user' ? 'You' : 'Assistant';
     const said = document.createElement('span');
-    said.textContent = entry.text;
+    said.append(renderMarkdown(entry.text));
     row.append(who, said);
     if (entry.from === 'user' && !entry.sent) {
       // Not yet seen by the assistant, so it can still be taken back
@@ -151,6 +161,13 @@ export function commentThread(thread: Thread, comment: ReviewComment): HTMLEleme
         drawChanges(thread);
       });
       row.append(pending, remove);
+    }
+    if (entry.at !== undefined) {
+      // When the entry was left, in small print
+      const time = document.createElement('small');
+      time.className = 'entry-time';
+      time.textContent = new Date(entry.at).toLocaleTimeString();
+      row.append(time);
     }
     box.append(row);
   }
@@ -209,11 +226,21 @@ export function changedFile(thread: Thread, file: FileChange): HTMLDetailsElemen
     else openFiles.delete(file.path);
   });
   const comments = (thread.review ?? []).filter((c) => c.path === file.path);
+  // How many lines the change adds and removes, shown on the summary
+  const rows = diffRows(file.diff || 'Nothing to show for this file.');
+  const adds = rows.filter((r) => r.kind === 'add').length;
+  const dels = rows.filter((r) => r.kind === 'del').length;
   const summary = document.createElement('summary');
   const status = document.createElement('span');
   status.className = 'status';
   status.textContent = STATUS_NAMES[file.status];
   summary.append(status, file.path);
+  if (adds + dels > 0) {
+    const tally = document.createElement('small');
+    tally.className = 'tally';
+    tally.textContent = `+${adds} −${dels}`;
+    summary.append(tally);
+  }
   if (comments.length > 0) {
     const count = document.createElement('small');
     count.className = 'comments';
@@ -224,7 +251,6 @@ export function changedFile(thread: Thread, file: FileChange): HTMLDetailsElemen
 
   const diff = document.createElement('div');
   diff.className = 'diff';
-  const rows = diffRows(file.diff || 'Nothing to show for this file.');
   // Each comment goes under the line it was left on: the one that reads the
   // same, nearest to where it was. Lines change as the thread works, so a
   // comment whose line is gone is listed below the diff instead.
@@ -244,10 +270,13 @@ export function changedFile(thread: Thread, file: FileChange): HTMLDetailsElemen
     line.className = `row ${row.kind}`;
     const number = document.createElement('span');
     number.className = 'number';
-    number.textContent = row.line === null ? '' : String(row.line);
+    number.textContent = row.oldLine === null ? '' : String(row.oldLine);
+    const number2 = document.createElement('span');
+    number2.className = 'number';
+    number2.textContent = row.newLine === null ? '' : String(row.newLine);
     const code = document.createElement('code');
     code.textContent = row.text;
-    line.append(number, code);
+    line.append(number, number2, code);
     if (row.kind !== 'hunk' && file.diff) {
       line.title = 'Comment on this line';
       line.addEventListener('click', () => {

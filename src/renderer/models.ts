@@ -11,6 +11,7 @@ import {
   setAllModels,
   setModels,
   setProviders,
+  setRetainedHostedModels,
 } from './shared.js';
 import { save, state } from './threads.js';
 import { renderSettings, setSettings, settings, settingsDialog } from './settings.js';
@@ -32,6 +33,11 @@ export async function loadModels(): Promise<void> {
   setAllModels(listed.models);
   setProviders(listed.providers);
   setModels(allModels.filter((m) => !m.disabled));
+  // The store keeps the last hosted (non-local) list seen, so Offline Mode can
+  // show them greyed out: the live list omits them when offline, and a listing
+  // with none is left as it was. (See the offline switch tests.)
+  const hosted = listed.models.filter((m) => !m.local);
+  if (hosted.length > 0) setRetainedHostedModels(hosted);
   // Keep a saved pick only while that model still exists
   if (!selectedModel()) {
     state.modelChoice = AUTO;

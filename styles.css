@@ -14,6 +14,10 @@
      the background means darker here and lighter in the dark theme below;
      a grey darker than the reply there is a grey that has vanished. */
   --asked-by-app: #dadde4;
+  /* A diff's own colours: an added line, a removed line, a hunk marker */
+  --diff-add: #15803d;
+  --diff-del: #b91c1c;
+  --diff-hunk: #6b7280;
   color-scheme: light dark;
 }
 
@@ -28,6 +32,9 @@
     --warn: #facc15;
     --bubble: #2c2f35;
     --asked-by-app: #3a3e46;
+    --diff-add: #4ade80;
+    --diff-del: #f87171;
+    --diff-hunk: #9aa0aa;
   }
 }
 
@@ -889,14 +896,26 @@ main > header {
 .message.approval {
   border: 1px solid var(--warn);
   white-space: normal;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--panel);
+  max-width: 100%;
 }
 
 .message.approval p {
   margin: 0 0 8px;
 }
 
+/* The question the card is asking: set apart from the command it shows and the clock at the foot
+   of the card by being the bold lead line. Only the first line — not the command block or the
+   countdown, which follow it — is bold. */
+.message.approval > p:first-child {
+  font-weight: 600;
+}
+
 .message.approval .actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -927,10 +946,15 @@ main > header {
 .message.question {
   border: 1px solid var(--warn);
   white-space: normal;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--panel);
+  max-width: 100%;
 }
 
 .message.question p {
   margin: 0 0 8px;
+  font-weight: 600;
 }
 
 .message.question .options,
@@ -940,27 +964,114 @@ main > header {
   gap: 8px;
 }
 
+/* The options stack as full-width rows, the free-text box below being a second way to answer, set
+   apart from the list by the 'or' between them. */
 .message.question .options {
+  flex-direction: column;
+  align-items: stretch;
   margin-bottom: 8px;
 }
 
 .message.question .other {
   flex: 1;
   min-width: 160px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+.message.question .option {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  text-align: left;
+}
+
+.message.question .option:hover {
+  background: var(--bubble);
+}
+
+.message.question .send.primary {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+/* The 'or' between the option buttons and the free-text box: a hairline on each side of the
+   word, so the two ways to answer read as a choice — a list to pick from, or your own words —
+   rather than one list of identical boxes. */
+.message.question .answer-or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.message.question .answer-or::before,
+.message.question .answer-or::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+/* A visible ring when an answer is reached by keyboard, as the composer's inputs get (see #input:focus). */
+.message.question :is(.option, .other, .send):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* The offer to have a model check the changes a reply left */
 .message.review {
   white-space: normal;
+  border: 1px solid var(--border);
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--panel);
+  max-width: 100%;
 }
 
 .message.review p {
   margin: 0 0 8px;
+  font-weight: 600;
 }
 
 .message.review .actions {
   display: flex;
   gap: 8px;
+}
+
+/* The cards that put a question to the user — a model to approve, a file or a command to allow, a review
+   to run — share the look of their buttons, the same as a dialog's controls (see above): the neutral ones
+   carry a border, the one marked primary is filled with the accent. */
+:is(.message.approval, .message.review) .actions button {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+:is(.message.approval, .message.review) .actions button:not(.primary):hover {
+  background: var(--bubble);
+}
+
+:is(.message.approval, .message.review) .actions button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+:is(.message.approval, .message.review) .actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* A reply written in Markdown: its own blocks set the spacing */
@@ -1083,6 +1194,85 @@ main > header {
 
 .diagram .edge.thick path {
   stroke-width: 3;
+}
+
+/* A part of the code a reply pointed at (see renderer/file-ref.ts): a note that
+   opens to read the file in the workspace, a line to a row, as the diff is */
+.message.markdown .file-refs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.message.markdown .file-ref {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bubble);
+  overflow: hidden;
+}
+
+.message.markdown .file-ref > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.message.markdown .file-ref > summary::-webkit-details-marker {
+  display: none;
+}
+
+.message.markdown .file-ref .file-path {
+  padding: 0;
+  border: none;
+  background: none;
+  font-weight: 600;
+}
+
+.message.markdown .file-ref .file-range {
+  color: var(--muted);
+  font-size: 0.9em;
+  font-family: inherit;
+}
+
+/* The lines read from the file, shown as rows the diff's rows are (see the
+   #changes-files rules): a number and its line of code, each on its own */
+.message.markdown .file-body {
+  padding: 6px 0;
+  max-height: 420px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.message.markdown .file-body .row {
+  display: flex;
+  gap: 8px;
+  padding: 0 10px;
+  white-space: pre;
+}
+
+.message.markdown .file-body .row .number {
+  flex: none;
+  width: 36px;
+  text-align: right;
+  color: var(--muted);
+  user-select: none;
+}
+
+.message.markdown .file-body .row code {
+  padding: 0;
+  border: none;
+  background: none;
+  white-space: pre;
+}
+
+.message.markdown .file-body .more {
+  padding: 4px 10px;
+  color: var(--muted);
+  font-size: 0.9em;
 }
 
 /* The line behind the words, so a label stays readable where it sits on an arrow */
@@ -1348,11 +1538,11 @@ main > header {
 
 /* What a written file changed: added lines green, removed lines red */
 .message.tool pre.diff .add {
-  color: #15803d;
+  color: var(--diff-add);
 }
 
 .message.tool pre.diff .del {
-  color: #b91c1c;
+  color: var(--diff-del);
 }
 
 .message:is(.tool, .note) pre {
@@ -1371,7 +1561,7 @@ main > header {
   border-radius: 6px;
 }
 
-.message:is(.tool, .assistant) .tool-image {
+.message:is(.tool, .assistant, .user, .plan) .tool-image {
   display: block;
   max-width: 100%;
   height: auto;
@@ -1383,7 +1573,7 @@ main > header {
 /* A recorded clip, in the reply that recorded it. No zoom-in cursor and no
    click to enlarge, unlike a screenshot: the click belongs to the player's own
    controls (see zoom.ts, which matches images alone). */
-.message.assistant .tool-video {
+.message:is(.tool, .assistant, .user, .plan) .tool-video {
   display: block;
   max-width: 100%;
   height: auto;
@@ -1408,6 +1598,7 @@ main > header {
 
 #composer {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 12px 16px;
   border-top: 1px solid var(--border);
@@ -1443,6 +1634,52 @@ main > header {
   border-radius: 6px;
   background: var(--accent);
   color: #fff;
+}
+
+/* The attached images, in one row that scrolls sideways rather than wrapping or
+   shrinking: enough to make out a picture, and many of them stay legible. */
+#attachments {
+  flex-basis: 100%;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+#attachments[hidden] {
+  display: none;
+}
+
+#attachments .thumb {
+  /* flex:0 0 auto keeps each image at its own size, so a long list scrolls
+     instead of squeezing every one down to fit the row. */
+  flex: 0 0 auto;
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* The attach button: the picture-picking icon, plain until it is reached by
+   keyboard (see the focus ring on the answer cards) */
+#attach {
+  padding: 0;
+  width: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  color: var(--muted);
+}
+
+#attach:hover {
+  color: var(--text);
+}
+
+#attach:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 #quote {
@@ -1664,11 +1901,11 @@ main > header {
 }
 
 :is(#workspace-dialog-body, #thread-dialog-body) pre.diff .add {
-  color: #15803d;
+  color: var(--diff-add);
 }
 
 :is(#workspace-dialog-body, #thread-dialog-body) pre.diff .del {
-  color: #b91c1c;
+  color: var(--diff-del);
 }
 
 /* The notes behind the workspace's own note: one per thing somebody working
@@ -1714,7 +1951,9 @@ main > header {
   color: var(--muted);
 }
 
-.note + .note {
+/* Within the list: a thread's own lines are notes too (.message.note), and two of them one after another took
+   this rule's line for the top edge of an empty bubble */
+#workspace-notes-list .note + .note {
   margin-top: 10px;
   border-top: 1px solid var(--border);
   padding-top: 10px;
@@ -1856,21 +2095,21 @@ main > header {
 }
 
 #changes-files .row.add code {
-  color: #15803d;
+  color: var(--diff-add);
 }
 
 #changes-files .row.del code {
-  color: #b91c1c;
+  color: var(--diff-del);
 }
 
 #changes-files .row.hunk code {
-  color: var(--muted);
+  color: var(--diff-hunk);
 }
 
 /* A comment under the line it is about, with the replies to it */
 #changes-files .comment,
 #changes-files .comment-form {
-  margin: 4px 8px 6px 52px;
+  margin: 4px 8px 6px 88px;
   padding: 8px 10px;
   font-family: inherit;
   white-space: normal;
@@ -1903,6 +2142,26 @@ main > header {
 #changes-files .entry small {
   flex: none;
   color: var(--muted);
+}
+
+/* A turn by the assistant, read off the user's own by the accent it already
+   uses for its name, so the two read as a conversation under one comment */
+#changes-files .entry.assistant {
+  padding-left: 10px;
+  background: var(--panel);
+  border-left: 2px solid var(--accent);
+}
+
+/* A hairline between one turn and the next, not before the first */
+#changes-files .entry + .entry {
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+/* The turns are markdown now, so each holds a paragraph: zero its margins so the
+   conversation stays tight */
+#changes-files .entry p {
+  margin: 0;
 }
 
 /* How far the reviewer dealing with a comment has got */
@@ -2198,6 +2457,18 @@ input.family-toggle::after {
 input.toggle:checked,
 input.family-toggle:checked {
   background: var(--accent);
+}
+
+/* While a hosted model can't be reached, its on-switch reads as grey, not the accent, but stays switchable */
+.model-list .row.unavailable input.toggle:checked,
+.model-list .row.unavailable input.family-toggle:checked,
+.model-list details.family.unavailable input.family-toggle:checked {
+  background: var(--muted);
+}
+
+.model-list .row.unavailable span,
+.model-list details.family.unavailable .family-head span {
+  color: var(--muted);
 }
 
 input.toggle:checked::after,
@@ -2564,21 +2835,17 @@ details.family[open] > .family-head::before {
   width: 100%;
   height: 100%;
   justify-content: flex-start;
+  gap: 1px;
 }
 
 .chart-stack .seg {
   min-height: 2px;
-  box-sizing: border-box;
+  flex: 0 0 auto;
 }
 
-/* The top of the day's whole column is rounded; the joins between providers
-   are a hairline of the background, so two colours never touch */
+/* The top of the day's whole column is rounded */
 .chart-stack .seg:last-child {
   border-radius: 3px 3px 0 0;
-}
-
-.chart-stack .seg:not(:last-child):not(:only-child) {
-  border-top: 2px solid var(--bg);
 }
 
 /* The dates, inside what scrolls so they stay over their own columns */
@@ -2608,6 +2875,52 @@ details.family[open] > .family-head::before {
 
 #usage-legend[hidden] {
   display: none;
+}
+
+/* One entry is a colour box beside a name, each a way to change what the chart
+   shows: the box takes its series off or puts it back, the name singles it out
+   to its own. The two buttons read as one word, and the colour keeps its own. */
+#usage-legend .legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border-radius: 3px;
+}
+
+#usage-legend .legend-swatch,
+#usage-legend .legend-name {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+#usage-legend .legend-name {
+  font-size: 12px;
+}
+
+#usage-legend .legend-swatch {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+/* A series the legend has taken off the chart: its name, told off from its own
+   by being struck through and dimmed, its colour box the way to bring it back. */
+#usage-legend .legend-item.is-off {
+  opacity: 0.45;
+}
+
+#usage-legend .legend-item.is-off .legend-name {
+  text-decoration: line-through;
+}
+
+/* The series singled out to its own: its name stood out from the rest of it. */
+#usage-legend .legend-item.is-solo .legend-name {
+  font-weight: 600;
+  color: var(--text);
 }
 
 /* A provider's colour, always beside its name and never standing in for it */

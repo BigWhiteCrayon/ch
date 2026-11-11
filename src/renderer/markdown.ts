@@ -5,6 +5,7 @@
 // italics, strikethrough and links. Anything else is shown as written.
 
 import { renderDiagram } from './diagram.js';
+import { fileBlock } from './file-ref.js';
 
 export const MD_ESCAPE = String.raw`\\([\\\x60*_{}\[\]()#+\-.!~|>])`;
 export const MD_CODE = String.raw`(\x60+)([\s\S]+?)\2`;
@@ -104,6 +105,15 @@ export function mdCodeBlock(lines: string[], start: number, out: Node): number {
   const diagram = closed && language.toLowerCase() === 'mermaid' ? renderDiagram(body.join('\n')) : null;
   if (diagram) {
     out.appendChild(diagram);
+    return i;
+  }
+  // A part of the code a reply pointed at: its lines name a file and a range of
+  // it, and the note they open reads it in the workspace (see file-ref.ts). As
+  // with a diagram it is shown only once the block is closed, and only where its
+  // lines are references, so a block the model meant as code is left as code.
+  const files = closed && language.toLowerCase() === 'file' ? fileBlock(body.join('\n')) : null;
+  if (files) {
+    out.appendChild(files);
     return i;
   }
   const pre = document.createElement('pre');

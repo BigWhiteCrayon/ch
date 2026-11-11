@@ -111,6 +111,19 @@ describe('parse', () => {
     });
   });
 
+  it('takes a suggestion, a kind of task on its own', () => {
+    expect(parse('3 medium suggestion', true)).toEqual({
+      sophistication: 3,
+      effort: 'medium',
+      category: 'suggestion',
+    });
+    expect(parse('3 medium suggestion', false)).toEqual({
+      sophistication: 3,
+      effort: 'medium',
+      category: 'suggestion',
+    });
+  });
+
   it('assumes a general task when the reply leaves the kind out', () => {
     expect(parse('3')).toEqual({ sophistication: 3, effort: 'medium', category: 'general' });
     expect(parse('4 highly complex code')).toEqual({ sophistication: 4, effort: 'high', category: 'general' });

@@ -49,11 +49,30 @@ const isGlob = (pattern: string) => /[*?[\]{}]/.test(pattern);
 // whose copy of the files to look in.
 export type Options = SearchOptions & {
   maxPerFile: number;
-  path?: string;
+  // Where to search: one path or glob, or several, any of which may match
+  path?: string | string[];
+  // Paths or globs to leave out wherever they are
+  exclude?: string[];
+  // Whether a pattern matches whatever the case. A keyword search always
+  // does, and a definition never does (see each of them below).
+  ignoreCase?: boolean;
   // The thread whose container holds the copy to search. Left out, the user's
   // own copy of the workspace is searched instead.
   thread?: string;
 };
+
+// Where ripgrep is to look, and what it is to keep to there. Plain paths are
+// given to it as the places to search, which is quickest and is what a single
+// file needs. Once there is a glob among them everything goes in as a filter
+// over the whole workspace instead, a plain path as itself and as everything
+// under it: ripgrep searches a path it was handed outright whatever the
+// filters say, so a mixed list cannot be given both ways at once.
+function placesFor(path: Options['path']): { places: string[]; globs: string[] } {
+  const paths = (Array.isArray(path) ? path : path ? [path] : []).filter(Boolean);
+  if (paths.length === 0) return { places: ['.'], globs: [] };
+  if (!paths.some(isGlob)) return { places: paths, globs: [] };
+  return { places: ['.'], globs: paths.flatMap((one) => (isGlob(one) ? [one] : [one, `${one}/**`])) };
+}
 
 // What ripgrep said, wherever it ran: its matches, or why it refused
 interface Ran {
@@ -72,18 +91,32 @@ interface Ran {
 // a search narrowed to one file matched everything and answered "No matches."
 // Asking for the path always means the rows look the same however the place
 // to search was written.
-function argsFor(pattern: string, { maxPerFile, context, pathsOnly, path }: Options, ignoreCase: boolean): string[] {
+function argsFor(
+  pattern: string,
+  { maxPerFile, context, pathsOnly, path, exclude = [] }: Options,
+  ignoreCase: boolean
+): string[] {
+  const { places, globs } = placesFor(path);
   // Only the paths wanted: ripgrep lists the files and reads no further into them
   const args = pathsOnly
     ? ['--files-with-matches']
     : ['--with-filename', '--line-number', '--no-heading', '--max-columns', String(MAX_LINE_LENGTH)];
   if (ignoreCase) args.push('--ignore-case');
+  // The project's own .gitignore, which ripgrep reads only from inside a
+  // repository: the copy this searches is filled from `git ls-files` and has
+  // no .git (see ../sandbox/docker.ts), so without this the walk went through
+  // the node_modules the project's install had put in the container and
+  // answered with a dependency's declarations.
+  args.push('--no-require-git');
+  // For a project that keeps no .gitignore, unless pointed there on purpose
+  if (!places.concat(globs).some((place) => place.includes('node_modules'))) args.push('--glob', '!node_modules');
   // The caller cuts the results to the limits as well; this saves ripgrep
   // reading on through a file whose matches are already more than are wanted
   if (!pathsOnly) args.push('--max-count', String(maxPerFile));
   if (!pathsOnly && context > 0) args.push('--context', String(context));
-  if (path && isGlob(path)) args.push('--glob', path);
-  args.push('--regexp', pattern, path && !isGlob(path) ? path : '.');
+  for (const glob of globs) args.push('--glob', glob);
+  for (const left of exclude) args.push('--glob', `!${left}`);
+  args.push('--regexp', pattern, ...places);
   return args;
 }
 
@@ -194,7 +227,8 @@ async function run(
 }
 
 // Lines of the workspace's files that hold any of the query's keywords, by
-// file. Files Git ignores are left out. `path`, when given, is a glob or a
+// file. Files Git ignores are left out, which takes the project's own
+// .gitignore and --no-require-git to arrange (see argsFor). `path`, when given, is a glob or a
 // path under the workspace, and only what it covers is searched.
 export function keywordSearch(
   workspace: string,
@@ -211,8 +245,8 @@ export function keywordSearch(
 
 // Lines of the workspace's files that match a regular expression, by file.
 // The pattern goes to ripgrep as it was written: no keywords are taken out of
-// it, and the search is case-sensitive, because someone who writes
-// "[A-Z]\w+Error" means the capital letters.
+// it, and the search is case-sensitive unless ignoreCase says otherwise,
+// because someone who writes "[A-Z]\w+Error" means the capital letters.
 //
 // The pattern is ripgrep's own, which is Rust's regex crate: it matches in
 // time linear in the subject, so no pattern can hang the search, and in
@@ -224,7 +258,7 @@ export function regexSearch(
   options: Options,
   signal: AbortSignal
 ): Promise<SearchResult> {
-  return run(workspace, pattern, options, signal, false);
+  return run(workspace, pattern, options, signal, options.ignoreCase === true);
 }
 
 // Where a name is defined, rather than everywhere it is used.
