@@ -6,6 +6,7 @@
 // They are registered with the harness's registry at startup (see
 // ../harness/tools.ts, which is the registry rather than any tool).
 
+import { breadth } from '../harness/phases';
 import type { Tool } from '../types';
 import * as ask from './ask';
 import * as branches from './branches';
@@ -42,8 +43,17 @@ export {
   workspaces,
 };
 
-// In the order a model is shown them, which is the order they are registered
-export const all: Tool[] = [
+// In the order they are registered, which is the order a model is shown them
+// once the ones its step does not offer are taken out (see toolsFor in
+// ../harness/index.ts).
+//
+// Written widest first: a tool every step offers above a tool one step offers,
+// so that two steps of a reply share as much of the list as they have in
+// common. What that buys, and why the order is sorted rather than written out,
+// is in ../harness/phases.breadth. The order here is what the sort starts from,
+// which settles the tools of equal breadth: a sort that keeps what it is given
+// where it finds it.
+const registered: Tool[] = [
   ...sandbox.tools,
   ...reading.tools,
   ...files.tools,
@@ -65,6 +75,8 @@ export const all: Tool[] = [
   // ...and the ones only a subagent is shown, which no reply's list ends with at all
   ...branches.tools,
 ];
+
+export const all: Tool[] = [...registered].sort((a, b) => breadth(b) - breadth(a));
 
 export function registerAll(registry: { register(tool: Tool): void }): void {
   for (const tool of all) registry.register(tool);
