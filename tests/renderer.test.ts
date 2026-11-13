@@ -5737,6 +5737,45 @@ describe('threads', () => {
         expect(threads.open).toHaveBeenCalledWith(saved().threads[0].id, '/worktrees/spin-off');
       });
 
+      // The move is redrawn the moment the branch event lands, not when the reply
+      // finishes (see the gated re-render it used to call): even a thread the user
+      // is no longer showing moves under its heading
+      it('moves a non-active thread under its heading the moment the branch event lands', async () => {
+        await newThread('/projects/demo');
+        await type('plain');
+        const id = sentId();
+        // A second thread is started in the meantime, so the first is no longer the one on screen
+        await newThread('/projects/demo');
+        await type('second');
+
+        const branch = { name: 'spin-off', base: 'main', worktree: '/worktrees/spin-off' };
+        emit(id, { type: 'branch', branch });
+        await flush();
+
+        expect(rows()).toEqual(['second', '[spin-off]', 'plain']);
+        expect($('#thread-list li.group.branch').title).toBe('spin-off (from main, not pushed)');
+        expect(branchOf('plain')).toEqual(branch);
+        expect(threads.open).toHaveBeenCalledWith(saved().threads.find((t) => t.title === 'plain')!.id, '/worktrees/spin-off');
+      });
+
+      // A move can come in for a thread that is not the one on screen — a reply still going in
+      // another thread, for instance — and the heading must appear the moment it does, not when that
+      // thread's reply finishes, which is when the full render runs (see the branch handler in events.ts).
+      it('puts a branch under its own heading the moment a thread not on screen is moved onto it', async () => {
+        await newThread('/projects/demo');
+        await type('plain');
+        const moved = sentId();
+        // A general chat becomes the one on screen, so the demo thread is no longer active but is still replying
+        await newThread(null);
+        expect(rows()).not.toContain('[spin-off]');
+
+        emit(moved, { type: 'branch', branch: { name: 'spin-off', base: 'main', worktree: '/worktrees/spin-off' } });
+
+        // The reply has not finished — yet the heading is already in the sidebar
+        expect(rows()).toEqual(['[spin-off]', 'plain']);
+        expect($('#thread-list li.group.branch').title).toBe('spin-off (from main, not pushed)');
+      });
+
       it('unfolds a branch group that was left folded under the same name', async () => {
         await onFeature('on feature');
         $('#thread-list li.group.branch').click();
