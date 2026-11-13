@@ -125,10 +125,17 @@ function parseFlowchart(source: string): Flowchart | null {
   return chart.nodes.size ? chart : null;
 }
 
-// Puts each node in a layer after the ones that point to it (an arrow back to
-// a node already on the way down is drawn but doesn't count), the layers one
-// after another in the direction of the chart, and each layer centred.
-function layout(chart: Flowchart): Point {
+// Puts each node in a layer after the ones that point to it, one layer after
+// another, sized for the chart
+function layered(chart: Flowchart): {
+  layers: DiagramNode[][];
+  direction: Direction;
+  along: (n: DiagramNode) => number;
+  across: (n: DiagramNode) => number;
+  widths: number[];
+  widest: number;
+  gap: number;
+} {
   const { nodes, edges, direction } = chart;
   const horizontal = direction === 'LR' || direction === 'RL';
   for (const n of nodes.values()) {
@@ -138,7 +145,6 @@ function layout(chart: Flowchart): Point {
     n.w = Math.max(56, text.w + 28) * scale;
     n.h = (text.h + 18) * scale;
   }
-
   const forward: DiagramEdge[] = [];
   const state = new Map<string, 'open' | 'done'>();
   const visit = (id: string) => {
@@ -151,7 +157,6 @@ function layout(chart: Flowchart): Point {
     state.set(id, 'done');
   };
   for (const id of nodes.keys()) if (!state.has(id)) visit(id);
-
   const rank = new Map([...nodes.keys()].map((id) => [id, 0]));
   for (let changed = true, pass = 0; changed && pass <= nodes.size; pass++) {
     changed = false;
@@ -162,7 +167,6 @@ function layout(chart: Flowchart): Point {
       }
     }
   }
-
   const layers: DiagramNode[][] = [];
   for (const n of nodes.values()) (layers[rank.get(n.id) as number] ??= []).push(n);
   const along = (n: DiagramNode) => (horizontal ? n.w : n.h);
@@ -170,6 +174,15 @@ function layout(chart: Flowchart): Point {
   const widths = layers.map((layer) => layer.reduce((sum, n) => sum + across(n) + GAP, -GAP));
   const widest = Math.max(...widths);
   const gap = horizontal ? GAP * 3 : GAP * 2;
+  return { direction, layers, along, across, widths, widest, gap };
+}
+
+// Puts each node in a layer after the ones that point to it (an arrow back to
+// a node already on the way down is drawn but doesn't count), the layers one
+// after another in the direction of the chart, and each layer centred.
+function layout(chart: Flowchart): Point {
+  const { direction, layers, along, across, widths, widest, gap } = layered(chart);
+  const horizontal = direction === 'LR' || direction === 'RL';
   const depth = layers.reduce((sum, layer) => sum + Math.max(...layer.map(along)) + gap, -gap);
 
   let offset = PAD;
@@ -186,6 +199,49 @@ function layout(chart: Flowchart): Point {
     offset += thick + gap;
   });
   return horizontal ? { x: depth + 2 * PAD, y: widest + 2 * PAD } : { x: widest + 2 * PAD, y: depth + 2 * PAD };
+}
+
+// A flipped chart that runs past the height target is laid out as a grid of
+// columns rather than one tall strip: columns read down then up, so each join
+// is a short arrow and the chart keeps a balanced block.
+function pack(chart: Flowchart, heightTarget: number): Point {
+  const { layers, along, across, widest, gap } = layered(chart);
+  if (layers.length < 2) return layout(chart);
+  const rowStep = Math.max(...layers.map((layer) => Math.max(...layer.map(along)))) + gap;
+  const rowsPerColumn = Math.max(1, Math.floor((heightTarget - 2 * PAD) / rowStep));
+  const columns = Math.ceil(layers.length / rowsPerColumn);
+  if (columns < 2) return layout(chart); // a short chart stays one column
+  const perColumn = Math.ceil(layers.length / columns);
+  const columnWidth = widest + 2 * PAD;
+  const widths = layers.map((layer) => layer.reduce((sum, n) => sum + across(n) + GAP, -GAP));
+  const upFirst = chart.direction === 'BT';
+  let height = 0;
+  for (let column = 0; column < columns; column++) {
+    const start = column * perColumn;
+    const colLayers = layers.slice(start, start + perColumn);
+    const rows = colLayers.length;
+    // even columns read down, odd up (reversed for BT), so a column ends where the next begins
+    const readUp = (column % 2 === 1) !== upFirst;
+    let cur = PAD;
+    const slotY = new Array(rows);
+    for (let s = 0; s < rows; s++) {
+      slotY[s] = cur;
+      cur += Math.max(...colLayers[s].map(along)) + gap;
+    }
+    height = Math.max(height, cur - gap + PAD);
+    const x = PAD + column * columnWidth;
+    colLayers.forEach((layer, s) => {
+      const slot = readUp ? rows - 1 - s : s;
+      const thick = Math.max(...layer.map(along));
+      let side = x + (widest - widths[start + s]) / 2;
+      for (const n of layer) {
+        n.x = side + across(n) / 2;
+        n.y = slotY[slot] + thick / 2;
+        side += across(n) + GAP;
+      }
+    });
+  }
+  return { x: columns * columnWidth, y: height };
 }
 
 // Where a line from the middle of n towards another point leaves n's outline
@@ -269,10 +325,15 @@ export function renderDiagram(source: string): HTMLElement | null {
   if (!chart) return null;
   let size = layout(chart);
   // A chart that would run past the target width turns to run down the page instead; layout() starts afresh
+  let flipped = false;
   if ((chart.direction === 'LR' || chart.direction === 'RL') && size.x * DIAGRAM_SCALE > TARGET_WIDTH) {
     chart.direction = chart.direction === 'LR' ? 'TD' : 'BT';
     size = layout(chart);
+    flipped = true;
   }
+  // A flipped column that runs past half the window is packed into a grid of columns instead of one tall strip
+  const heightTarget = Math.round(window.innerHeight * 0.5);
+  if (flipped && size.y > heightTarget) size = pack(chart, heightTarget);
   const scale = Math.min(DIAGRAM_SCALE, Math.max(1, TARGET_WIDTH / size.x));
   const root = svg('svg', {
     viewBox: `0 0 ${round(size.x)} ${round(size.y)}`,

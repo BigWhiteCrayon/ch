@@ -4156,11 +4156,14 @@ describe('commenting on a reply', () => {
   const chain = (direction: string) =>
     '```mermaid\nflowchart ' + direction + '\n' + 'ABCDEFGH'.split('').join('[Step] --> ') + '[Step]\n```';
 
-  it('turns a long left-to-right diagram top-down so it fits the width', async () => {
+  it('turns a long left-to-right diagram top-down, then packs it into a grid of columns', async () => {
     await answered(chain('LR'));
-    const { width, height, nodes } = diagramBox();
-    expect(height).toBeGreaterThan(width);
+    const svg = $('#messages .message.assistant .diagram svg');
+    const { height, nodes } = diagramBox();
     expect(nodes).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']);
+    const columns = new Set([...svg.querySelectorAll('[data-node] rect')].map((r) => Number(r.getAttribute('x')))).size;
+    expect(columns).toBeGreaterThan(1);
+    expect(height).toBeLessThan(712);
   });
 
   it('keeps a short left-to-right diagram left to right', async () => {
@@ -4169,10 +4172,14 @@ describe('commenting on a reply', () => {
     expect(width).toBeGreaterThan(height);
   });
 
-  it('turns a long right-to-left diagram bottom-up so it fits the width', async () => {
+  it('turns a long right-to-left diagram bottom-up, then packs it into a grid of columns', async () => {
     await answered(chain('RL'));
-    const { width, height } = diagramBox();
-    expect(height).toBeGreaterThan(width);
+    const svg = $('#messages .message.assistant .diagram svg');
+    const { height, nodes } = diagramBox();
+    expect(nodes).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']);
+    const columns = new Set([...svg.querySelectorAll('[data-node] rect')].map((r) => Number(r.getAttribute('x')))).size;
+    expect(columns).toBeGreaterThan(1);
+    expect(height).toBeLessThan(712);
   });
 
   // Clicking a picture or a diagram opens it larger in #zoom-dialog (see src/renderer/zoom.ts)
