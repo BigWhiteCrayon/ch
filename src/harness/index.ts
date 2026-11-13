@@ -41,6 +41,7 @@ import type {
 } from '../types';
 import * as access from './access';
 import * as allowance from './allowance';
+import { maxSteps } from './budget';
 import { announcing } from './announced';
 import * as discoveries from './discoveries';
 import * as notes from './notes';
@@ -87,16 +88,13 @@ export const answerFileAccess = access.answer;
 // may run, this once (see ./access.ts)
 export const answerCommandAccess = access.allowCommand;
 
-// How many rounds of tool calls a reply may take before it is stopped. The
-// more effort a message calls for, the more rounds its reply gets...
-const STEPS: Record<Effort, number> = { low: 10, medium: 20, high: 40 };
-// ...and six times as many in a thread that has a workspace to work in, where
-// finding, reading and changing files all take tool calls
-const WORKSPACE_STEPS = 6;
-
-export function maxSteps(effort: Effort, inWorkspace: boolean): number {
-  return Math.ceil(STEPS[effort] * (inWorkspace ? WORKSPACE_STEPS : 1));
-}
+// How many rounds of tool calls a reply may take is worked out in ./budget,
+// which is the one place the reply's flow and the subagent's loop (see
+// ../subagents/run.ts) agree on it: the two loops share the effort multipliers
+// there rather than each keep a copy, and the rounds are scaled from them. It is
+// re-exported from here because it has always been named as the harness's, and
+// the finding-out step's share is worked out from it (see ./phases.ts).
+export { maxSteps };
 
 // What the user is told when a reply is cut off before any of it was written
 export const OUT_OF_ROOM = `The model ran out of room before it wrote an answer: it reached its length limit. This

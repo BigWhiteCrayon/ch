@@ -27,6 +27,11 @@ import { readContext } from '../sandbox';
 import { toolsPrompt } from '../tools/sandbox';
 import { SUBAGENT_PROMPT as NOTES } from '../harness/notes';
 import * as allowance from '../harness/allowance';
+// The effort multipliers and the per-request cap, which the reply's flow and
+// this loop read together from one place (see ../harness/budget.ts): a value
+// kept in both loops is a value that drifts, and the two that used to be kept
+// apart are the ones the two loops used to size themselves by.
+import { EFFORT_STEPS, PER_REQUEST_TIMEOUT_MS } from '../harness/budget';
 import { compact, nearlyFull, size } from '../harness/compactor';
 import * as discoveries from '../harness/discoveries';
 import { route } from '../harness/router';
@@ -178,7 +183,9 @@ const CARRY_ON =
 // rather than room for the work.
 const MAX_CARRY_ONS = 2;
 
-const TIMEOUT_MS = 5 * 60 * 1000;
+// The per-request cap is PER_REQUEST_TIMEOUT_MS, the one the reply's flow and
+// this loop read together from ../harness/budget.ts; it is passed as
+// ChatRequest.timeoutMs at every call this loop makes (see the asks below).
 // Asked for its report: once it is out of rounds, and again if it ever stops
 // without writing one (see the nudge in work). Its tools stay in front of it
 // and are said to be no use rather than taken away, which is a thing a local
@@ -285,9 +292,10 @@ export interface Task {
 // What a piece of work is given to do it in. A kind's own budget is what a
 // piece of middling effort gets; one that is less or more than that gets less
 // or more, but never less than the kind can be done in at all (see
-// Kind.least). A number asked for by name beats all of it.
-const EFFORT_STEPS: Record<Effort, number> = { low: 0.5, medium: 1, high: 2 };
-
+// Kind.least). A number asked for by name beats all of it. The effort it scales
+// by is the same table the reply's flow uses for its own rounds (see
+// EFFORT_STEPS in ../harness/budget.ts), so the two loops answer "how many
+// rounds does this effort buy" the same way.
 export function stepsFor(task: Task): number {
   if (task.steps !== undefined) return task.steps;
   const asked = Math.round(task.kind.steps * EFFORT_STEPS[task.effort ?? 'medium']);
@@ -374,7 +382,7 @@ async function askShorter(
         system: shortenPrompt(kind.result, text.length),
         messages: [{ role: 'user', content: text }],
         maxTokens: SHORTEN_TOKENS,
-        timeoutMs: TIMEOUT_MS,
+        timeoutMs: PER_REQUEST_TIMEOUT_MS,
         log: { purpose: 'shorten', kind: kind.name, subagent: name },
       },
       signal
@@ -687,7 +695,7 @@ async function work(
         // than run (see asking above).
         tools: specs,
         maxTokens: STEP_TOKENS,
-        timeoutMs: TIMEOUT_MS,
+        timeoutMs: PER_REQUEST_TIMEOUT_MS,
         cacheKey,
         log: { purpose: 'subagent', kind: kind.name, subagent: name, step, nudge: nudging || undefined },
       },
