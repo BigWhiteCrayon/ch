@@ -10484,6 +10484,37 @@ describe("having a reply's changes checked by a model", () => {
       expect(llm.verify).toHaveBeenCalledWith(expect.objectContaining({ request: 'change a', ...model }));
     });
 
+    it('marks the change awaiting review while the check goes on, and green once it passes', async () => {
+      let resolveVerify: (value: { passed: boolean; problems: string; model: string }) => void;
+      llm.verify.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveVerify = resolve;
+          }),
+      );
+      settings.autoReview = true;
+      finish();
+      const dot = () => $<HTMLElement>('#thread-list li:not(.group) .status');
+      await flush();
+      expect(llm.verify).toHaveBeenCalledTimes(1);
+      // Not green yet: the change is checked, not written back
+      expect(dot().className).toContain('awaiting-review');
+      expect(dot().title).toBe('Changes awaiting review');
+      resolveVerify({ passed: true, problems: '', model: 'Opus 5' });
+      await flush();
+      expect(dot().className).toContain('changed');
+      expect(dot().className).not.toContain('awaiting-review');
+      expect(dot().title).toBe('Changes to write back');
+    });
+
+    it('marks no change awaiting review when the setting is off', async () => {
+      finish();
+      await flush();
+      const dot = $<HTMLElement>('#thread-list li:not(.group) .status');
+      expect(dot.className).toContain('changed');
+      expect(dot.className).not.toContain('awaiting-review');
+    });
+
     it('checks nothing when the setting is off', async () => {
       finish();
       await flush();

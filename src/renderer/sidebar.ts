@@ -1,6 +1,6 @@
 import { state, save, saveSoon, activate, createThread, busy, deleteThread, offshootsOf, sourceOf } from './threads.js';
 import { inflight, MAX_OPEN_THREADS, input, startedAgents, automatic, onTab } from './shared.js';
-import { approvalOf } from './approvals.js';
+import { approvalOf, awaitingReview } from './approvals.js';
 import { questionOf } from './questions.js';
 import { render } from './thread-view.js';
 import { LEFT_ALONE } from './reply.js';
@@ -111,19 +111,34 @@ export function threadGroups(): { workspace: string | undefined; threads: Thread
 function collapsedMark(threads: Thread[]): HTMLSpanElement | null {
   const asking = threads.some((t) => approvalOf(t) || questionOf(t));
   const working = threads.some((t) => inflight.has(t.id));
+  // A change that, with automatic review on, is not read as green until it has
+  // been checked (see awaitingReview); it sits between a reply in flight and a
+  // change that has waited out its review
+  const awaiting = threads.some(awaitingReview);
   const changed = threads.some((t) => t.changes);
-  if (!asking && !working && !changed && !threads.some((t) => t.unread)) return null;
+  if (!asking && !working && !awaiting && !changed && !threads.some((t) => t.unread)) return null;
   const status = document.createElement('span');
-  status.className = `status ${asking ? 'approval' : working ? 'working' : changed ? 'changed' : 'unread'}`;
+  const kind = asking
+    ? 'approval'
+    : working
+      ? 'working'
+      : awaiting
+        ? 'awaiting-review'
+        : changed
+          ? 'changed'
+          : 'unread';
+  status.className = `status ${kind}`;
   status.title = asking
     ? threads.some((t) => approvalOf(t))
       ? 'Needs your approval'
       : 'Needs your answer'
     : working
       ? 'Replying…'
-      : changed
-        ? 'Changes to write back'
-        : 'New reply';
+      : awaiting
+        ? 'Changes awaiting review'
+        : changed
+          ? 'Changes to write back'
+          : 'New reply';
   return status;
 }
 
@@ -585,7 +600,8 @@ export function threadItem(thread: Thread): HTMLLIElement {
     input.focus();
   });
 
-  // A dot: pulsing while a reply is on its way, green while changes wait to be
+  // A dot: pulsing while a reply is on its way, amber while automatic review has
+  // changes to check that are not yet through it, green while changes wait to be
   // written back (whether or not the thread has been read), solid once a reply
   // is waiting unread, red once the app has stopped on a reply (see LEFT_ALONE).
   // An automatic thread has no reply of its own; what is on its way there is the
@@ -594,10 +610,23 @@ export function threadItem(thread: Thread): HTMLLIElement {
   const asking = approving || questionOf(thread) !== undefined;
   const working = inflight.has(thread.id) || isWorking(thread);
   const stopped = leftAlone(thread);
+  // A change that, with automatic review on, is not read as green until it has
+  // been checked (see awaitingReview)
+  const awaiting = awaitingReview(thread);
   const changed = !!thread.changes;
-  if (asking || working || stopped || changed || thread.unread) {
+  if (asking || working || stopped || awaiting || changed || thread.unread) {
     const status = document.createElement('span');
-    const kind = asking ? 'approval' : working ? 'working' : stopped ? 'failed' : changed ? 'changed' : 'unread';
+    const kind = asking
+      ? 'approval'
+      : working
+        ? 'working'
+        : stopped
+          ? 'failed'
+          : awaiting
+            ? 'awaiting-review'
+            : changed
+              ? 'changed'
+              : 'unread';
     status.className = `status ${kind}`;
     status.title = asking
       ? approving
@@ -607,9 +636,11 @@ export function threadItem(thread: Thread): HTMLLIElement {
         ? 'Replying…'
         : stopped
           ? 'The app closed on this reply more than once'
-          : changed
-            ? 'Changes to write back'
-            : 'New reply';
+          : awaiting
+            ? 'Changes awaiting review'
+            : changed
+              ? 'Changes to write back'
+              : 'New reply';
     li.append(status);
   }
 
