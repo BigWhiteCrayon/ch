@@ -8647,6 +8647,43 @@ describe('what a thread is keeping, on a right-click in the sidebar', () => {
       expect(sent().investigate).toBe(true);
     });
 
+    it('is offered for every thread, unchecked, and is sent with what it asks for once checked', async () => {
+      const priority = () => $<HTMLInputElement>('#thread-priority-mode');
+      await rightClick(open());
+      expect($('#thread-priority').hidden).toBe(false);
+      expect(priority().checked).toBe(false);
+      priority().checked = true;
+      priority().dispatchEvent(new Event('change'));
+      $('#thread-dialog-close').click();
+      await asks('change the parser');
+      expect(sent().priority).toBe(true);
+    });
+
+    it('is not sent for a thread left to the model, or when it is put back', async () => {
+      const priority = () => $<HTMLInputElement>('#thread-priority-mode');
+      const kept = () => saved().threads.map((t: { priority?: boolean }) => t.priority);
+      await rightClick(open());
+      priority().checked = true;
+      priority().dispatchEvent(new Event('change'));
+      expect(kept().every((p: boolean | undefined) => p === undefined)).toBe(false);
+      priority().checked = false;
+      priority().dispatchEvent(new Event('change'));
+      expect(kept().every((p: boolean | undefined) => p === undefined)).toBe(true);
+    });
+
+    it('marks the thread in the sidebar at once, and takes the mark back when it is put off', async () => {
+      const priority = () => $<HTMLInputElement>('#thread-priority-mode');
+      const mark = () => $$('#thread-list li.thread .priority').length;
+      expect(mark()).toBe(0);
+      await rightClick(open());
+      priority().checked = true;
+      priority().dispatchEvent(new Event('change'));
+      expect(mark()).toBe(1);
+      priority().checked = false;
+      priority().dispatchEvent(new Event('change'));
+      expect(mark()).toBe(0);
+    });
+
     it("is one thread's own: another thread is still left to the model", async () => {
       await setPlan('always');
       emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 0, output: 0 }, steps: 1 });

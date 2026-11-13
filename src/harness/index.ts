@@ -772,6 +772,7 @@ export async function* run(
     resumed,
     plan: planning,
     investigate,
+    priority,
     rounds,
     agent,
     ...asked
@@ -1446,6 +1447,12 @@ export async function* run(
       // Every pass of this reply sends the same prompt with a little more
       // after it, so they all look for their prefix in the same place
       cacheKey: threadId,
+      // A thread the user marked for priority takes the lock on the local
+      // models ahead of the replies of other threads, so it rushes through
+      // while they fill the gaps between its steps (see the queue in
+      // ../llm/index.ts). The thread's own reply only: its subagents are not
+      // given it, since they run in parallel and would crowd the others out.
+      ...(priority ? { priority: true } : {}),
       log: { ...where, step, purpose: 'reply' },
     };
     // How long the model took to start replying. Logged rather than shown:
