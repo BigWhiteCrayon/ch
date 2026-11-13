@@ -1046,6 +1046,9 @@ export interface LlmBridge {
   // Keeps the user's verdict on a classification in a file beside the log
   feedback(feedback: ClassificationFeedback): void;
   cancel(requestId: string): void;
+  // Nudges an in-progress request with a line the user typed while it runs;
+  // mid-turn delivery is not implemented yet
+  nudge(requestId: string, text: string): void;
   // The user's answer to a 'file_access' event, by the event's id
   allowFileAccess(id: string, answer: FileAccessAnswer): void;
   // ...and to a 'command_access' event: whether the command it named may run

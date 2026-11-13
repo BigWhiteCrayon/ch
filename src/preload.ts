@@ -18,6 +18,7 @@ const llm: LlmBridge = {
   verify: (request) => ipcRenderer.invoke('llm:verify', request),
   feedback: (feedback) => ipcRenderer.send('llm:feedback', feedback),
   cancel: (requestId) => ipcRenderer.send('llm:cancel', requestId),
+  nudge: (requestId, text) => ipcRenderer.send('llm:nudge', requestId, text),
   allowFileAccess: (id, answer) => ipcRenderer.send('llm:allow-file-access', id, answer),
   allowCommand: (id, allowed) => ipcRenderer.send('llm:allow-command', id, allowed),
   approve: (requestId, approved) => ipcRenderer.send('llm:approve', requestId, approved),

@@ -58,6 +58,7 @@ const llm = {
   verify: vi.fn(),
   feedback: vi.fn(),
   cancel: vi.fn(),
+  nudge: vi.fn(),
   allowFileAccess: vi.fn(),
   allowCommand: vi.fn(),
   approve: vi.fn(),
@@ -4717,6 +4718,7 @@ describe('markdown in a reply', () => {
 describe('the right-click menu on a message', () => {
   const menu = () => $('#message-menu');
   const retry = () => $<HTMLButtonElement>('#menu-retry');
+  const edit = () => $<HTMLButtonElement>('#menu-edit');
   const del = () => $<HTMLButtonElement>('#menu-delete');
   // Right-clicks the message that reads `text` ("role: text", as in messages())
   const rightClick = (text: string) => {
@@ -4745,7 +4747,7 @@ describe('the right-click menu on a message', () => {
     expect(event.defaultPrevented).toBe(true);
     expect(menu().hidden).toBe(false);
     expect([menu().style.left, menu().style.top]).toEqual(['40px', '60px']);
-    expect($$('#message-menu button').map((b) => b.textContent)).toEqual(['Retry', 'Delete']);
+    expect($$('#message-menu button').map((b) => b.textContent)).toEqual(['Retry', 'Edit', 'Delete']);
   });
 
   it('closes on Escape or a click elsewhere, without changing anything', () => {
@@ -4995,11 +4997,100 @@ describe('the right-click menu on a message', () => {
   it('offers nothing while a reply is being written to the thread', async () => {
     await type('third question');
     rightClick('assistant: First answer.');
-    expect([retry().disabled, del().disabled]).toEqual([true, true]);
+    expect([retry().disabled, del().disabled, edit().disabled]).toEqual([true, true, false]);
 
     finish();
     rightClick('assistant: First answer.');
-    expect([retry().disabled, del().disabled]).toEqual([false, false]);
+    expect([retry().disabled, del().disabled, edit().disabled]).toEqual([false, false, false]);
+  });
+
+  describe('Edit', () => {
+    // The editor, opened, its box filled and the dialog saved, or cancelled
+    const editText = (text: string) => {
+      $<HTMLTextAreaElement>('#edit-message-input').value = text;
+      $<HTMLFormElement>('#edit-message-form').requestSubmit();
+    };
+
+    it('opens an editor on the message, and is offered even while a reply is in progress', async () => {
+      await type('third question');
+      // A reply on its way: the thread is busy
+      expect($$('#messages .message').at(-1)!.textContent).toContain('Classifying');
+      rightClick('assistant: First answer.');
+      expect([retry().disabled, del().disabled, edit().disabled]).toEqual([true, true, false]);
+
+      rightClick('user: third question');
+      edit().click();
+      expect($('#edit-message-dialog').open).toBe(true);
+      expect($<HTMLTextAreaElement>('#edit-message-input').value).toBe('third question');
+      // A reply is in progress, so the editor says it is stopping it
+      expect($('#edit-message-hint').textContent).toBe('Stop the reply in progress and start over from the edited message.');
+    });
+
+    it('scrapes the reply that is waiting to start and asks for the edited message', async () => {
+      llm.cancel.mockClear();
+      await type('third question');
+      const old = sentId();
+      const before = llm.send.mock.calls.length;
+
+      rightClick('user: third question');
+      edit().click();
+      editText('a different third question');
+      await flush();
+
+      // The reply that was waiting is scrapped, not finished: it is cancelled and
+      // the message is asked for again on the new text, one new reply in its place
+      expect(llm.cancel).toHaveBeenCalledWith(old);
+      expect(llm.send.mock.calls.length).toBe(before + 1);
+      expect(sent().messages.at(-1)).toEqual({ role: 'user', content: 'a different third question' });
+      // The old text is gone from the thread
+      expect(messages()).not.toContain('user: third question');
+      expect(messages()).toContain('user: a different third question');
+    });
+
+    it('restarts a reply that is in progress on the edited text, as a retry would', async () => {
+      llm.cancel.mockClear();
+      await type('third question');
+      const old = sentId();
+      const before = llm.send.mock.calls.length;
+      // A reply that has begun its work: a step, and something written
+      emit(old, { type: 'classification', sophistication: 1, effort: 'low', category: 'question', model: 'm' });
+      emit(old, { type: 'text', delta: 'Working on it.' });
+
+      rightClick('user: third question');
+      edit().click();
+      editText('third question, reworded');
+      await flush();
+
+      expect(llm.cancel).toHaveBeenCalledWith(old);
+      expect(llm.send.mock.calls.length).toBe(before + 1);
+      expect(sent().messages.at(-1)).toEqual({ role: 'user', content: 'third question, reworded' });
+    });
+
+    it('does nothing when the text is left unchanged', async () => {
+      llm.cancel.mockClear();
+      await type('third question');
+      const before = llm.send.mock.calls.length;
+
+      rightClick('user: third question');
+      edit().click();
+      editText('third question');
+      await flush();
+
+      // The box was left as it was: nothing is scrapped, and no new reply is asked
+      // for, so the reply the thread was on its way with is left in flight
+      expect(llm.cancel).not.toHaveBeenCalled();
+      expect(llm.send.mock.calls.length).toBe(before);
+    });
+
+    it('backs out without touching the reply', async () => {
+      await type('third question');
+      const old = sentId();
+      rightClick('user: third question');
+      edit().click();
+      $<HTMLButtonElement>('#edit-message-cancel').click();
+      expect($('#edit-message-dialog').open).toBe(false);
+      expect(sentId()).toBe(old);
+    });
   });
 });
 
