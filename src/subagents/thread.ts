@@ -107,7 +107,6 @@ async function turn(
       case 'condensing':
       case 'condensed':
       case 'shortening':
-      case 'progress':
       case 'rate_limited':
       case 'fell_back':
         says(event);

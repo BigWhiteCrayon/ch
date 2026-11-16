@@ -344,6 +344,13 @@ button {
   background: #16a34a;
 }
 
+/* A change automatic review has set out to check but has not reached yet: not
+   green, because it is not yet written back, and not a question, so the warn
+   colour the rest of the "needs a look" marks use */
+#thread-list .status.awaiting-review {
+  background: var(--warn);
+}
+
 /* A reply held up until the user says whether a model may be used */
 #thread-list .status.approval {
   background: var(--warn);
@@ -870,25 +877,6 @@ main > header {
    failure, and not a clean answer either (see subagentStatus) */
 #tabs .tab .status.cut {
   background: #ca8a04;
-}
-
-/* How far along it says it is, filling clockwise. A disc rather than a hoop:
-   at 9px a hoop is a smudge. */
-#tabs .tab .status.ring {
-  width: 9px;
-  height: 9px;
-  background: none;
-  overflow: visible;
-}
-
-#tabs .tab .status.ring .track {
-  fill: var(--border);
-}
-
-#tabs .tab .status.ring .done {
-  fill: none;
-  stroke: var(--muted);
-  stroke-width: 9;
 }
 
 :is(#messages, #agent-view) .empty {
