@@ -549,7 +549,7 @@ describe('llm channels', () => {
   it("passes the user's answer about reading a file on to harness.answerFileAccess", () => {
     const listener = electron.listeners['llm:allow-file-access'];
     listener({}, 'ask-1', 'folder');
-    expect(mocks.harness.answerFileAccess).toHaveBeenCalledWith('ask-1', 'folder');
+    expect(mocks.harness.answerFileAccess).toHaveBeenCalledWith('ask-1', 'folder', undefined);
   });
 
   it('registers an llm:approve handler which calls harness.answerApproval', async () => {

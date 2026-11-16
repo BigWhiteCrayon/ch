@@ -9912,6 +9912,24 @@ describe("asking before the model reads a file on the user's computer", () => {
     expect($('#messages').textContent).toContain('Waiting for your approval');
   });
 
+  it("puts the model's own reason on the card, in its own event", async () => {
+    emit(sentId(), asked('a1', '/home/me/.npmrc'));
+    await flush();
+    emit(sentId(), { type: 'access_justification', id: 'a1', justification: 'to read the npm config.' });
+    await flush();
+    expect(card()?.querySelector('p.justification')?.textContent).toBe('to read the npm config.');
+  });
+
+  it('hands the reason the user gives on a denial to the bridge', async () => {
+    emit(sentId(), asked('a1', '/home/me/.npmrc'));
+    await flush();
+    const denyReason = card()?.querySelector<HTMLInputElement>('.deny-reason');
+    denyReason.value = 'it is a private file';
+    press('Deny');
+    expect(llm.allowFileAccess).toHaveBeenCalledWith('a1', 'deny', 'it is a private file');
+    expect(card()).toBeNull();
+  });
+
   it('offers only the folder where it is a folder that is asked for', async () => {
     emit(sentId(), asked('a1', '/home/me/notes', true));
     await flush();
@@ -9934,7 +9952,7 @@ describe("asking before the model reads a file on the user's computer", () => {
     emit(sentId(), asked('a1', '/home/me/.npmrc'));
     await flush();
     press(label);
-    expect(llm.allowFileAccess).toHaveBeenCalledWith('a1', answer);
+    expect(llm.allowFileAccess).toHaveBeenCalledWith('a1', answer, undefined);
     expect(card()).toBeNull();
     expect($('#messages').textContent).not.toContain('Waiting for your approval');
   });
@@ -9949,8 +9967,8 @@ describe("asking before the model reads a file on the user's computer", () => {
     expect($('#messages').textContent).toContain('Waiting for your approval');
     press('Deny');
     expect(llm.allowFileAccess.mock.calls).toEqual([
-      ['a1', 'once'],
-      ['a2', 'deny'],
+      ['a1', 'once', undefined],
+      ['a2', 'deny', undefined],
     ]);
     expect(card()).toBeNull();
   });
@@ -10005,9 +10023,27 @@ describe("asking before the model runs a command on the user's computer that cou
     emit(sentId(), asked('c1', 'git reset --hard'));
     await flush();
     press(label);
-    expect(llm.allowCommand).toHaveBeenCalledWith('c1', allowed);
+    expect(llm.allowCommand).toHaveBeenCalledWith('c1', allowed, undefined);
     expect(card()).toBeNull();
     expect($('#messages').textContent).not.toContain('Waiting for your approval');
+  });
+
+  it("puts the model's own reason on the card, in its own event", async () => {
+    emit(sentId(), asked('c1', 'git push --force origin main'));
+    await flush();
+    emit(sentId(), { type: 'access_justification', id: 'c1', justification: 'to push the fix.' });
+    await flush();
+    expect(card()?.querySelector('p.justification')?.textContent).toBe('to push the fix.');
+  });
+
+  it('hands the reason the user gives on a denial to the bridge', async () => {
+    emit(sentId(), asked('c1', 'git reset --hard'));
+    await flush();
+    const denyReason = card()?.querySelector<HTMLInputElement>('.deny-reason');
+    denyReason.value = 'it would throw away uncommitted work';
+    press("Don't run it");
+    expect(llm.allowCommand).toHaveBeenCalledWith('c1', false, 'it would throw away uncommitted work');
+    expect(card()).toBeNull();
   });
 
   // The command is the question a reply is most likely stuck on, so it is put first of the two

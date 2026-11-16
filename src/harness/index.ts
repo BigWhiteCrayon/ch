@@ -1953,6 +1953,11 @@ export async function* run(
       model: { provider: chosen.provider, model: chosen.id },
       emit: reports.push,
       ask: (question, options) => ask(reports.push, question, options),
+      // The conversation the request is in, so a tool that asks a model of its
+      // own about it — the reason it wants a file or a command (see
+      // accessJustifier.ts) — can read what led to it. The justifier keeps only
+      // its recent part, as a one-off prompt is cut.
+      conversation: messages,
       // Whichever allowance bounds the model as things stand: the finding-out
       // step has one of its own, and every other step is bounded by the
       // reply's step budget (see the allowances above and ./allowance.ts)

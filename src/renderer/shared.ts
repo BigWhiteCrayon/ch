@@ -194,6 +194,7 @@ export const PURPOSES = {
   compaction: 'Condensing',
   subagent: 'Subagent',
   verification: 'Review',
+  access_justification: 'Reason',
 };
 // How often a reply that is still being written is saved
 export const SAVE_INTERVAL_MS = 1000;

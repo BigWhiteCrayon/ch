@@ -240,6 +240,22 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     return;
   }
 
+  // The model's own reason for the access, written as the question was asked and
+  // put on its card by the question's id (see harness/accessJustifier.ts). It is
+  // not a question: it is said where the question is, and left where the card is
+  // gone by then, as when the question has already been answered or the reply
+  // has moved on.
+  if (event.type === 'access_justification') {
+    const entry =
+      request.fileAccess?.find((asked) => asked.id === event.id) ??
+      request.commandAccess?.find((asked) => asked.id === event.id);
+    if (entry) {
+      entry.justification = event.justification;
+      if (thread.id === state.activeId) render();
+    }
+    return;
+  }
+
   // The model has put a question to the user, asked in the thread like the
   // approval above and not awaited either
   if (event.type === 'question') {

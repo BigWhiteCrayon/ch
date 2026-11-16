@@ -317,13 +317,13 @@ ipcMain.on('llm:cancel', (_event, requestId: string) => {
   active.get(requestId)?.abort();
 });
 
-ipcMain.on('llm:allow-file-access', (_event, id: string, answer: FileAccessAnswer) =>
-  harness.answerFileAccess(id, answer)
+ipcMain.on('llm:allow-file-access', (_event, id: string, answer: FileAccessAnswer, reason?: string) =>
+  harness.answerFileAccess(id, answer, reason)
 );
 
 // Whether one command that could lose work may run (see harness/access.ts)
-ipcMain.on('llm:allow-command', (_event, id: string, allowed: boolean) =>
-  harness.answerCommandAccess(id, allowed === true)
+ipcMain.on('llm:allow-command', (_event, id: string, allowed: boolean, reason?: string) =>
+  harness.answerCommandAccess(id, allowed === true, reason)
 );
 
 ipcMain.on('llm:approve', (_event, requestId: string, approved: boolean) =>
