@@ -646,11 +646,6 @@ export type AgentEvent =
   // asked to say the same thing in less (see subagents/run.ts). As with
   // 'condensing', the app's work rather than the model's.
   | { type: 'shortening' }
-  // How much of what it was given it reckons is done, 0 to 100, which it is
-  // asked for now and then (see PROGRESS in subagents/run.ts). Its own
-  // estimate, so it is a sense of how far along the work is and not a
-  // measurement of it.
-  | { type: 'progress'; percent: number }
   | ToolCallEvent
   | { type: 'tool_result'; id: string; name: string; output: string; isError: boolean; images?: ToolImage[] }
   | RateLimitedEvent
@@ -778,6 +773,13 @@ export interface HarnessRequest {
   // and written up, and nothing in it is touched (see INVESTIGATION in
   // harness/phases.ts)
   investigate?: boolean;
+  // This thread's reply is given the lock on the local models ahead of the
+  // replies of other threads, so a marked thread rushes through while the
+  // others fill the gaps between its steps (see the queue in llm/index.ts).
+  // Absent is off. It reaches a local request as its `priority`, which is
+  // already what the queue's first in line is (see ChatRequest.priority); it
+  // is the thread's own reply only, not the subagents it hands out.
+  priority?: boolean;
   messages: ChatMessage[];
   // Set only when the user picked a model themselves
   provider?: string;
@@ -889,7 +891,6 @@ export type HarnessEvent =
   // again shorter (see subagents/run.ts). Reaches a thread when the agent
   // doing it is the thread itself, as the head explorer is.
   | { type: 'shortening' }
-  | { type: 'progress'; percent: number }
   // A subagent the reply set to work on one piece of a job, so that several
   // pieces are done at once (see subagents/). 'subagent' says one has started,
   // 'subagent_update' is a piece of its work as it happens, and 'subagent_done'

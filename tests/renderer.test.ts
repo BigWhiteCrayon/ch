@@ -2920,32 +2920,6 @@ describe('token use', () => {
       ]);
     });
 
-    it('fills a ring on its tab as it says how much of its piece is left', async () => {
-      sub('s1', 'tests', 'read the tests');
-      toggle().click();
-      $<HTMLElement>('#thread-list li.subagent').click();
-      await flush();
-      // Nothing said yet, so the dot pulses as it did before
-      expect($<HTMLElement>('#tabs .tab .status').className).toContain('working');
-
-      did('s1', { type: 'progress', percent: 40 });
-      await flush();
-      const ring = $<SVGElement>('#tabs .tab .status.ring');
-      expect(ring.getAttribute('aria-label')).toBe('40% done');
-      // Filled four tenths of the way round, measured in the circumference
-      const [drawn] = String($<SVGElement>('#tabs .tab .status.ring .done').getAttribute('stroke-dasharray')).split(
-        ' '
-      );
-      expect(Number(drawn) / (2 * Math.PI * 4.5)).toBeCloseTo(0.4);
-      // ...and the estimate is a status, not a line of its work
-      expect($('#agent-view').textContent).not.toContain('40');
-
-      // A later estimate replaces it rather than adding to it
-      did('s1', { type: 'progress', percent: 90 });
-      await flush();
-      expect($<SVGElement>('#tabs .tab .status.ring').getAttribute('aria-label')).toBe('90% done');
-    });
-
     it('marks a finished subagent done, and one whose report was cut as neither done nor failed', async () => {
       sub('s1', 'tests', 'read the tests');
       sub('s2', 'docs', 'read the docs');
@@ -4536,7 +4510,11 @@ describe('markdown in a reply', () => {
 
     it('reads the lines of the file when the note is opened, numbered', async () => {
       threads.workspaceFile.mockResolvedValue({
-        path: 'src/main.ts', lines: ['alpha', 'beta'], from: 442, total: 451, more: 9,
+        path: 'src/main.ts',
+        lines: ['alpha', 'beta'],
+        from: 442,
+        total: 451,
+        more: 9,
       });
       const el = await inWorkspace('```file\nsrc/main.ts:442-451\n```\n');
       const details = $<HTMLDetailsElement>('#messages .message.assistant details.file-ref');
@@ -5826,6 +5804,45 @@ describe('threads', () => {
         expect($('#thread-list li.group.branch').title).toBe('spin-off (from main, not pushed)');
         expect(branchOf('plain')).toEqual(branch);
         expect(threads.open).toHaveBeenCalledWith(saved().threads[0].id, '/worktrees/spin-off');
+      });
+
+      // The move is redrawn the moment the branch event lands, not when the reply
+      // finishes (see the gated re-render it used to call): even a thread the user
+      // is no longer showing moves under its heading
+      it('moves a non-active thread under its heading the moment the branch event lands', async () => {
+        await newThread('/projects/demo');
+        await type('plain');
+        const id = sentId();
+        // A second thread is started in the meantime, so the first is no longer the one on screen
+        await newThread('/projects/demo');
+        await type('second');
+
+        const branch = { name: 'spin-off', base: 'main', worktree: '/worktrees/spin-off' };
+        emit(id, { type: 'branch', branch });
+        await flush();
+
+        expect(rows()).toEqual(['second', '[spin-off]', 'plain']);
+        expect($('#thread-list li.group.branch').title).toBe('spin-off (from main, not pushed)');
+        expect(branchOf('plain')).toEqual(branch);
+        expect(threads.open).toHaveBeenCalledWith(saved().threads.find((t) => t.title === 'plain')!.id, '/worktrees/spin-off');
+      });
+
+      // A move can come in for a thread that is not the one on screen — a reply still going in
+      // another thread, for instance — and the heading must appear the moment it does, not when that
+      // thread's reply finishes, which is when the full render runs (see the branch handler in events.ts).
+      it('puts a branch under its own heading the moment a thread not on screen is moved onto it', async () => {
+        await newThread('/projects/demo');
+        await type('plain');
+        const moved = sentId();
+        // A general chat becomes the one on screen, so the demo thread is no longer active but is still replying
+        await newThread(null);
+        expect(rows()).not.toContain('[spin-off]');
+
+        emit(moved, { type: 'branch', branch: { name: 'spin-off', base: 'main', worktree: '/worktrees/spin-off' } });
+
+        // The reply has not finished — yet the heading is already in the sidebar
+        expect(rows()).toEqual(['[spin-off]', 'plain']);
+        expect($('#thread-list li.group.branch').title).toBe('spin-off (from main, not pushed)');
       });
 
       it('unfolds a branch group that was left folded under the same name', async () => {
@@ -8760,6 +8777,43 @@ describe('what a thread is keeping, on a right-click in the sidebar', () => {
       expect(sent().investigate).toBe(true);
     });
 
+    it('is offered for every thread, unchecked, and is sent with what it asks for once checked', async () => {
+      const priority = () => $<HTMLInputElement>('#thread-priority-mode');
+      await rightClick(open());
+      expect($('#thread-priority').hidden).toBe(false);
+      expect(priority().checked).toBe(false);
+      priority().checked = true;
+      priority().dispatchEvent(new Event('change'));
+      $('#thread-dialog-close').click();
+      await asks('change the parser');
+      expect(sent().priority).toBe(true);
+    });
+
+    it('is not sent for a thread left to the model, or when it is put back', async () => {
+      const priority = () => $<HTMLInputElement>('#thread-priority-mode');
+      const kept = () => saved().threads.map((t: { priority?: boolean }) => t.priority);
+      await rightClick(open());
+      priority().checked = true;
+      priority().dispatchEvent(new Event('change'));
+      expect(kept().every((p: boolean | undefined) => p === undefined)).toBe(false);
+      priority().checked = false;
+      priority().dispatchEvent(new Event('change'));
+      expect(kept().every((p: boolean | undefined) => p === undefined)).toBe(true);
+    });
+
+    it('marks the thread in the sidebar at once, and takes the mark back when it is put off', async () => {
+      const priority = () => $<HTMLInputElement>('#thread-priority-mode');
+      const mark = () => $$('#thread-list li.thread .priority').length;
+      expect(mark()).toBe(0);
+      await rightClick(open());
+      priority().checked = true;
+      priority().dispatchEvent(new Event('change'));
+      expect(mark()).toBe(1);
+      priority().checked = false;
+      priority().dispatchEvent(new Event('change'));
+      expect(mark()).toBe(0);
+    });
+
     it("is one thread's own: another thread is still left to the model", async () => {
       await setPlan('always');
       emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 0, output: 0 }, steps: 1 });
@@ -9591,8 +9645,6 @@ describe("reviewing a thread's changes", () => {
 
     emit(sentId(), { type: 'subagent', id: 's1', name: 'c1', task: 'deal with [c1]', kind: 'reviewer' });
     expect($('#changes-files .comment .progress').textContent).toContain('Reviewer working…');
-    emit(sentId(), { type: 'subagent_update', id: 's1', event: { type: 'progress', percent: 40 } });
-    expect($('#changes-files .comment .progress').textContent).toContain('Reviewer working… 40%');
     emit(sentId(), { type: 'subagent_done', id: 's1', text: 'Done.', isError: false });
     expect($('#changes-files .comment .progress').textContent).toContain('Reviewer finished');
 
@@ -10597,6 +10649,37 @@ describe("having a reply's changes checked by a model", () => {
       await flush();
       expect(llm.verify).toHaveBeenCalledTimes(1);
       expect(llm.verify).toHaveBeenCalledWith(expect.objectContaining({ request: 'change a', ...model }));
+    });
+
+    it('marks the change awaiting review while the check goes on, and green once it passes', async () => {
+      let resolveVerify: (value: { passed: boolean; problems: string; model: string }) => void;
+      llm.verify.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveVerify = resolve;
+          }),
+      );
+      settings.autoReview = true;
+      finish();
+      const dot = () => $<HTMLElement>('#thread-list li:not(.group) .status');
+      await flush();
+      expect(llm.verify).toHaveBeenCalledTimes(1);
+      // Not green yet: the change is checked, not written back
+      expect(dot().className).toContain('awaiting-review');
+      expect(dot().title).toBe('Changes awaiting review');
+      resolveVerify({ passed: true, problems: '', model: 'Opus 5' });
+      await flush();
+      expect(dot().className).toContain('changed');
+      expect(dot().className).not.toContain('awaiting-review');
+      expect(dot().title).toBe('Changes to write back');
+    });
+
+    it('marks no change awaiting review when the setting is off', async () => {
+      finish();
+      await flush();
+      const dot = $<HTMLElement>('#thread-list li:not(.group) .status');
+      expect(dot.className).toContain('changed');
+      expect(dot.className).not.toContain('awaiting-review');
     });
 
     it('checks nothing when the setting is off', async () => {

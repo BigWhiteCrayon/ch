@@ -87,12 +87,8 @@ export interface Message {
   // user's turn as far as the model is concerned, but nobody typed it, and it
   // is drawn so that nobody thinks they did.
   fromApp?: boolean;
-  // On a 'subagent' message: how much of its piece it says is done, 0 to 100,
-  // while it is still working (see the 'progress' event). Undefined for one
-  // that has not said, or has finished.
-  progress?: number;
-  // ...and the model it is waiting its turn for, while it is waiting for one.
-  // Subagents of one thread take turns at a local model (see
+  // On a 'subagent' message: the model it is waiting its turn for, while it is
+  // waiting for one. Subagents of one thread take turns at a local model (see
   // llm/cachelock.ts), so the row for one that is doing nothing says which.
   waiting?: string;
   // ...and, once it has finished, whether its report was cut for length
@@ -249,6 +245,11 @@ export interface Thread {
   // follow-ups. Absent is off, and it is kept only when the user turned it on.
   // It takes precedence over plan.
   investigate?: boolean;
+  // The thread's reply takes the lock on the local models ahead of the replies
+  // of other threads, so it is given the gaps between its steps rather than
+  // waiting its turn. Absent is off, and it is kept only when the user turned
+  // it on (see thread-dialog.ts and the queue in ../llm/index.ts).
+  priority?: boolean;
   // How many files the thread was last seen to have changed, which wait to be
   // written back. Kept so that the sidebar can mark the thread before the
   // container is asked; absent is none.
@@ -407,7 +408,4 @@ export interface PendingRequest {
   // written its last word and then had a note put after it is holding an empty
   // bubble and has still answered (see the 'done' event).
   wrote?: boolean;
-  // How far along an agent that is itself a thread says it is, 0 to 100 (see
-  // the 'progress' event). Only the head explorer sends these.
-  progress?: number;
 }

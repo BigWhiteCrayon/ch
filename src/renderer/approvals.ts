@@ -226,6 +226,14 @@ export function reviewable(thread: Thread): Message | undefined {
   return turnOf(thread, asked).some((m) => m.role === 'assistant' && m.text) ? asked : undefined;
 }
 
+// A reply has left changes that automatic review is set to check but has not
+// reached yet: a change that, with the setting on, is not to be read as green
+// (written back) until the review is over (see the sidebar's awaiting-review mark)
+export function awaitingReview(thread: Thread): boolean {
+  if (!settings?.autoReview || !thread.changes || thread.automatic || inflight.has(thread.id)) return false;
+  return reviewing.has(thread.id) || reviewable(thread) !== undefined;
+}
+
 // With automatic review on, a reply to the user's own request is checked as soon as it is over
 export function autoVerify(thread: Thread): void {
   if (!settings?.autoReview) return;

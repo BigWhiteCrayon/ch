@@ -71,13 +71,10 @@ export function load(): State {
           // closed on it again: then it is failed, since nothing is going to
           // finish it and left as it was it would show a working mark in the
           // sidebar for ever.
-          if (m.role === 'subagent' && m.finding === undefined) {
-            if (m.thoughtId && m.task && (m.restarts ?? 0) < MAX_RESTARTS) {
-              delete m.progress;
-            } else {
-              m.finding = 'The app closed before this finished.';
-              m.failed = true;
-            }
+          const restartable = m.thoughtId && m.task && (m.restarts ?? 0) < MAX_RESTARTS;
+          if (m.role === 'subagent' && m.finding === undefined && !restartable) {
+            m.finding = 'The app closed before this finished.';
+            m.failed = true;
           }
         });
       }
@@ -399,12 +396,7 @@ export function deleteThread(id: string): void {
   save();
 }
 
-export function addMessage(
-  thread: Thread,
-  role: Message['role'],
-  text: string,
-  images?: ToolImage[]
-): Message {
+export function addMessage(thread: Thread, role: Message['role'], text: string, images?: ToolImage[]): Message {
   const message: Message = { role, text, ...(images?.length ? { images } : {}) };
   thread.messages.push(message);
   // Name the thread after its first message

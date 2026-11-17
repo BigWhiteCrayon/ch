@@ -11,7 +11,7 @@ import {
 } from './shared.js';
 import { activate, save, saveSoon, state } from './threads.js';
 import { branchKey } from './sidebar.js';
-import { drawText, render } from './thread-view.js';
+import { drawText, render, renderSidebar } from './thread-view.js';
 import { about, clock, mergeUsage, recordUsage, tokenCount, usedLine } from './usage.js';
 import {
   CATEGORY_NAMES,
@@ -516,7 +516,7 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     }
     window.threads.open(thread.id, event.branch.worktree);
     save();
-    if (thread.id === state.activeId) render();
+    renderSidebar();
     return;
   }
 
@@ -603,12 +603,8 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     if (!note) return;
     if (event.type === 'subagent_update') {
       note.events?.push(event.event);
-      // How far along it says it is, kept on the subagent itself rather than
-      // among its work: it is the state of the ring on its tab, and each
-      // estimate replaces the one before (see drawTabs)
-      if (event.event.type === 'progress') note.progress = event.event.percent;
-      // ...and whether it is waiting its turn at the model, which its row says
-      // in the thread as its work says it in its own tab (see appendEvent)
+      // Whether it is waiting its turn at the model, which its row says in the
+      // thread as its work says it in its own tab (see appendEvent)
       if (event.event.type === 'queued') note.waiting = event.event.model;
       if (event.event.type === 'waited') delete note.waiting;
     } else {
@@ -620,7 +616,6 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
       request.live.delete(event.id);
       // Its report ran past what there was room for and lost its end
       note.cut = event.cut;
-      delete note.progress;
       delete note.waiting;
       // One fewer to wait for; the last of them hands the reply back its words
       sayWaiting(request);
@@ -688,15 +683,6 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     // One of these arrives after every pass of a reply, so the request's note
     // and the thread's running total climb while the work is happening
     if (thread.id === state.activeId) render();
-    return;
-  }
-
-  if (event.type === 'progress') {
-    // Only a thread that is itself an agent sends these — the head explorer —
-    // and the thread's own tab has no ring to put it on, so it is noted and
-    // not drawn. Taken rather than ignored so that it never reaches the code
-    // below, which is for the event that ends a request.
-    request.progress = event.percent;
     return;
   }
 

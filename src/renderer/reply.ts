@@ -305,6 +305,7 @@ export async function reply(thread: Thread, asked: Message, resumed?: Resumed): 
     resumed,
     plan: thread.plan,
     investigate: thread.investigate,
+    priority: thread.priority,
   });
 }
 
