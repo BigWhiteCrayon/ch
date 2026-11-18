@@ -2,7 +2,7 @@ import type { Message, ModelInfo, PendingRequest, ProviderStatus, Thread } from 
 
 export const STORAGE_KEY = 'chat-state';
 export const MAX_RECENT_WORKSPACES = 8;
-// How many times a subagent the app closed on is started again before it is
+// How many times a subagent the app closed on is continued before it is
 // failed instead (see resumeSubagents)
 export const MAX_RESTARTS = 1;
 // What the app calls itself in the window title, which the project is added to
