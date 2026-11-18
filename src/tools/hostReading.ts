@@ -401,11 +401,17 @@ from a command means it tried to do something else.`,
     // to a folder is a yes that can be kept, which is not a thing to keep about "push --force".
     const risk = sensitive(pipeline[0]);
     if (risk) {
-      if (!(await access.confirmed(command, target, risk, context))) {
-        throw new Error(`The user did not allow "${command}" in ${target}.`);
+      const accessResult = await access.confirmed(command, target, risk, context);
+      if (!accessResult.allowed) {
+        const reason = accessResult.reason ? ` ${accessResult.reason}` : '';
+        throw new Error(`The user did not allow "${command}" in ${target}.${reason}`);
       }
-    } else if (!ownWorkspace && !(await access.permitted(target, isFolder, context))) {
-      throw new Error(`The user did not allow running commands in ${target}.`);
+    } else if (!ownWorkspace) {
+      const accessResult = await access.permitted(target, isFolder, context);
+      if (!accessResult.allowed) {
+        const reason = accessResult.reason ? ` ${accessResult.reason}` : '';
+        throw new Error(`The user did not allow running commands in ${target}.${reason}`);
+      }
     }
     let stat: fs.Stats;
     try {

@@ -859,25 +859,6 @@ main > header {
   background: #ca8a04;
 }
 
-/* How far along it says it is, filling clockwise. A disc rather than a hoop:
-   at 9px a hoop is a smudge. */
-#tabs .tab .status.ring {
-  width: 9px;
-  height: 9px;
-  background: none;
-  overflow: visible;
-}
-
-#tabs .tab .status.ring .track {
-  fill: var(--border);
-}
-
-#tabs .tab .status.ring .done {
-  fill: none;
-  stroke: var(--muted);
-  stroke-width: 9;
-}
-
 :is(#messages, #agent-view) .empty {
   margin: auto;
   color: var(--muted);
@@ -933,6 +914,42 @@ main > header {
   border: 1px solid var(--border);
   border-radius: 4px;
   overflow-wrap: anywhere;
+}
+
+/* The model's own reason for the access, shown as the question is being decided
+   (see the 'access_justification' event). Not the bold lead line the question is,
+   and not the block the command shows as: it is set between them, as what the user
+   is being asked to judge rather than what they are judging. */
+.message.approval .justification {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* The optional reason the user gives on a denial, said to the model. The label
+   and the input sit on one row, as the actions below do. */
+.message.approval .deny-reason-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.message.approval .deny-reason-row label {
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.message.approval .deny-reason {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  font: 13px var(--font);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
 }
 
 /* How long the question stands before the fallback is used on its own */

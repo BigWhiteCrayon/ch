@@ -407,6 +407,11 @@ export interface ToolContext {
   // in: the finding-out step may hand work out, but only to subagents that
   // cannot change anything (see tools/subagents.ts).
   phase?: Phase;
+  // The conversation the call is in, so a tool that asks a model of its own
+  // about it — a reason for an access, a justification for a request — can see
+  // what the request was (see harness/accessJustifier.ts). The recent part of
+  // the conversation, not the whole of it, as a one-off prompt is cut.
+  conversation?: ChatMessage[];
   // How large the answering model's context window is, where it says. A tool
   // whose result has to fit in it sizes the result to it rather than to the
   // largest model there is (see pageFor in tools/sandbox.ts).
@@ -585,7 +590,17 @@ export interface Latency {
 export interface ModelUsage extends Usage {
   // What the model was doing
   purpose:
-    'classification' | 'planning' | 'reply' | 'summary' | 'description' | 'compaction' | 'subagent' | 'verification';
+    | 'classification'
+    | 'planning'
+    | 'reply'
+    | 'summary'
+    | 'description'
+    | 'compaction'
+    | 'subagent'
+    | 'verification'
+    // The model's own reason for wanting a file or command on the user's
+    // computer, asked as a one-off prompt (see harness/accessJustifier.ts)
+    | 'access_justification';
   provider: string;
   model: string;
   // In US dollars; null when the model's price isn't known (see llm/pricing.ts)
@@ -646,11 +661,6 @@ export type AgentEvent =
   // asked to say the same thing in less (see subagents/run.ts). As with
   // 'condensing', the app's work rather than the model's.
   | { type: 'shortening' }
-  // How much of what it was given it reckons is done, 0 to 100, which it is
-  // asked for now and then (see PROGRESS in subagents/run.ts). Its own
-  // estimate, so it is a sense of how far along the work is and not a
-  // measurement of it.
-  | { type: 'progress'; percent: number }
   | ToolCallEvent
   | { type: 'tool_result'; id: string; name: string; output: string; isError: boolean; images?: ToolImage[] }
   | RateLimitedEvent
@@ -816,14 +826,31 @@ export type HarnessEvent =
   // harness/access.ts). path is the real path asked for and folder the one it
   // is in (the path itself, where that is a folder); isFolder says which it is.
   // canRemember is whether a yes for good can be kept, which needs a workspace.
-  | { type: 'file_access'; id: string; path: string; folder: string; isFolder: boolean; canRemember: boolean }
+  // justification is the model's own reason for wanting the file (see
+  // harness/accessJustifier.ts), shown on the card so the user can judge it. It
+  // is added after the question is shown, when a one-off call has written it, so
+  // it is absent until then and absent where the call could not be made.
+  | {
+      type: 'file_access';
+      id: string;
+      path: string;
+      folder: string;
+      isFolder: boolean;
+      canRemember: boolean;
+      justification?: string;
+    }
   // The model wants to run a command on the user's own computer that could
   // lose work — a git that forces, resets, cleans or pushes — and the user is
   // being asked whether it may, this once (see harness/access.ts). command is
   // what would be run, path the folder it would run in, and why what is risky
   // about it, in words the card shows as they are. Nothing about it is
   // remembered: there is no answer here that holds for the next one.
-  | { type: 'command_access'; id: string; command: string; path: string; why: string }
+  // justification is the model's own reason for wanting to run it, added as above.
+  | { type: 'command_access'; id: string; command: string; path: string; why: string; justification?: string }
+  // The model's reason for wanting a file or command, arrived after the question
+  // was shown (see the justification field above). Routed to the card waiting on
+  // the id it names, where one is (see the renderer's approvals).
+  | { type: 'access_justification'; id: string; justification: string }
   // A model above the approval ceiling is wanted and the user is being asked
   // whether it may be used; fallbackName is the model used if they decline.
   // timeoutMs is how long the question stands before it is taken as a decline,
@@ -889,7 +916,6 @@ export type HarnessEvent =
   // again shorter (see subagents/run.ts). Reaches a thread when the agent
   // doing it is the thread itself, as the head explorer is.
   | { type: 'shortening' }
-  | { type: 'progress'; percent: number }
   // A subagent the reply set to work on one piece of a job, so that several
   // pieces are done at once (see subagents/). 'subagent' says one has started,
   // 'subagent_update' is a piece of its work as it happens, and 'subagent_done'
@@ -1046,10 +1072,12 @@ export interface LlmBridge {
   // Keeps the user's verdict on a classification in a file beside the log
   feedback(feedback: ClassificationFeedback): void;
   cancel(requestId: string): void;
-  // The user's answer to a 'file_access' event, by the event's id
-  allowFileAccess(id: string, answer: FileAccessAnswer): void;
-  // ...and to a 'command_access' event: whether the command it named may run
-  allowCommand(id: string, allowed: boolean): void;
+  // The user's answer to a 'file_access' event, by the event's id. On a denial
+  // the reason they gave, which is put back to the model (see access.ts).
+  allowFileAccess(id: string, answer: FileAccessAnswer, reason?: string): void;
+  // ...and to a 'command_access' event: whether the command it named may run,
+  // and on a no, the reason they gave.
+  allowCommand(id: string, allowed: boolean, reason?: string): void;
   // The user's answer to an 'approval' event: whether the model above the
   // approval ceiling may be used
   approve(requestId: string, approved: boolean): void;

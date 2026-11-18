@@ -35,40 +35,12 @@ export function closeAgentTab(thread: Thread, key: string): void {
   render();
 }
 
-// The circumference of the circle the ring is drawn with, which its dashes are
-// measured in. A stroke as wide as the radius fills the disc from the middle
-// out, so the ring reads as a pie rather than as a hoop — legible at the size
-// a tab has room for, where a hoop is not.
-export const RING = 2 * Math.PI * 4.5;
-
-// How a subagent is doing, as the dot on its tab. Four states, and they are
-// four different things: working with no word on how far along it is, working
-// and part way through, finished, and finished with something worth knowing —
-// it failed, or its report was cut off for length (see the 'subagent_done'
-// event).
-export function subagentStatus(subagent: Message): SVGElement | HTMLElement {
+// How a subagent is doing, as the dot on its tab. Three states, and they are
+// three different things: working, finished, and finished with something worth
+// knowing — it failed, or its report was cut off for length (see the
+// 'subagent_done' event).
+export function subagentStatus(subagent: Message): HTMLElement {
   const working = subagent.finding === undefined;
-  if (working && subagent.progress !== undefined) {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('class', 'status ring');
-    svg.setAttribute('viewBox', '0 0 20 20');
-    const circle = (r: string, cls: string) => {
-      const one = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      one.setAttribute('cx', '10');
-      one.setAttribute('cy', '10');
-      one.setAttribute('r', r);
-      one.setAttribute('class', cls);
-      return one;
-    };
-    const filled = circle('4.5', 'done');
-    // Set as attributes rather than as a style, which the page's policy
-    // refuses (see the CSP in index.html)
-    filled.setAttribute('stroke-dasharray', `${(RING * subagent.progress) / 100} ${RING}`);
-    filled.setAttribute('transform', 'rotate(-90 10 10)');
-    svg.append(circle('9', 'track'), filled);
-    svg.setAttribute('aria-label', `${Math.round(subagent.progress)}% done`);
-    return svg;
-  }
   const status = document.createElement('span');
   status.className = `status ${working ? 'working' : subagent.failed ? 'failed' : subagent.cut ? 'cut' : 'done'}`;
   status.title = working
@@ -171,10 +143,6 @@ export function appendEvent(out: Message[], event: AgentEvent): void {
     });
   } else if (event.type === 'fell_back') {
     out.push({ role: 'note', text: `Out of credit on ${event.from}; continuing on ${event.to}.` });
-  } else if (event.type === 'progress') {
-    // How far along it says it is, which is drawn on its tab rather than
-    // written into its work (see drawTabs)
-    return;
   } else if (event.type === 'tool_call') {
     out.push({
       role: 'tool',

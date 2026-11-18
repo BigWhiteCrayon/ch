@@ -7,6 +7,14 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as access from '../../src/harness/access';
 import type { HarnessEvent } from '../../src/types';
+import { from, model } from '../helpers';
+
+// The model's own reason for the access is written by a one-off prompt of its own
+// (see accessJustifier.ts), which lists the models to pick one. In these tests
+// there is nothing to write it with, so the reason is not written and no
+// 'access_justification' event is sent: the question is the thing under test.
+const mocks = vi.hoisted(() => ({ listModels: vi.fn(), stream: vi.fn() }));
+vi.mock('../../src/llm', () => mocks);
 
 let dir: string;
 let global: string[];
@@ -23,6 +31,9 @@ beforeEach(() => {
   global = [];
   workspaces = {};
   allow.mockClear();
+  mocks.listModels.mockReset();
+  mocks.listModels.mockResolvedValue({ models: [], providers: [] });
+  mocks.stream.mockReset();
   access.configure({
     readable: (workspace) => [...global, ...(workspace ? (workspaces[workspace] ?? []) : [])],
     allow,
@@ -38,13 +49,15 @@ function ask(
   target: string,
   said?: 'deny' | 'once' | 'thread' | 'file' | 'folder',
   workspace: string | null = '/w',
-  threadId?: string
+  threadId?: string,
+  reason?: string
 ) {
   const asked: HarnessEvent[] = [];
   const controller = new AbortController();
   const emit = (event: HarnessEvent) => {
     asked.push(event);
-    if (said && event.type === 'file_access') queueMicrotask(() => access.answer(event.id, said));
+    if (said && event.type === 'file_access')
+      queueMicrotask(() => access.answer(event.id, said, reason));
   };
   const isFolder = fs.statSync(target).isDirectory();
   const result = access.permitted(target, isFolder, {
@@ -140,14 +153,14 @@ describe('asking the user', () => {
   it('does not ask about what is allowed already', async () => {
     global = [dir];
     const { result, asked } = ask(path.join(dir, 'b.txt'));
-    expect(await result).toBe(true);
+    expect(await result).toEqual({ allowed: true });
     expect(asked).toEqual([]);
   });
 
   it('asks about the file, naming it and the folder it is in', async () => {
     const target = path.join(dir, 'notes', 'a.txt');
     const { result, asked } = ask(target, 'once');
-    expect(await result).toBe(true);
+    expect(await result).toEqual({ allowed: true });
     expect(asked).toEqual([
       {
         type: 'file_access',
@@ -162,7 +175,7 @@ describe('asking the user', () => {
 
   it('says a yes cannot be kept when there is no workspace to keep it in', async () => {
     const { result, asked } = ask(path.join(dir, 'b.txt'), 'folder', null);
-    expect(await result).toBe(true);
+    expect(await result).toEqual({ allowed: true });
     expect(asked[0]).toMatchObject({ canRemember: false });
     expect(allow).not.toHaveBeenCalled();
   });
@@ -181,23 +194,29 @@ describe('asking the user', () => {
 
   it('says no when the user does, and remembers nothing', async () => {
     const { result } = ask(path.join(dir, 'b.txt'), 'deny');
-    expect(await result).toBe(false);
+    expect(await result).toEqual({ allowed: false });
     expect(allow).not.toHaveBeenCalled();
+  });
+
+  it('keeps the reason the user gives on a denial, and says nothing when they give none', async () => {
+    const { result } = ask(path.join(dir, 'b.txt'), 'deny', '/w', undefined, 'it is a private file');
+    expect(await result).toEqual({ allowed: false, reason: 'it is a private file' });
+    expect((await ask(path.join(dir, 'b.txt'), 'deny').result)).toEqual({ allowed: false });
   });
 
   it('says yes for this once without remembering it', async () => {
     const { result } = ask(path.join(dir, 'b.txt'), 'once');
-    expect(await result).toBe(true);
+    expect(await result).toEqual({ allowed: true });
     expect(allow).not.toHaveBeenCalled();
     expect(ask(path.join(dir, 'b.txt')).asked).toHaveLength(1);
   });
 
   it('remembers a yes for this thread only, with or without a workspace, and writes nothing down', async () => {
     const target = path.join(dir, 'notes');
-    expect(await ask(target, 'thread', null, 't1').result).toBe(true);
+    expect(await ask(target, 'thread', null, 't1').result).toEqual({ allowed: true });
     expect(allow).not.toHaveBeenCalled();
     const again = ask(path.join(dir, 'notes', 'a.txt'), undefined, null, 't1');
-    expect(await again.result).toBe(true);
+    expect(await again.result).toEqual({ allowed: true });
     expect(again.asked).toEqual([]);
     expect(ask(path.join(dir, 'notes', 'a.txt'), undefined, null, 't2').asked).toHaveLength(1);
     expect(ask(path.join(dir, 'b.txt'), undefined, null, 't1').asked).toHaveLength(1);
@@ -205,47 +224,47 @@ describe('asking the user', () => {
 
   it('cannot keep a yes for a thread when there is no thread', async () => {
     const target = path.join(dir, 'b.txt');
-    expect(await ask(target, 'thread', null).result).toBe(true);
+    expect(await ask(target, 'thread', null).result).toEqual({ allowed: true });
     expect(ask(target, undefined, null).asked).toHaveLength(1);
   });
 
   it('remembers a file for the workspace, and then asks no more about it', async () => {
     const target = path.join(dir, 'notes', 'a.txt');
-    expect(await ask(target, 'file').result).toBe(true);
+    expect(await ask(target, 'file').result).toEqual({ allowed: true });
     expect(allow).toHaveBeenCalledWith('/w', target);
     const again = ask(target);
-    expect(await again.result).toBe(true);
+    expect(await again.result).toEqual({ allowed: true });
     expect(again.asked).toEqual([]);
   });
 
   it('remembers the folder when that is what was allowed, and so allows its other files', async () => {
-    expect(await ask(path.join(dir, 'notes', 'a.txt'), 'folder').result).toBe(true);
+    expect(await ask(path.join(dir, 'notes', 'a.txt'), 'folder').result).toEqual({ allowed: true });
     expect(allow).toHaveBeenCalledWith('/w', path.join(dir, 'notes'));
     expect(access.allowed('/w', path.join(dir, 'notes', 'other.txt'))).toBe(true);
     expect(access.allowed('/w', path.join(dir, 'b.txt'))).toBe(false);
   });
 
   it('has nowhere to remember a yes for good in a thread without a workspace, and says yes once', async () => {
-    expect(await ask(path.join(dir, 'b.txt'), 'file', null).result).toBe(true);
+    expect(await ask(path.join(dir, 'b.txt'), 'file', null).result).toEqual({ allowed: true });
     expect(allow).not.toHaveBeenCalled();
   });
 
   it('says no when the reply is cancelled while the question is waiting', async () => {
     const { result, controller } = ask(path.join(dir, 'b.txt'));
     controller.abort();
-    expect(await result).toBe(false);
+    expect(await result).toEqual({ allowed: false });
   });
 
   it('says no, without asking, when the reply was already cancelled or nobody can be asked', async () => {
     const controller = new AbortController();
     controller.abort();
     const target = path.join(dir, 'b.txt');
-    expect(await access.permitted(target, false, { workspace: '/w', signal: controller.signal, emit: vi.fn() })).toBe(
-      false
-    );
-    expect(await access.permitted(target, false, { workspace: '/w', signal: new AbortController().signal })).toBe(
-      false
-    );
+    expect(
+      await access.permitted(target, false, { workspace: '/w', signal: controller.signal, emit: vi.fn() })
+    ).toEqual({ allowed: false });
+    expect(await access.permitted(target, false, { workspace: '/w', signal: new AbortController().signal })).toEqual({
+      allowed: false,
+    });
   });
 
   it('takes an answer it does not know for a no, and ignores one for a question that is gone', async () => {
@@ -257,15 +276,66 @@ describe('asking the user', () => {
     });
     const { id } = asked[0] as { id: string };
     access.answer(id, 'always' as never);
-    expect(await result).toBe(false);
+    expect(await result).toEqual({ allowed: false });
     expect(() => access.answer(id, 'once')).not.toThrow();
+  });
+
+  it("writes the model's own reason for the access and puts it on the card", async () => {
+    // With a local model to write it with, and something it writes
+    mocks.listModels.mockResolvedValue({
+      models: [model({ id: 'llama3.2:3b', sophistication: 1 })],
+      providers: [],
+    });
+    mocks.stream.mockImplementation(() =>
+      from([
+        { type: 'text', delta: 'to read the config' },
+        { type: 'done', stopReason: 'stop' },
+      ] as never)
+    );
+    const asked: HarnessEvent[] = [];
+    const controller = new AbortController();
+    const emit = (event: HarnessEvent) => {
+      asked.push(event);
+      if (event.type === 'file_access') queueMicrotask(() => access.answer(event.id, 'once'));
+    };
+    const result = access.permitted(path.join(dir, 'b.txt'), false, {
+      workspace: '/w',
+      signal: controller.signal,
+      emit,
+    });
+    expect(await result).toEqual({ allowed: true });
+    // The reason is not on the question itself, but in its own event, by the question's id
+    const file = asked.find((event) => event.type === 'file_access') as { id: string };
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const justification = asked.find((event) => event.type === 'access_justification') as {
+      id: string;
+      justification: string;
+    };
+    expect(justification).toMatchObject({ id: file.id, justification: 'to read the config' });
+  });
+
+  it('asks for a reason only where there is a question, and says nothing where the reason is empty', async () => {
+    // No local model: nothing to write the reason with, so no event
+    const asked: HarnessEvent[] = [];
+    const controller = new AbortController();
+    const result = access.permitted(path.join(dir, 'b.txt'), false, {
+      workspace: '/w',
+      signal: controller.signal,
+      emit: (event) => {
+        asked.push(event);
+        if (event.type === 'file_access') queueMicrotask(() => access.answer(event.id, 'once'));
+      },
+    });
+    expect(await result).toEqual({ allowed: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(asked.filter((event) => event.type === 'access_justification')).toHaveLength(0);
   });
 });
 
 // A command on the user's own computer that could lose work: shown to them as
 // itself, allowed for the one command, remembered for nothing
 describe('a command that has to be allowed by name', () => {
-  const confirm = (command: string, say?: boolean) => {
+  const confirm = (command: string, say?: boolean, reason?: string) => {
     const asked: HarnessEvent[] = [];
     const controller = new AbortController();
     const result = access.confirmed(command, dir, 'it forces', {
@@ -273,7 +343,7 @@ describe('a command that has to be allowed by name', () => {
       emit: (event) => {
         asked.push(event);
         if (say !== undefined && event.type === 'command_access') {
-          queueMicrotask(() => access.allowCommand(event.id, say));
+          queueMicrotask(() => access.allowCommand(event.id, say, reason));
         }
       },
     });
@@ -282,7 +352,7 @@ describe('a command that has to be allowed by name', () => {
 
   it('asks with the command, the folder and what is risky about it', async () => {
     const { result, asked } = confirm('git push --force', true);
-    expect(await result).toBe(true);
+    expect(await result).toEqual({ allowed: true });
     expect(asked[0]).toMatchObject({
       type: 'command_access',
       command: 'git push --force',
@@ -293,7 +363,12 @@ describe('a command that has to be allowed by name', () => {
 
   it('is a no when they say no', async () => {
     const { result } = confirm('git reset --hard', false);
-    expect(await result).toBe(false);
+    expect(await result).toEqual({ allowed: false });
+  });
+
+  it('keeps the reason the user gives on a no', async () => {
+    const { result } = confirm('git reset --hard', false, 'it would throw away uncommitted work');
+    expect(await result).toEqual({ allowed: false, reason: 'it would throw away uncommitted work' });
   });
 
   // However much of the folder has been allowed before: a yes to reading there
@@ -301,21 +376,21 @@ describe('a command that has to be allowed by name', () => {
   it('asks even where the folder is allowed for good', async () => {
     global = [dir];
     const { result, asked } = confirm('git clean -fd', true);
-    expect(await result).toBe(true);
+    expect(await result).toEqual({ allowed: true });
     expect(asked).toHaveLength(1);
   });
 
   it('is a no when the reply is cancelled while it waits, and asks nobody twice', async () => {
     const { result, controller, asked } = confirm('git push --force');
     controller.abort();
-    expect(await result).toBe(false);
+    expect(await result).toEqual({ allowed: false });
     const { id } = asked[0] as { id: string };
     expect(() => access.allowCommand(id, true)).not.toThrow();
   });
 
   it('is a no where there is nobody to ask, as in a look at a workspace', async () => {
-    expect(await access.confirmed('git push -f', dir, 'it forces', { signal: new AbortController().signal })).toBe(
-      false
-    );
+    expect(await access.confirmed('git push -f', dir, 'it forces', { signal: new AbortController().signal })).toEqual({
+      allowed: false,
+    });
   });
 });

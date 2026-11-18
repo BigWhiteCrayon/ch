@@ -21,8 +21,8 @@ let dir: string;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  permitted.mockResolvedValue(true);
-  confirmed.mockResolvedValue(true);
+  permitted.mockResolvedValue({ allowed: true });
+  confirmed.mockResolvedValue({ allowed: true });
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'host-command-'));
 });
 
@@ -155,7 +155,7 @@ describe('run_host_command', () => {
   });
 
   it('does not run it when the user says no, and says so', async () => {
-    confirmed.mockResolvedValue(false);
+    confirmed.mockResolvedValue({ allowed: false });
     await expect(run({ path: dir, command: 'git reset --hard' })).rejects.toThrow('did not allow "git reset --hard"');
     expect(fs.existsSync(path.join(dir, '.git'))).toBe(false);
   });
@@ -193,7 +193,7 @@ describe('run_host_command', () => {
   });
 
   it('refuses when the user does not allow the folder', async () => {
-    permitted.mockResolvedValue(false);
+    permitted.mockResolvedValue({ allowed: false });
     await expect(run({ path: dir, command: 'ls' })).rejects.toThrow('did not allow');
     expect(permitted).toHaveBeenCalledWith(dir, true, context);
   });
