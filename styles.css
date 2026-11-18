@@ -1164,10 +1164,11 @@ main > header {
   cursor: zoom-in;
 }
 
-/* Never shrunk to the bubble (no max-width): diagram.ts sets the size with DIAGRAM_SCALE and TARGET_WIDTH, so the
-   words stay legible and a wide diagram scrolls in .diagram instead */
+/* Fits its full-column bubble: the bubble that carries wide media stretches to the column (see below) and
+   .diagram svg scales down to it with max-width; a click opens it full-size */
 .diagram svg {
   display: block;
+  max-width: 100%;
   height: auto;
   font-size: 13px;
 }
@@ -1182,6 +1183,14 @@ main > header {
   fill: var(--text);
   text-anchor: middle;
   dominant-baseline: central;
+}
+
+/* A message that carries wide media takes the whole column, the same way .message.plan does */
+.message:has(.diagram),
+.message:has(.tool-image),
+.message:has(.tool-video) {
+  align-self: stretch;
+  max-width: none;
 }
 
 .diagram .edge path {
