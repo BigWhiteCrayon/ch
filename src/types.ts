@@ -773,6 +773,13 @@ export interface HarnessRequest {
   // and written up, and nothing in it is touched (see INVESTIGATION in
   // harness/phases.ts)
   investigate?: boolean;
+  // This thread's reply is given the lock on the local models ahead of the
+  // replies of other threads, so a marked thread rushes through while the
+  // others fill the gaps between its steps (see the queue in llm/index.ts).
+  // Absent is off. It reaches a local request as its `priority`, which is
+  // already what the queue's first in line is (see ChatRequest.priority); it
+  // is the thread's own reply only, not the subagents it hands out.
+  priority?: boolean;
   messages: ChatMessage[];
   // Set only when the user picked a model themselves
   provider?: string;
@@ -1040,6 +1047,9 @@ export interface LlmBridge {
   // Keeps the user's verdict on a classification in a file beside the log
   feedback(feedback: ClassificationFeedback): void;
   cancel(requestId: string): void;
+  // Nudges an in-progress request with a line the user typed while it runs;
+  // mid-turn delivery is not implemented yet
+  nudge(requestId: string, text: string): void;
   // The user's answer to a 'file_access' event, by the event's id
   allowFileAccess(id: string, answer: FileAccessAnswer): void;
   // ...and to a 'command_access' event: whether the command it named may run

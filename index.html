@@ -309,8 +309,20 @@
     </dialog>
     <div id="message-menu" role="menu" hidden>
       <button type="button" role="menuitem" id="menu-retry">Retry</button>
+      <button type="button" role="menuitem" id="menu-edit">Edit</button>
       <button type="button" role="menuitem" id="menu-delete">Delete</button>
     </div>
+    <dialog id="edit-message-dialog">
+      <form id="edit-message-form">
+        <h2>Edit message</h2>
+        <p id="edit-message-hint" class="hint"></p>
+        <textarea id="edit-message-input" rows="3"></textarea>
+        <div class="actions">
+          <button type="button" id="edit-message-cancel">Cancel</button>
+          <button type="submit" id="edit-message-save" class="primary">Save</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="new-thread-dialog">
       <form id="new-thread-form">
         <h2>New thread</h2>
@@ -429,6 +441,16 @@
         <p class="hint">
           Reads the workspace, then explains what it found with a hypothesis and follow-ups. Changes nothing. Overrides
           plan setting.
+        </p>
+      </section>
+      <section id="thread-priority">
+        <label class="row" for="thread-priority-mode">
+          <span>Priority</span>
+          <input type="checkbox" id="thread-priority-mode" />
+        </label>
+        <p class="hint">
+          This thread's replies take the local models ahead of the other threads' — they rush through while the others
+          fill the gaps between their steps. It is the thread's own reply, not the subagents it sets to work.
         </p>
       </section>
       <div id="thread-dialog-body"></div>

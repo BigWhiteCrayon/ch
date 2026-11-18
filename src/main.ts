@@ -317,6 +317,18 @@ ipcMain.on('llm:cancel', (_event, requestId: string) => {
   active.get(requestId)?.abort();
 });
 
+ipcMain.on('llm:nudge', (_event, requestId: string, text: string) => {
+  // Mid-turn delivery of user text is not implemented yet: the harness fixes
+  // the prompt when a reply starts and has no seam for handing a new line to a
+  // request that is already running. The renderer's edit of an in-progress
+  // message calls this; until the seam lands, the nudge is recorded and
+  // dropped. subagents/mailbox.ts take/push is the precedent for where real
+  // delivery will slot in.
+  const request = active.get(requestId);
+  if (!request) return;
+  log.info('request.nudge', { request: requestId, text });
+});
+
 ipcMain.on('llm:allow-file-access', (_event, id: string, answer: FileAccessAnswer) =>
   harness.answerFileAccess(id, answer)
 );

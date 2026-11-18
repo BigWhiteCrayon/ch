@@ -58,6 +58,7 @@ const llm = {
   verify: vi.fn(),
   feedback: vi.fn(),
   cancel: vi.fn(),
+  nudge: vi.fn(),
   allowFileAccess: vi.fn(),
   allowCommand: vi.fn(),
   approve: vi.fn(),
@@ -4695,6 +4696,7 @@ describe('markdown in a reply', () => {
 describe('the right-click menu on a message', () => {
   const menu = () => $('#message-menu');
   const retry = () => $<HTMLButtonElement>('#menu-retry');
+  const edit = () => $<HTMLButtonElement>('#menu-edit');
   const del = () => $<HTMLButtonElement>('#menu-delete');
   // Right-clicks the message that reads `text` ("role: text", as in messages())
   const rightClick = (text: string) => {
@@ -4723,7 +4725,7 @@ describe('the right-click menu on a message', () => {
     expect(event.defaultPrevented).toBe(true);
     expect(menu().hidden).toBe(false);
     expect([menu().style.left, menu().style.top]).toEqual(['40px', '60px']);
-    expect($$('#message-menu button').map((b) => b.textContent)).toEqual(['Retry', 'Delete']);
+    expect($$('#message-menu button').map((b) => b.textContent)).toEqual(['Retry', 'Edit', 'Delete']);
   });
 
   it('closes on Escape or a click elsewhere, without changing anything', () => {
@@ -4973,11 +4975,100 @@ describe('the right-click menu on a message', () => {
   it('offers nothing while a reply is being written to the thread', async () => {
     await type('third question');
     rightClick('assistant: First answer.');
-    expect([retry().disabled, del().disabled]).toEqual([true, true]);
+    expect([retry().disabled, del().disabled, edit().disabled]).toEqual([true, true, false]);
 
     finish();
     rightClick('assistant: First answer.');
-    expect([retry().disabled, del().disabled]).toEqual([false, false]);
+    expect([retry().disabled, del().disabled, edit().disabled]).toEqual([false, false, false]);
+  });
+
+  describe('Edit', () => {
+    // The editor, opened, its box filled and the dialog saved, or cancelled
+    const editText = (text: string) => {
+      $<HTMLTextAreaElement>('#edit-message-input').value = text;
+      $<HTMLFormElement>('#edit-message-form').requestSubmit();
+    };
+
+    it('opens an editor on the message, and is offered even while a reply is in progress', async () => {
+      await type('third question');
+      // A reply on its way: the thread is busy
+      expect($$('#messages .message').at(-1)!.textContent).toContain('Classifying');
+      rightClick('assistant: First answer.');
+      expect([retry().disabled, del().disabled, edit().disabled]).toEqual([true, true, false]);
+
+      rightClick('user: third question');
+      edit().click();
+      expect($('#edit-message-dialog').open).toBe(true);
+      expect($<HTMLTextAreaElement>('#edit-message-input').value).toBe('third question');
+      // A reply is in progress, so the editor says it is stopping it
+      expect($('#edit-message-hint').textContent).toBe('Stop the reply in progress and start over from the edited message.');
+    });
+
+    it('scrapes the reply that is waiting to start and asks for the edited message', async () => {
+      llm.cancel.mockClear();
+      await type('third question');
+      const old = sentId();
+      const before = llm.send.mock.calls.length;
+
+      rightClick('user: third question');
+      edit().click();
+      editText('a different third question');
+      await flush();
+
+      // The reply that was waiting is scrapped, not finished: it is cancelled and
+      // the message is asked for again on the new text, one new reply in its place
+      expect(llm.cancel).toHaveBeenCalledWith(old);
+      expect(llm.send.mock.calls.length).toBe(before + 1);
+      expect(sent().messages.at(-1)).toEqual({ role: 'user', content: 'a different third question' });
+      // The old text is gone from the thread
+      expect(messages()).not.toContain('user: third question');
+      expect(messages()).toContain('user: a different third question');
+    });
+
+    it('restarts a reply that is in progress on the edited text, as a retry would', async () => {
+      llm.cancel.mockClear();
+      await type('third question');
+      const old = sentId();
+      const before = llm.send.mock.calls.length;
+      // A reply that has begun its work: a step, and something written
+      emit(old, { type: 'classification', sophistication: 1, effort: 'low', category: 'question', model: 'm' });
+      emit(old, { type: 'text', delta: 'Working on it.' });
+
+      rightClick('user: third question');
+      edit().click();
+      editText('third question, reworded');
+      await flush();
+
+      expect(llm.cancel).toHaveBeenCalledWith(old);
+      expect(llm.send.mock.calls.length).toBe(before + 1);
+      expect(sent().messages.at(-1)).toEqual({ role: 'user', content: 'third question, reworded' });
+    });
+
+    it('does nothing when the text is left unchanged', async () => {
+      llm.cancel.mockClear();
+      await type('third question');
+      const before = llm.send.mock.calls.length;
+
+      rightClick('user: third question');
+      edit().click();
+      editText('third question');
+      await flush();
+
+      // The box was left as it was: nothing is scrapped, and no new reply is asked
+      // for, so the reply the thread was on its way with is left in flight
+      expect(llm.cancel).not.toHaveBeenCalled();
+      expect(llm.send.mock.calls.length).toBe(before);
+    });
+
+    it('backs out without touching the reply', async () => {
+      await type('third question');
+      const old = sentId();
+      rightClick('user: third question');
+      edit().click();
+      $<HTMLButtonElement>('#edit-message-cancel').click();
+      expect($('#edit-message-dialog').open).toBe(false);
+      expect(sentId()).toBe(old);
+    });
   });
 });
 
@@ -5713,6 +5804,45 @@ describe('threads', () => {
         expect($('#thread-list li.group.branch').title).toBe('spin-off (from main, not pushed)');
         expect(branchOf('plain')).toEqual(branch);
         expect(threads.open).toHaveBeenCalledWith(saved().threads[0].id, '/worktrees/spin-off');
+      });
+
+      // The move is redrawn the moment the branch event lands, not when the reply
+      // finishes (see the gated re-render it used to call): even a thread the user
+      // is no longer showing moves under its heading
+      it('moves a non-active thread under its heading the moment the branch event lands', async () => {
+        await newThread('/projects/demo');
+        await type('plain');
+        const id = sentId();
+        // A second thread is started in the meantime, so the first is no longer the one on screen
+        await newThread('/projects/demo');
+        await type('second');
+
+        const branch = { name: 'spin-off', base: 'main', worktree: '/worktrees/spin-off' };
+        emit(id, { type: 'branch', branch });
+        await flush();
+
+        expect(rows()).toEqual(['second', '[spin-off]', 'plain']);
+        expect($('#thread-list li.group.branch').title).toBe('spin-off (from main, not pushed)');
+        expect(branchOf('plain')).toEqual(branch);
+        expect(threads.open).toHaveBeenCalledWith(saved().threads.find((t) => t.title === 'plain')!.id, '/worktrees/spin-off');
+      });
+
+      // A move can come in for a thread that is not the one on screen — a reply still going in
+      // another thread, for instance — and the heading must appear the moment it does, not when that
+      // thread's reply finishes, which is when the full render runs (see the branch handler in events.ts).
+      it('puts a branch under its own heading the moment a thread not on screen is moved onto it', async () => {
+        await newThread('/projects/demo');
+        await type('plain');
+        const moved = sentId();
+        // A general chat becomes the one on screen, so the demo thread is no longer active but is still replying
+        await newThread(null);
+        expect(rows()).not.toContain('[spin-off]');
+
+        emit(moved, { type: 'branch', branch: { name: 'spin-off', base: 'main', worktree: '/worktrees/spin-off' } });
+
+        // The reply has not finished — yet the heading is already in the sidebar
+        expect(rows()).toEqual(['[spin-off]', 'plain']);
+        expect($('#thread-list li.group.branch').title).toBe('spin-off (from main, not pushed)');
       });
 
       it('unfolds a branch group that was left folded under the same name', async () => {
@@ -8647,6 +8777,43 @@ describe('what a thread is keeping, on a right-click in the sidebar', () => {
       expect(sent().investigate).toBe(true);
     });
 
+    it('is offered for every thread, unchecked, and is sent with what it asks for once checked', async () => {
+      const priority = () => $<HTMLInputElement>('#thread-priority-mode');
+      await rightClick(open());
+      expect($('#thread-priority').hidden).toBe(false);
+      expect(priority().checked).toBe(false);
+      priority().checked = true;
+      priority().dispatchEvent(new Event('change'));
+      $('#thread-dialog-close').click();
+      await asks('change the parser');
+      expect(sent().priority).toBe(true);
+    });
+
+    it('is not sent for a thread left to the model, or when it is put back', async () => {
+      const priority = () => $<HTMLInputElement>('#thread-priority-mode');
+      const kept = () => saved().threads.map((t: { priority?: boolean }) => t.priority);
+      await rightClick(open());
+      priority().checked = true;
+      priority().dispatchEvent(new Event('change'));
+      expect(kept().every((p: boolean | undefined) => p === undefined)).toBe(false);
+      priority().checked = false;
+      priority().dispatchEvent(new Event('change'));
+      expect(kept().every((p: boolean | undefined) => p === undefined)).toBe(true);
+    });
+
+    it('marks the thread in the sidebar at once, and takes the mark back when it is put off', async () => {
+      const priority = () => $<HTMLInputElement>('#thread-priority-mode');
+      const mark = () => $$('#thread-list li.thread .priority').length;
+      expect(mark()).toBe(0);
+      await rightClick(open());
+      priority().checked = true;
+      priority().dispatchEvent(new Event('change'));
+      expect(mark()).toBe(1);
+      priority().checked = false;
+      priority().dispatchEvent(new Event('change'));
+      expect(mark()).toBe(0);
+    });
+
     it("is one thread's own: another thread is still left to the model", async () => {
       await setPlan('always');
       emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 0, output: 0 }, steps: 1 });
@@ -10482,6 +10649,37 @@ describe("having a reply's changes checked by a model", () => {
       await flush();
       expect(llm.verify).toHaveBeenCalledTimes(1);
       expect(llm.verify).toHaveBeenCalledWith(expect.objectContaining({ request: 'change a', ...model }));
+    });
+
+    it('marks the change awaiting review while the check goes on, and green once it passes', async () => {
+      let resolveVerify: (value: { passed: boolean; problems: string; model: string }) => void;
+      llm.verify.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveVerify = resolve;
+          }),
+      );
+      settings.autoReview = true;
+      finish();
+      const dot = () => $<HTMLElement>('#thread-list li:not(.group) .status');
+      await flush();
+      expect(llm.verify).toHaveBeenCalledTimes(1);
+      // Not green yet: the change is checked, not written back
+      expect(dot().className).toContain('awaiting-review');
+      expect(dot().title).toBe('Changes awaiting review');
+      resolveVerify({ passed: true, problems: '', model: 'Opus 5' });
+      await flush();
+      expect(dot().className).toContain('changed');
+      expect(dot().className).not.toContain('awaiting-review');
+      expect(dot().title).toBe('Changes to write back');
+    });
+
+    it('marks no change awaiting review when the setting is off', async () => {
+      finish();
+      await flush();
+      const dot = $<HTMLElement>('#thread-list li:not(.group) .status');
+      expect(dot.className).toContain('changed');
+      expect(dot.className).not.toContain('awaiting-review');
     });
 
     it('checks nothing when the setting is off', async () => {

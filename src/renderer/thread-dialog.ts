@@ -63,6 +63,8 @@ export const threadPlan = element('thread-plan');
 export const threadPlanMode = element<HTMLSelectElement>('thread-plan-mode');
 export const threadInvestigate = element('thread-investigate');
 export const threadInvestigateMode = element<HTMLInputElement>('thread-investigate-mode');
+export const threadPriority = element('thread-priority');
+export const threadPriorityMode = element<HTMLInputElement>('thread-priority-mode');
 export let shownThread: Thread | null = null;
 
 export async function openThreadDialog(thread: Thread): Promise<void> {
@@ -77,6 +79,9 @@ export async function openThreadDialog(thread: Thread): Promise<void> {
   threadPlanMode.value = thread.plan ?? 'auto';
   threadInvestigate.hidden = !thread.workspace;
   threadInvestigateMode.checked = thread.investigate === true;
+  // Priority is about the local-model queue, which a general chat uses as much
+  // as a thread with code, so it is offered for every thread
+  threadPriorityMode.checked = thread.priority === true;
   threadDialogBody.replaceChildren();
   threadDialog.showModal();
   const details = await window.threads.details(thread.id, thread.workspace).catch(() => null);
@@ -125,6 +130,17 @@ threadInvestigateMode.addEventListener('change', () => {
   if (threadInvestigateMode.checked) shownThread.investigate = true;
   else delete shownThread.investigate;
   save();
+});
+
+// Takes effect on the next message, as the plan and investigate settings do.
+// The mark by the thread's name is the one effect a setting like these has in
+// the sidebar, so the list is redrawn to show it straight away.
+threadPriorityMode.addEventListener('change', () => {
+  if (!shownThread) return;
+  if (threadPriorityMode.checked) shownThread.priority = true;
+  else delete shownThread.priority;
+  save();
+  render();
 });
 
 export function closeThreadDialog(): void {
