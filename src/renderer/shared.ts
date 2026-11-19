@@ -152,6 +152,12 @@ export const automatic = new Map<string, string>();
 export const tabs = new Map<string, string[]>();
 export const onTab = new Map<string, string>();
 export const tabsOf = (thread: Thread) => tabs.get(thread.id) ?? [];
+// Run on every save, alongside it: what keeps a copy the renderer keeps in step
+// with the threads as they are saved. The roster the main process holds is the
+// one such copy, and it is registered here rather than called from save, so that
+// the module that keeps it (which reads the threads as they stand) need not be
+// imported by the one that saves them (a cycle through the threads).
+export const onSave = new Set<() => void>();
 // How each tool is spoken of in the thread: "Reading src/main.ts…" while it
 // is at work and "Read src/main.ts" once it is done. `input` names the part
 // of what the tool was given that says what it is working on; `thing` stands

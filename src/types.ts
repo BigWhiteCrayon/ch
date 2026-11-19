@@ -1168,6 +1168,37 @@ export interface ThreadsBridge {
   // harness/notes.remove). Resolves with whether there was one to throw: a
   // note on screen can have been promoted or pruned since it was drawn.
   forgetNote(workspace: string, subject: string, threadId?: string): Promise<boolean>;
+  // The roster of all threads and their current activity, pushed from the renderer
+  // on every save so the main process can serve it to a model that asks
+  roster(entries: RosterEntry[]): void;
+  // A message sent to a thread from another thread, pushed from the main process
+  // to the renderer so the renderer can inject it into the target thread's
+  // conversation (see renderer/roster.ts)
+  onInject(callback: (threadId: string, text: string) => void): void;
+}
+
+// One entry in the roster of threads, pushed from the renderer and read by the
+// list_agents tool (see src/tools/threads.ts).
+//
+// `activity` is what the model reads to decide which threads to message:
+//   'working'        — a reply is in progress (inflight)
+//   'waiting-on-user' — the thread is waiting on an approval or a question
+//   'unread'         — a reply finished while another thread was on screen
+//   'idle'           — otherwise
+//
+// `changes` is the number of files the thread has changed but not yet written
+// back to its workspace (thread.changes > 0 means the work is still in the
+// container). `branch` and `branchWorktree` tell the main process where to look
+// up the git status of a thread that is on a branch.
+export interface RosterEntry {
+  id: string;
+  title: string;
+  activity: 'working' | 'waiting-on-user' | 'unread' | 'idle';
+  // Files the thread has changed but not yet written back to its workspace
+  changes: number;
+  // The branch the thread is on, if any. `worktree` is the host folder the
+  // branch's work is written back to, which is where its git status is read.
+  branch?: { name: string; upstream?: string; worktree: string };
 }
 
 // ---- What is known about a workspace and a thread (see harness/project.ts)

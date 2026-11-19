@@ -78,6 +78,10 @@ const threads: ThreadsBridge = {
   searchNotes: (workspace, query) => ipcRenderer.invoke('workspace:search-notes', workspace, query),
   forgetNote: (workspace, subject, threadId) =>
     ipcRenderer.invoke('workspace:forget-note', workspace, subject, threadId),
+  roster: (entries) => ipcRenderer.send('threads:roster', entries),
+  onInject: (callback) => {
+    ipcRenderer.on('threads:inject', (_event, threadId, text) => callback(threadId, text));
+  },
 };
 
 const ollama: OllamaBridge = {

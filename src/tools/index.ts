@@ -22,6 +22,7 @@ import * as sandbox from './sandbox';
 import * as search from './search';
 import * as steps from './steps';
 import * as subagents from './subagents';
+import * as threads from './threads';
 import * as sync from './sync';
 import * as workspaces from './workspaces';
 
@@ -39,6 +40,7 @@ export {
   search,
   steps,
   subagents,
+  threads,
   sync,
   workspaces,
 };
@@ -64,6 +66,9 @@ const registered: Tool[] = [
   ...context.tools,
   ...notes.tools,
   ...subagents.tools,
+  // The threads a model can list and message, the cross-thread counterpart of the
+  // subagent tools just above (see ./threads.ts)
+  ...threads.tools,
   ask.tool,
   // Asking for more rounds than the allowance holds, which every loop that
   // counts rounds answers (see ../harness/allowance.ts)

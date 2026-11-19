@@ -87,6 +87,14 @@ describe('the tools a step that changes nothing is offered', () => {
     // nothing in the project: all it changes is how long the step may go on
     // (see harness/allowance.ts)
     MORE_TOOL,
+    // The cross-thread counterpart of the subagent pair (see tools/threads.ts):
+    // one lists the other threads the app is working and what each is doing,
+    // the other sends a message to one of them. Neither touches this thread's
+    // project, and the message one hands work out to another thread just as a
+    // subagent is handed out, so both are offered in a changeless step the same
+    // way message_subagent is.
+    'list_threads',
+    'send_message',
   ]);
 
   it('is only those, out of every tool the app has', () => {
