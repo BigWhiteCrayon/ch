@@ -106,6 +106,8 @@ describe('the tools a step that changes nothing is offered', () => {
   // the project the finding-out step did not reach. Those four are all it offers.
   it('offers the question to the user and the three tools that hand work out in the planning step', () => {
     const offered = all.filter((tool) => phases.offers(tool, 'plan')).map(({ name }) => name);
+    // In the order the registry holds them, which is widest first: all four are
+    // offered in every step that has tools at all (see breadth)
     expect(offered).toEqual(['hand_to_subagent', 'wait_for_subagent', 'message_subagent', ASK_TOOL]);
     // Every other tool is kept out of the planning step
     for (const tool of all.filter(({ name }) => name !== ASK_TOOL && !offered.includes(name))) {
@@ -188,6 +190,59 @@ describe('the tools a step that changes nothing is offered', () => {
         )
       ).toBe(true);
     }
+  });
+});
+
+describe('the order the tools are sent in', () => {
+  const offered = (phase: Phase) => all.filter((tool) => phases.offers(tool, phase)).map(({ name }) => name);
+  // What two steps share of the list they are sent, which is where what they
+  // share of their prompts ends: the renderers write the tools above the
+  // instructions (see phases.breadth)
+  const shared = (one: string[], other: string[]) => {
+    const held: string[] = [];
+    for (const [i, name] of one.entries()) {
+      if (other[i] !== name) break;
+      held.push(name);
+    }
+    return held;
+  };
+
+  it('counts a tool every step offers above one a single step offers', () => {
+    const handOut = all.find(({ name }) => name === 'hand_to_subagent')!;
+    const workspaceOnly = all.find(({ name }) => name === 'sync_workspace')!;
+    const read = all.find(({ name }) => name === 'search_workspace')!;
+    expect(phases.breadth(handOut)).toBe(4);
+    expect(phases.breadth(read)).toBe(3);
+    expect(phases.breadth(workspaceOnly)).toBe(1);
+  });
+
+  // Counted by rendering the tool rather than by reading its phases: what a
+  // step cannot share with the step after it is a description or a schema that
+  // is not the same in the two, however many steps hold the tool
+  it('counts a tool that renders differently from step to step with the narrowest', () => {
+    const everywhere = { name: 'a', description: 'the same', inputSchema: {}, run: async () => '' };
+    expect(phases.breadth(everywhere)).toBe(3);
+    expect(phases.breadth({ ...everywhere, describe: (phase?: Phase) => `in ${phase}` })).toBe(0);
+    expect(phases.breadth({ ...everywhere, schemaFor: (phase?: Phase) => ({ phase }) })).toBe(0);
+    // A tool that renders by the window it is given and not by the step is
+    // the same in every step, so it keeps its breadth (see tools/sandbox.ts)
+    expect(phases.breadth({ ...everywhere, describe: (_phase, window?: number) => `${window}` })).toBe(3);
+  });
+
+  it('is written widest first', () => {
+    const counted = all.map((tool) => phases.breadth(tool));
+    expect(counted).toEqual([...counted].sort((a, b) => b - a));
+  });
+
+  it('keeps what two steps both offer at the top of the list each is sent', () => {
+    const both = all
+      .filter((tool) => phases.offers(tool, 'explore') && phases.offers(tool, 'execute'))
+      .filter((tool) => phases.breadth(tool) > 1)
+      .map(({ name }) => name);
+    expect(shared(offered('explore'), offered('execute'))).toEqual(both);
+    // The planning step holds four tools and no others, and every one of them
+    // is offered in every step, so the whole of its list is shared
+    expect(shared(offered('plan'), offered('explore'))).toEqual(offered('plan'));
   });
 });
 

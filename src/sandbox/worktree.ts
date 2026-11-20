@@ -77,6 +77,12 @@ export async function status(worktree: string): Promise<BranchStatus> {
   return { upstream, ahead, behind, dirty: changed.output.trim() !== '' };
 }
 
+// Whether a worktree has work in it that is not committed yet: the opposite of
+// status()'s `dirty` flag, run through the same git channel.
+export async function isClean(worktree: string): Promise<boolean> {
+  return !(await status(worktree)).dirty;
+}
+
 // Commits everything in the worktree. False, with nothing done, if there was nothing to commit.
 export async function commit(worktree: string, message: string): Promise<boolean> {
   if (!message.trim()) throw new Error('A commit needs a message.');

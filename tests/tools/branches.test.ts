@@ -5,7 +5,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Tool, ToolContext } from '../../src/types';
 
-const worktree = vi.hoisted(() => ({ mainWorktree: vi.fn(), branches: vi.fn(), ensureWorktree: vi.fn() }));
+const worktree = vi.hoisted(() => ({
+  mainWorktree: vi.fn(),
+  branches: vi.fn(),
+  ensureWorktree: vi.fn(),
+  isClean: vi.fn(),
+  commit: vi.fn(),
+  push: vi.fn(),
+}));
 vi.mock('../../src/sandbox/worktree', () => worktree);
 
 const docker = vi.hoisted(() => ({ setWorkspace: vi.fn(), exec: vi.fn() }));
@@ -13,6 +20,9 @@ vi.mock('../../src/sandbox/docker', async () => {
   const actual = await vi.importActual<typeof import('../../src/sandbox/docker')>('../../src/sandbox/docker');
   return { ...actual, ...docker };
 });
+
+const changes = vi.hoisted(() => ({ apply: vi.fn() }));
+vi.mock('../../src/sandbox/changes', () => changes);
 
 const fs = vi.hoisted(() => ({ existsSync: vi.fn() }));
 vi.mock('fs', () => fs);
@@ -22,6 +32,7 @@ import { init, tools } from '../../src/tools/branches';
 const signal = new AbortController().signal;
 const createBranch = tools.find((tool) => tool.name === 'create_branch') as Tool;
 const enterBranch = tools.find((tool) => tool.name === 'enter_branch') as Tool;
+const publish = tools.find((tool) => tool.name === 'publish_to_branch') as Tool;
 
 // The tools remember the branches they made for as long as the process lives, so each test uses a thread of its own
 let count = 0;
@@ -47,16 +58,21 @@ beforeEach(() => {
   worktree.mainWorktree.mockResolvedValue(REPO);
   worktree.branches.mockResolvedValue({ current: 'main', names: ['main'] });
   worktree.ensureWorktree.mockResolvedValue(FOLDER);
+  worktree.isClean.mockResolvedValue(true);
+  worktree.commit.mockResolvedValue(true);
+  worktree.push.mockResolvedValue('origin/fix-upload-retry');
+  changes.apply.mockResolvedValue({ applied: ['a.ts'], conflicts: [] });
   docker.exec.mockResolvedValue({ code: 0, output: '' });
   fs.existsSync.mockReturnValue(true);
 });
 
 describe('what the model is told about them', () => {
-  it('offers both to a reply or a subagent in a workspace, and not to a step that only reads', () => {
+  it('offers all three to a reply or a subagent in a workspace, and not to a step that only reads', () => {
     const shown = tools.map(({ name, needsWorkspace, phases }) => [name, needsWorkspace, phases]);
     expect(shown).toEqual([
       ['create_branch', true, ['execute']],
       ['enter_branch', true, ['execute']],
+      ['publish_to_branch', true, ['execute']],
     ]);
   });
 
@@ -254,5 +270,88 @@ describe('enter_branch', () => {
     await made(context);
     await expect(enterBranch.run({ name: 'fix-upload-retry' }, context)).rejects.toThrow('cannot be moved');
     expect(docker.setWorkspace).not.toHaveBeenCalled();
+  });
+});
+
+describe('publish_to_branch', () => {
+  // A name with no branch yet is made at the thread's current commit and filled in
+  it('publishes onto a new branch, and does not move the thread', async () => {
+    const context = contextFor();
+    const result = await publish.run({ branch: 'fix-upload-retry' }, context);
+    expect(worktree.branches).toHaveBeenCalledWith(REPO);
+    expect(worktree.ensureWorktree).toHaveBeenCalledWith(REPO, '/data', 'fix-upload-retry', 'main', true);
+    expect(worktree.isClean).toHaveBeenCalledWith(FOLDER);
+    expect(changes.apply).toHaveBeenCalledWith(context.threadId, FOLDER);
+    expect(worktree.commit).toHaveBeenCalledWith(FOLDER, 'Published from main');
+    expect(worktree.push).toHaveBeenCalledWith(FOLDER);
+    expect(result).toContain('fix-upload-retry');
+    expect(result).toContain('main');
+    expect(result).toContain('pushed it to origin/fix-upload-retry');
+    expect(docker.setWorkspace).not.toHaveBeenCalled();
+  });
+
+  // A name in use gets the branch it already has, rather than a fresh worktree at HEAD
+  it('publishes onto a branch already in use, filling it in as it stands', async () => {
+    worktree.branches.mockResolvedValue({ current: 'main', names: ['main', 'fix-upload-retry'] });
+    const context = contextFor();
+    const result = await publish.run({ branch: 'fix-upload-retry' }, context);
+    expect(worktree.ensureWorktree).toHaveBeenCalledWith(REPO, '/data', 'fix-upload-retry', 'main', false);
+    expect(worktree.commit).toHaveBeenCalledWith(FOLDER, 'Published from main');
+    expect(worktree.push).toHaveBeenCalledWith(FOLDER);
+    expect(result).toContain('pushed it to origin/fix-upload-retry');
+    expect(docker.setWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('uses the message it is given for the commit', async () => {
+    const context = contextFor();
+    await publish.run({ branch: 'fix-upload-retry', message: 'hand this off' }, context);
+    expect(worktree.commit).toHaveBeenCalledWith(FOLDER, 'hand this off');
+  });
+
+  // A conflict in one file writes none of them, so nothing is committed or pushed
+  it('reports the files that conflict, and commits or pushes nothing', async () => {
+    changes.apply.mockResolvedValue({
+      applied: [],
+      conflicts: [
+        { path: 'a.ts', reason: 'The same lines were changed in the workspace and by the thread.' },
+        { path: 'b.ts', reason: 'It is not a text file, and it has changed in the workspace too.' },
+      ],
+    });
+    const context = contextFor();
+    const result = await publish.run({ branch: 'fix-upload-retry' }, context);
+    expect(result).toContain('a.ts');
+    expect(result).toContain('b.ts');
+    expect(result).toContain('conflict');
+    expect(worktree.commit).not.toHaveBeenCalled();
+    expect(worktree.push).not.toHaveBeenCalled();
+  });
+
+  // A worktree that already holds uncommitted work would have it swept into the commit, so it is refused
+  it('refuses a branch whose worktree already has uncommitted work', async () => {
+    worktree.isClean.mockResolvedValue(false);
+    const context = contextFor();
+    const result = await publish.run({ branch: 'fix-upload-retry' }, context);
+    expect(result).toContain('already has uncommitted work');
+    expect(changes.apply).not.toHaveBeenCalled();
+    expect(worktree.commit).not.toHaveBeenCalled();
+    expect(worktree.push).not.toHaveBeenCalled();
+  });
+
+  // A thread with nothing written in it has nothing to publish
+  it('says so when the thread has no changes to publish', async () => {
+    changes.apply.mockResolvedValue({ applied: [], conflicts: [] });
+    const context = contextFor();
+    const result = await publish.run({ branch: 'fix-upload-retry' }, context);
+    expect(result).toContain('No changes to publish');
+    expect(worktree.commit).not.toHaveBeenCalled();
+    expect(worktree.push).not.toHaveBeenCalled();
+  });
+
+  it('refuses a thread with no workspace', async () => {
+    await expect(publish.run({ branch: 'x' }, contextFor({ workspace: undefined }))).rejects.toThrow('no workspace');
+  });
+
+  it('refuses a message with no thread', async () => {
+    await expect(publish.run({ branch: 'x' }, contextFor({ threadId: undefined }))).rejects.toThrow('no thread');
   });
 });

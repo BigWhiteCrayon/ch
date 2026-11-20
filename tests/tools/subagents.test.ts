@@ -68,18 +68,17 @@ describe('what the planning step may hand out', () => {
     expect(subagents.run).not.toHaveBeenCalled();
   });
 
-  // The finding-out and planning steps are told the same about it: one kind, no
-  // account of the others (see the description the finding-out step is given)
-  it('tells the planning step the one kind it may send, and no account of the others', async () => {
-    const said = unwrapped(tool.describe?.('plan') ?? tool.description);
-    expect(said).toContain('every piece goes to an explorer');
-    for (const kind of ['coder', 'worker']) expect(said).not.toContain(kind);
-    // ...and what the planning step may ask for is that kind alone, required
-    const schema = (tool.schemaFor?.('plan') ?? tool.inputSchema) as {
+  // Said by naming the steps it holds for, the description being the same in
+  // every step now (see EVERY_STEP). What the planning step may send is kept by
+  // the refusal above, and the schema no longer narrows it either.
+  it('names the planning step as one that sends the one kind', async () => {
+    const said = unwrapped(tool.description);
+    expect(said).toContain('In the finding-out step and the planning step every piece goes to an explorer');
+    expect(said).toContain('a piece for any other kind is refused there');
+    const schema = tool.inputSchema as {
       properties: { tasks: { items: { properties: { kind: { enum: string[] } }; required: string[] } } };
     };
-    expect(schema.properties.tasks.items.properties.kind.enum).toEqual(['explorer']);
-    expect(schema.properties.tasks.items.required).toContain('kind');
+    expect(schema.properties.tasks.items.properties.kind.enum).toContain('coder');
   });
 });
 
@@ -190,41 +189,47 @@ describe('what the model is told about handing work out', () => {
     expect(said()).toContain("don't over-explain");
   });
 
-  // The finding-out step may send one kind and no other, which run() refuses
-  // (above). Saying so here instead of describing the choice means the step is
-  // not told about two kinds it would be refused for asking — and a
-  // description is resent on every round, so it was paying for them.
-  it('offers the finding-out step the one kind it may send, and no account of the others', () => {
-    expect(said('explore')).toContain('every piece goes to an explorer');
-    for (const kind of ['coder', 'worker']) expect(said('explore')).not.toContain(kind);
-    expect(said('explore').length).toBeLessThan(said('execute').length);
+  // Every step is told all of it, each part named by the step it holds for,
+  // and the same words whatever step is asking: a description that changes
+  // with the step ends what two steps of a reply share of their prompts at
+  // this tool, which is the first one they are sent (see breadth in
+  // ../../src/harness/phases.ts).
+  it('says the same thing in every step', () => {
+    for (const phase of ['explore', 'plan', 'execute', 'suggest'] as const) {
+      expect(said(phase)).toBe(said());
+    }
+  });
+
+  // The two steps that may send one kind only, which run() refuses above
+  it('names the steps where every piece goes to an explorer', () => {
+    expect(said()).toContain('In the finding-out step and the planning step every piece goes to an explorer');
+    expect(said()).toContain('a piece for any other kind is refused there');
   });
 
   // The doing step holds no tool that writes a file, so handing out is not one
-  // way of making the change there but the only one — and EVERY_KIND's advice
-  // against handing out what a single tool call could do is untrue of it
-  it('tells the doing step that this is how the change gets made', () => {
-    expect(said('execute')).toContain('no tool here writes a file');
-    expect(said('execute')).toContain('in the plan goes to a coder');
-    expect(said('execute')).not.toContain('something you can do in a single tool call');
-    // ...and it still picks between the kinds, which the finding-out step does not
-    for (const kind of ['coder', 'explorer', 'worker']) expect(said('execute')).toContain(kind);
+  // way of making the change there but the only one
+  it('says that in the doing step this is how the change gets made', () => {
+    expect(said()).toContain('no tool there writes a file');
+    expect(said()).toContain('in the plan goes to a coder');
   });
 
-  // A reply not worked through in steps makes its own changes, so it keeps the
-  // general account of when handing out is worth it
-  it('says something else to a reply worked through in no steps', () => {
-    expect(said()).toContain('something you can do in a single tool call');
-    expect(said()).not.toContain('no tool here writes a file');
+  // What a step that can write for itself is not to hand out. Said of the
+  // tools the step holds rather than of the work, because the doing step holds
+  // none that writes a file: there, a piece a single call would do is a piece
+  // for a coder all the same.
+  it('says not to hand out what a tool of its own would do in one call', () => {
+    expect(said()).toContain('something you can do in a single tool call of your own');
   });
 
-  // The bound kept by the schema as well as by the refusal: an enum of one is
-  // shorter than the three it stands in for, and asking for a kind that is not
-  // in it is not a round the model can spend finding out
-  it('narrows what the finding-out step may ask for to that kind, and requires it', () => {
-    expect(kinds('explore').properties.kind.enum).toEqual(['explorer']);
-    expect(kinds('explore').required).toContain('kind');
-    // ...where every other step picks from all of them, and may leave it out
+  // The bound is kept by the refusal and said in the description, and no
+  // longer narrowed in the schema as well. A schema that changes with the step
+  // ends what two steps share of their prompts at this tool, and this tool is
+  // at the top of the list every step is sent (see breadth in
+  // ../../src/harness/phases.ts).
+  it('asks for the same thing in every step, whatever that step may send', () => {
+    for (const phase of ['explore', 'plan', 'suggest'] as const) {
+      expect(kinds(phase)).toEqual(kinds('execute'));
+    }
     expect(kinds('execute').properties.kind.enum.length).toBeGreaterThan(1);
     expect(kinds('execute').required).not.toContain('kind');
   });

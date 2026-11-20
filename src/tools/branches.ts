@@ -19,6 +19,7 @@
 
 import { existsSync } from 'fs';
 import { join } from 'path';
+import * as changes from '../sandbox/changes';
 import * as docker from '../sandbox/docker';
 import { contextFile } from '../sandbox';
 import { withFileLock } from '../sandbox/lock';
@@ -27,6 +28,7 @@ import type { Tool } from '../types';
 
 export const CREATE_TOOL = 'create_branch';
 export const ENTER_TOOL = 'enter_branch';
+export const PUBLISH_TOOL = 'publish_to_branch';
 
 // Where worktrees are kept, which is the app's data directory. Set at startup from main.ts, as the other modules
 // that write under it are (see harness/project.ts and search/index.ts).
@@ -170,6 +172,76 @@ a subagent or reply working alongside you has already moved it, you will be told
         `This thread is now on the branch ${name}, made from ${branch.base}. The files in ${docker.WORKDIR} are ` +
         `unchanged and what has been written in them is a change to ${name}. Carry on with the work you were given.`
       );
+    },
+  },
+  {
+    name: PUBLISH_TOOL,
+    // Publishes the thread's own changes onto a branch and out to its remote, so they reach whoever else is
+    // on the repository. Like create_branch it does not move the thread anywhere: the branch's worktree is
+    // filled in, committed and pushed, and the thread stays on its own checkout.
+    phases: ['execute'],
+    needsWorkspace: true,
+    description: `Publish this thread's uncommitted changes onto a branch, making the branch if it has no name in
+use, and push it to its remote. The changes are copied into the branch's own folder and committed there, so the
+branch carries them; this thread stays on its own checkout and is not moved, which is what ${ENTER_TOOL} is for.
+A name in use gets the branch it already has, and a name with none makes one starting at this thread's current
+commit. Use it to hand work off onto a branch that another thread or the user can take up.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        branch: {
+          type: 'string',
+          description: 'The branch to publish to, a few words with dashes, e.g. "fix-upload-retry".',
+        },
+        message: {
+          type: 'string',
+          description: 'The commit message for the published changes. Without one, one is made up for you.',
+        },
+      },
+      required: ['branch'],
+    },
+    async run(input, { threadId, workspace }) {
+      if (!threadId) throw new Error('This message has no thread to publish from.');
+      if (!workspace) throw new Error('This thread has no workspace, so there is no repository to publish in.');
+      if (!root) throw new Error('Branches are not set up in this session.');
+      const branch = requireString(input, 'branch');
+      const message = typeof input?.message === 'string' && input.message.trim() ? input.message.trim() : undefined;
+      const repo = await repoOf(workspace);
+      // What the thread's own folder has checked out, which is what its files were copied from: a branch made from
+      // anything else would not match them, and the changes would not read against it.
+      const { current, names } = await worktree.branches(repo);
+      if (!current) throw new Error(`${workspace} has no branch checked out, so there is nothing to publish from.`);
+      const exists = names.includes(branch);
+      // A name with a worktree already in it is filled in as it stands; a name with none is made at the thread's
+      // current commit, so the published changes start from where the thread stands.
+      const wt = await worktree.ensureWorktree(repo, root, branch, current, !exists);
+      // The changes are written in over the branch's worktree, so a worktree that already holds uncommitted work
+      // would have it swept into the published commit. Refuse rather than publish somebody else's work.
+      if (!(await worktree.isClean(wt))) {
+        return `The branch ${branch} already has uncommitted work in its own folder, so nothing was published to it: ` +
+          `publishing would commit that work as well. Settle or remove it first, then publish again.`;
+      }
+      // Writing the thread's changes into the branch's worktree is all or nothing: a conflict in one file writes
+      // none of them. Applying them advances this thread's own baseline, so the changes that go to the branch are
+      // not written back to its checkout again.
+      const r = await changes.apply(threadId, wt);
+      if (r.conflicts.length > 0) {
+        const clash = r.conflicts.map((c) => `- ${c.path}: ${c.reason}`).join('\n');
+        const plural = r.conflicts.length === 1 ? '' : 's';
+        return (
+          `Nothing was published to ${branch}: ${r.conflicts.length} file${plural} conflict${plural} ` +
+          `with what is in its folder, and cannot be written over:\n${clash}`
+        );
+      }
+      if (r.applied.length === 0) {
+        return `No changes to publish to \`${branch}\`: this thread has nothing written in it to copy.`;
+      }
+      const plural = r.applied.length === 1 ? '' : 's';
+      const ok = await worktree.commit(wt, message || `Published from ${current}`);
+      if (!ok) return `Nothing new was found to commit to ${branch}.`;
+      const upstream = await worktree.push(wt);
+      return `Published ${r.applied.length} file${plural} to the branch ${branch} from ${current}, ` +
+        `and pushed it${upstream ? ` to ${upstream}` : ''}.`;
     },
   },
 ];
