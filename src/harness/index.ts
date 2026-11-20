@@ -41,6 +41,7 @@ import type {
 } from '../types';
 import * as access from './access';
 import * as allowance from './allowance';
+import { maxSteps } from './budget';
 import { announcing } from './announced';
 import * as discoveries from './discoveries';
 import * as notes from './notes';
@@ -87,16 +88,13 @@ export const answerFileAccess = access.answer;
 // may run, this once (see ./access.ts)
 export const answerCommandAccess = access.allowCommand;
 
-// How many rounds of tool calls a reply may take before it is stopped. The
-// more effort a message calls for, the more rounds its reply gets...
-const STEPS: Record<Effort, number> = { low: 10, medium: 20, high: 40 };
-// ...and six times as many in a thread that has a workspace to work in, where
-// finding, reading and changing files all take tool calls
-const WORKSPACE_STEPS = 6;
-
-export function maxSteps(effort: Effort, inWorkspace: boolean): number {
-  return Math.ceil(STEPS[effort] * (inWorkspace ? WORKSPACE_STEPS : 1));
-}
+// How many rounds of tool calls a reply may take is worked out in ./budget,
+// which is the one place the reply's flow and the subagent's loop (see
+// ../subagents/run.ts) agree on it: the two loops share the effort multipliers
+// there rather than each keep a copy, and the rounds are scaled from them. It is
+// re-exported from here because it has always been named as the harness's, and
+// the finding-out step's share is worked out from it (see ./phases.ts).
+export { maxSteps };
 
 // What the user is told when a reply is cut off before any of it was written
 export const OUT_OF_ROOM = `The model ran out of room before it wrote an answer: it reached its length limit. This
@@ -197,7 +195,9 @@ block is shown as code. Where you point the user at a part of the code, name it 
 one file per line, its path relative to the top of the workspace and, for a part of it, the lines as :123 or :123-140,
 which the user opens to read. A user message that starts with > lines is quoting part of an earlier reply, or a diagram
 node or edge written as [diagram N, node "X"] or [diagram N, edge "A->B"], and the text after the quote is the user's
-comment on that part.`;
+comment on that part. When the reply is an in-depth explanation for the user, one that includes diagrams or
+screenshots, start it with the exact marker <large> as the very first text, and it is shown at the full width of the
+thread. Never use it for a short or ordinary reply.`;
 
 // What shapes the instructions the model is given: how the classifier sized
 // the message up, and the summary standing in for the thread's earlier messages
@@ -772,6 +772,7 @@ export async function* run(
     resumed,
     plan: planning,
     investigate,
+    priority,
     rounds,
     agent,
     ...asked
@@ -1446,6 +1447,12 @@ export async function* run(
       // Every pass of this reply sends the same prompt with a little more
       // after it, so they all look for their prefix in the same place
       cacheKey: threadId,
+      // A thread the user marked for priority takes the lock on the local
+      // models ahead of the replies of other threads, so it rushes through
+      // while they fill the gaps between its steps (see the queue in
+      // ../llm/index.ts). The thread's own reply only: its subagents are not
+      // given it, since they run in parallel and would crowd the others out.
+      ...(priority ? { priority: true } : {}),
       log: { ...where, step, purpose: 'reply' },
     };
     // How long the model took to start replying. Logged rather than shown:
@@ -1953,6 +1960,11 @@ export async function* run(
       model: { provider: chosen.provider, model: chosen.id },
       emit: reports.push,
       ask: (question, options) => ask(reports.push, question, options),
+      // The conversation the request is in, so a tool that asks a model of its
+      // own about it — the reason it wants a file or a command (see
+      // accessJustifier.ts) — can read what led to it. The justifier keeps only
+      // its recent part, as a one-off prompt is cut.
+      conversation: messages,
       // Whichever allowance bounds the model as things stand: the finding-out
       // step has one of its own, and every other step is bounded by the
       // reply's step budget (see the allowances above and ./allowance.ts)
@@ -1974,6 +1986,10 @@ export async function* run(
       // for a model whose level is unknown, which is one the user picked by
       // hand (see route).
       sophistication: chosen.sophistication ?? (classification.failed ? undefined : classification.sophistication),
+      // The user's request, so a tool that judges against it — the command
+      // reviewer — has it; set here, where the reply's context is built, from the
+      // last message the user sent (see the `asking` computed above).
+      intention: asked.messages.at(-1)?.content ?? '',
     };
     const running = Promise.all(calls.map((call) => tools.execute(call, context, { ...where, step }))).finally(
       reports.close

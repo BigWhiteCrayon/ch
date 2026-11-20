@@ -58,6 +58,7 @@ const llm = {
   verify: vi.fn(),
   feedback: vi.fn(),
   cancel: vi.fn(),
+  nudge: vi.fn(),
   allowFileAccess: vi.fn(),
   allowCommand: vi.fn(),
   approve: vi.fn(),
@@ -97,6 +98,9 @@ const threads = {
   onLookEvent: vi.fn(),
   // Kept so the push can be fired at the renderer in tests
   onSurveyed: vi.fn(),
+  // The roster the renderer pushes to main, and messages main pushes back
+  roster: vi.fn(),
+  onInject: vi.fn(),
   index: vi.fn(),
   search: vi.fn(),
 };
@@ -234,6 +238,7 @@ beforeEach(async () => {
     anthropic: { hasKey: true, disabledModels: [] },
     openai: { hasKey: false, disabledModels: [] },
     local: { baseURL: 'http://localhost:11434/v1', hasKey: false },
+    github: { hasKey: false },
     sophistication: {},
     sandbox: { image: '' },
     offline: false,
@@ -1265,6 +1270,25 @@ describe('receiving a reply', () => {
       emit(sentId(), { type: 'plan', text: 'Change a.ts.' });
       emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 1, output: 1 }, steps: 2 });
       expect(messages()).toEqual(['user: hi', 'plan: PlanChange a.ts.']);
+    });
+
+    // A reply that starts with <large> is an in-depth explanation: the marker is
+    // taken out and the bubble is drawn wide, even when it arrives in pieces
+    it('draws a reply that starts with the large marker wide, without the marker', () => {
+      emit(sentId(), { type: 'text', delta: '  <lar' });
+      expect($$('#messages .message.markdown').map((el) => el.textContent)).toEqual([]);
+      emit(sentId(), { type: 'text', delta: 'ge>\n\nThe long story.' });
+      emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 1, output: 1 }, steps: 1 });
+      expect(messages()).toEqual(['user: hi', 'assistant: The long story.']);
+      expect($$('#messages .message.markdown.large').length).toBe(1);
+    });
+
+    it('leaves a reply that does not start with the marker, or only mentions it, at the usual width', () => {
+      emit(sentId(), { type: 'text', delta: '<la' });
+      emit(sentId(), { type: 'text', delta: 'bel> then <large> later' });
+      emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 1, output: 1 }, steps: 1 });
+      expect(messages()).toEqual(['user: hi', 'assistant: <label> then <large> later']);
+      expect($$('#messages .message.markdown.large').length).toBe(0);
     });
 
     // The screenshots and clips taken while planning are shown under the plan,
@@ -2764,7 +2788,7 @@ describe('token use', () => {
         $<HTMLElement>('#messages .subagent .open').click();
         await flush();
         expect($('#agent-view').textContent).toContain('Trying again.');
-        // Its old work is not left mixed in with the new
+        // Its old work is cleared, so the new work is not left mixed in with it
         expect($('#agent-view').textContent).not.toContain('Reading them.');
         expect($('#agent-view .message.assistant').textContent).toBe('They use vitest.');
       });
@@ -3111,20 +3135,32 @@ describe('token use', () => {
       expect(mark()).toContain('done');
     });
 
-    it('is started again by an app that closed mid-run, from the top', async () => {
+    it('is continued by an app that closed mid-run, from where it left off', async () => {
       sub('s1', 'tests', 'read the tests');
       did('s1', { type: 'tool_call', id: 'c1', name: 'read_file', input: { path: 'a.ts' } });
+      did('s1', { type: 'tool_result', id: 'c1', name: 'read_file', output: 'export const p = 1;', isError: false });
       llm.retrySubagent.mockImplementation(() => new Promise(() => {}));
+      // Closing the window runs the save it had pending, so the subagent is on
+      // disk with its work, the way a reply the app closed on is (see quit)
+      window.dispatchEvent(new Event('beforeunload'));
       await start();
       expect(llm.retrySubagent).toHaveBeenCalledTimes(1);
+      // It is given what it had done, so the run that follows carries on
       expect(llm.retrySubagent).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 's1', name: 'tests', task: 'read the tests', kind: 'worker' })
+        expect.objectContaining({
+          id: 's1',
+          name: 'tests',
+          task: 'read the tests',
+          kind: 'worker',
+          resumed: expect.objectContaining({ did: expect.arrayContaining([expect.stringContaining('read_file')]) }),
+        })
       );
+      // Its work so far is kept, not cleared, so the run reads on from it
       toggle().click();
       expect($$<HTMLElement>('#thread-list li.subagent .status').map((el) => el.className)).toEqual(['status working']);
     });
 
-    it('says what a subagent started again brought back, in the thread', async () => {
+    it('says what a subagent continued brought back, in the thread', async () => {
       sub('s1', 'tests', 'read the tests');
       llm.retrySubagent.mockResolvedValue({ text: 'They use vitest.', isError: false });
       await start();
@@ -3134,16 +3170,16 @@ describe('token use', () => {
       expect($('#agent-view .message.assistant').textContent).toBe('They use vitest.');
     });
 
-    it('is told to the reply picked up with it that it was started again', async () => {
+    it('is told to the reply picked up with it that it was continued', async () => {
       sub('s1', 'tests', 'read the tests');
       llm.retrySubagent.mockImplementation(() => new Promise(() => {}));
       await start();
       const [line] = sent().resumed!.did;
       expect(line).toContain('subagent tests (worker)');
-      expect(line).toContain('started again');
+      expect(line).toContain('continued');
     });
 
-    it('is failed rather than started again a second time that the app closes on it', async () => {
+    it('is failed rather than continued a second time that the app closes on it', async () => {
       sub('s1', 'tests', 'read the tests');
       did('s1', { type: 'tool_call', id: 'c1', name: 'read_file', input: { path: 'a.ts' } });
       llm.retrySubagent.mockImplementation(() => new Promise(() => {}));
@@ -4130,11 +4166,14 @@ describe('commenting on a reply', () => {
   const chain = (direction: string) =>
     '```mermaid\nflowchart ' + direction + '\n' + 'ABCDEFGH'.split('').join('[Step] --> ') + '[Step]\n```';
 
-  it('turns a long left-to-right diagram top-down so it fits the width', async () => {
+  it('turns a long left-to-right diagram top-down, then packs it into a grid of columns', async () => {
     await answered(chain('LR'));
-    const { width, height, nodes } = diagramBox();
-    expect(height).toBeGreaterThan(width);
+    const svg = $('#messages .message.assistant .diagram svg');
+    const { height, nodes } = diagramBox();
     expect(nodes).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']);
+    const columns = new Set([...svg.querySelectorAll('[data-node] rect')].map((r) => Number(r.getAttribute('x')))).size;
+    expect(columns).toBeGreaterThan(1);
+    expect(height).toBeLessThan(712);
   });
 
   it('keeps a short left-to-right diagram left to right', async () => {
@@ -4143,10 +4182,76 @@ describe('commenting on a reply', () => {
     expect(width).toBeGreaterThan(height);
   });
 
-  it('turns a long right-to-left diagram bottom-up so it fits the width', async () => {
+  it('draws a small graph at its natural size instead of scaling it up', async () => {
+    await answered('```mermaid\nflowchart TD\nA[One] --> B[Two]\n```');
+    const svg = $('#messages .message.assistant .diagram svg');
+    const { width } = diagramBox();
+    expect(Number(svg.getAttribute('width'))).toBe(width);
+  });
+
+  it('turns a long right-to-left diagram bottom-up, then packs it into a grid of columns', async () => {
     await answered(chain('RL'));
+    const svg = $('#messages .message.assistant .diagram svg');
+    const { height, nodes } = diagramBox();
+    expect(nodes).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']);
+    const columns = new Set([...svg.querySelectorAll('[data-node] rect')].map((r) => Number(r.getAttribute('x')))).size;
+    expect(columns).toBeGreaterThan(1);
+    expect(height).toBeLessThan(712);
+  });
+
+  it('wraps a wide fan-out of parallel nodes into sub-columns instead of running past the width', async () => {
+    const fan =
+      '```mermaid\nflowchart TD\nA[Root] --> B[Branch 0]\n' +
+      Array.from({ length: 9 }, (_, i) => 'A --> C' + i + '[Branch ' + i + ']').join('\n') +
+      '\n```';
+    await answered(fan);
+    const svg = $('#messages .message.assistant .diagram svg');
+    const { width, height } = diagramBox();
+    // the children sit in sub-columns, not one wide row
+    const childX = new Set(
+      [...svg.querySelectorAll('[data-node="B"], [data-node^="C"] rect')].map((r) => Number(r.getAttribute('x')))
+    );
+    expect(childX.size).toBeGreaterThan(1);
+    // the wrap keeps the chart within the target width, and the children stay on a short list of rows
+    expect(width).toBeLessThan(960);
+    const childY = new Set(
+      [...svg.querySelectorAll('[data-node="B"], [data-node^="C"] rect')].map((r) => Number(r.getAttribute('y')))
+    );
+    expect(childY.size).toBeLessThanOrEqual(3);
+    expect(height).toBeLessThan(712);
+  });
+
+  // jsdom lays nothing out, so a thread's width is given to the column the diagram is measured against
+  const columnWidth = (px: number) => Object.defineProperty($('#messages'), 'clientWidth', { value: px, configurable: true });
+  const shortChain = (direction: string) =>
+    '```mermaid\nflowchart ' + direction + '\nA[Step] --> B[Step] --> C[Step] --> D[Step]\n```';
+
+  it('keeps a left-to-right diagram that fits a wide thread left to right instead of flipping it', async () => {
+    columnWidth(2400);
+    await answered(chain('LR'));
+    const { width, height } = diagramBox();
+    expect(width).toBeGreaterThan(height);
+  });
+
+  it('turns a left-to-right diagram top-down when the thread is too narrow for it', async () => {
+    columnWidth(400);
+    await answered(shortChain('LR'));
     const { width, height } = diagramBox();
     expect(height).toBeGreaterThan(width);
+  });
+
+  it('keeps that same diagram left to right when the thread is not measurable', async () => {
+    await answered(shortChain('LR'));
+    const { width, height } = diagramBox();
+    expect(width).toBeGreaterThan(height);
+  });
+
+  it('wraps a fan-out to the width of the thread, not to a fixed width', async () => {
+    const fan =
+      '```mermaid\nflowchart TD\n' + Array.from({ length: 6 }, (_, i) => 'A --> C' + i + '[Branch ' + i + ']').join('\n') + '\n```';
+    columnWidth(500);
+    await answered(fan);
+    expect(diagramBox().width).toBeLessThan(500);
   });
 
   // Clicking a picture or a diagram opens it larger in #zoom-dialog (see src/renderer/zoom.ts)
@@ -4695,6 +4800,7 @@ describe('markdown in a reply', () => {
 describe('the right-click menu on a message', () => {
   const menu = () => $('#message-menu');
   const retry = () => $<HTMLButtonElement>('#menu-retry');
+  const edit = () => $<HTMLButtonElement>('#menu-edit');
   const del = () => $<HTMLButtonElement>('#menu-delete');
   // Right-clicks the message that reads `text` ("role: text", as in messages())
   const rightClick = (text: string) => {
@@ -4723,7 +4829,7 @@ describe('the right-click menu on a message', () => {
     expect(event.defaultPrevented).toBe(true);
     expect(menu().hidden).toBe(false);
     expect([menu().style.left, menu().style.top]).toEqual(['40px', '60px']);
-    expect($$('#message-menu button').map((b) => b.textContent)).toEqual(['Retry', 'Delete']);
+    expect($$('#message-menu button').map((b) => b.textContent)).toEqual(['Retry', 'Edit', 'Delete']);
   });
 
   it('closes on Escape or a click elsewhere, without changing anything', () => {
@@ -4973,11 +5079,102 @@ describe('the right-click menu on a message', () => {
   it('offers nothing while a reply is being written to the thread', async () => {
     await type('third question');
     rightClick('assistant: First answer.');
-    expect([retry().disabled, del().disabled]).toEqual([true, true]);
+    expect([retry().disabled, del().disabled, edit().disabled]).toEqual([true, true, false]);
 
     finish();
     rightClick('assistant: First answer.');
-    expect([retry().disabled, del().disabled]).toEqual([false, false]);
+    expect([retry().disabled, del().disabled, edit().disabled]).toEqual([false, false, false]);
+  });
+
+  describe('Edit', () => {
+    // The editor, opened, its box filled and the dialog saved, or cancelled
+    const editText = (text: string) => {
+      $<HTMLTextAreaElement>('#edit-message-input').value = text;
+      $<HTMLFormElement>('#edit-message-form').requestSubmit();
+    };
+
+    it('opens an editor on the message, and is offered even while a reply is in progress', async () => {
+      await type('third question');
+      // A reply on its way: the thread is busy
+      expect($$('#messages .message').at(-1)!.textContent).toContain('Classifying');
+      rightClick('assistant: First answer.');
+      expect([retry().disabled, del().disabled, edit().disabled]).toEqual([true, true, false]);
+
+      rightClick('user: third question');
+      edit().click();
+      expect($('#edit-message-dialog').open).toBe(true);
+      expect($<HTMLTextAreaElement>('#edit-message-input').value).toBe('third question');
+      // A reply is in progress, so the editor says it is stopping it
+      expect($('#edit-message-hint').textContent).toBe(
+        'Stop the reply in progress and start over from the edited message.'
+      );
+    });
+
+    it('scrapes the reply that is waiting to start and asks for the edited message', async () => {
+      llm.cancel.mockClear();
+      await type('third question');
+      const old = sentId();
+      const before = llm.send.mock.calls.length;
+
+      rightClick('user: third question');
+      edit().click();
+      editText('a different third question');
+      await flush();
+
+      // The reply that was waiting is scrapped, not finished: it is cancelled and
+      // the message is asked for again on the new text, one new reply in its place
+      expect(llm.cancel).toHaveBeenCalledWith(old);
+      expect(llm.send.mock.calls.length).toBe(before + 1);
+      expect(sent().messages.at(-1)).toEqual({ role: 'user', content: 'a different third question' });
+      // The old text is gone from the thread
+      expect(messages()).not.toContain('user: third question');
+      expect(messages()).toContain('user: a different third question');
+    });
+
+    it('restarts a reply that is in progress on the edited text, as a retry would', async () => {
+      llm.cancel.mockClear();
+      await type('third question');
+      const old = sentId();
+      const before = llm.send.mock.calls.length;
+      // A reply that has begun its work: a step, and something written
+      emit(old, { type: 'classification', sophistication: 1, effort: 'low', category: 'question', model: 'm' });
+      emit(old, { type: 'text', delta: 'Working on it.' });
+
+      rightClick('user: third question');
+      edit().click();
+      editText('third question, reworded');
+      await flush();
+
+      expect(llm.cancel).toHaveBeenCalledWith(old);
+      expect(llm.send.mock.calls.length).toBe(before + 1);
+      expect(sent().messages.at(-1)).toEqual({ role: 'user', content: 'third question, reworded' });
+    });
+
+    it('does nothing when the text is left unchanged', async () => {
+      llm.cancel.mockClear();
+      await type('third question');
+      const before = llm.send.mock.calls.length;
+
+      rightClick('user: third question');
+      edit().click();
+      editText('third question');
+      await flush();
+
+      // The box was left as it was: nothing is scrapped, and no new reply is asked
+      // for, so the reply the thread was on its way with is left in flight
+      expect(llm.cancel).not.toHaveBeenCalled();
+      expect(llm.send.mock.calls.length).toBe(before);
+    });
+
+    it('backs out without touching the reply', async () => {
+      await type('third question');
+      const old = sentId();
+      rightClick('user: third question');
+      edit().click();
+      $<HTMLButtonElement>('#edit-message-cancel').click();
+      expect($('#edit-message-dialog').open).toBe(false);
+      expect(sentId()).toBe(old);
+    });
   });
 });
 
@@ -5715,6 +5912,48 @@ describe('threads', () => {
         expect(threads.open).toHaveBeenCalledWith(saved().threads[0].id, '/worktrees/spin-off');
       });
 
+      // The move is redrawn the moment the branch event lands, not when the reply
+      // finishes (see the gated re-render it used to call): even a thread the user
+      // is no longer showing moves under its heading
+      it('moves a non-active thread under its heading the moment the branch event lands', async () => {
+        await newThread('/projects/demo');
+        await type('plain');
+        const id = sentId();
+        // A second thread is started in the meantime, so the first is no longer the one on screen
+        await newThread('/projects/demo');
+        await type('second');
+
+        const branch = { name: 'spin-off', base: 'main', worktree: '/worktrees/spin-off' };
+        emit(id, { type: 'branch', branch });
+        await flush();
+
+        expect(rows()).toEqual(['second', '[spin-off]', 'plain']);
+        expect($('#thread-list li.group.branch').title).toBe('spin-off (from main, not pushed)');
+        expect(branchOf('plain')).toEqual(branch);
+        expect(threads.open).toHaveBeenCalledWith(
+          saved().threads.find((t) => t.title === 'plain')!.id,
+          '/worktrees/spin-off'
+        );
+      });
+
+      // A move can come in for a thread that is not the one on screen — a reply still going in
+      // another thread, for instance — and the heading must appear the moment it does, not when that
+      // thread's reply finishes, which is when the full render runs (see the branch handler in events.ts).
+      it('puts a branch under its own heading the moment a thread not on screen is moved onto it', async () => {
+        await newThread('/projects/demo');
+        await type('plain');
+        const moved = sentId();
+        // A general chat becomes the one on screen, so the demo thread is no longer active but is still replying
+        await newThread(null);
+        expect(rows()).not.toContain('[spin-off]');
+
+        emit(moved, { type: 'branch', branch: { name: 'spin-off', base: 'main', worktree: '/worktrees/spin-off' } });
+
+        // The reply has not finished — yet the heading is already in the sidebar
+        expect(rows()).toEqual(['[spin-off]', 'plain']);
+        expect($('#thread-list li.group.branch').title).toBe('spin-off (from main, not pushed)');
+      });
+
       it('unfolds a branch group that was left folded under the same name', async () => {
         await onFeature('on feature');
         $('#thread-list li.group.branch').click();
@@ -5767,6 +6006,28 @@ describe('threads', () => {
         await type('busy');
         $('#thread-list li.group.branch').click();
         expect($('#thread-list li.group.branch .status').classList.contains('working')).toBe(true);
+      });
+
+      it('shows a red dot on a folded branch when one of its replies was left alone', async () => {
+        const quit = async () => {
+          window.dispatchEvent(new Event('beforeunload'));
+          await start();
+          await flush();
+        };
+        await onFeature('on feature');
+        // A reply that the app closes on it, then again: it is left alone, red in its row
+        await type('go on');
+        emit(sentId(), { type: 'text', delta: 'Half an ans' });
+        await quit();
+        await quit();
+        expect($$('#thread-list li.thread .status.failed')).toHaveLength(1);
+        expect($('#thread-list li.group.branch .status')).toBeNull();
+
+        // The branch is folded over the red thread, and its mark comes through
+        $('#thread-list li.group.branch').click();
+        const mark = $<HTMLElement>('#thread-list li.group.branch .status');
+        expect(mark.classList.contains('failed')).toBe(true);
+        expect(mark.title).toBe('The app closed on this reply more than once');
       });
 
       it('opens a branch again when a new thread is started on it', async () => {
@@ -6210,22 +6471,26 @@ describe('threads', () => {
     });
 
     describe('archiving', () => {
-      // Eleven read threads in General chat, 'thread 0' opened longest ago and
-      // 'thread 10' on screen; replies are left running in those named in `running`
-      const eleven = async (running: string[] = []) => {
+      // One thread more than a group keeps, in General chat: 'thread 0' opened
+      // longest ago and the last one on screen; replies are left running in
+      // those named in `running`. Answers with how many a group keeps, so that
+      // a change to MAX_OPEN_THREADS is not a change to these tests.
+      const overfull = async (running: string[] = []) => {
+        const { MAX_OPEN_THREADS } = await import('../src/renderer/shared');
         vi.useFakeTimers({ toFake: ['Date'] });
-        for (let i = 0; i <= 10; i++) {
+        for (let i = 0; i <= MAX_OPEN_THREADS; i++) {
           vi.setSystemTime(Date.now() + 1000);
           if (i > 0) await newThread(null);
           await type(`thread ${i}`);
           if (!running.includes(`thread ${i}`)) finish(sentId());
         }
         vi.useRealTimers();
+        return MAX_OPEN_THREADS;
       };
 
-      it('archives the thread opened longest ago once a group has more than ten', async () => {
-        await eleven();
-        expect(threadTitles()).toHaveLength(10);
+      it('archives the thread opened longest ago once a group has more than it keeps', async () => {
+        const kept = await overfull();
+        expect(threadTitles()).toHaveLength(kept);
         expect(threadTitles()).not.toContain('thread 0');
         await vi.waitFor(() => expect(saved().threads.find((t: any) => t.title === 'thread 0').archived).toBe(true), {
           timeout: 3000,
@@ -6233,21 +6498,21 @@ describe('threads', () => {
       });
 
       it('keeps a thread that is working or has something to look at, and archives the next instead', async () => {
-        await eleven(['thread 0']);
+        const kept = await overfull(['thread 0']);
         expect(threadTitles()[0]).toBe('thread 0');
-        expect(threadTitles()).toHaveLength(10);
+        expect(threadTitles()).toHaveLength(kept);
         expect(threadTitles()).not.toContain('thread 1');
       });
 
       it('counts each workspace on its own', async () => {
-        await eleven();
+        const kept = await overfull();
         await newThread('/projects/alpha');
         expect(sidebar()).toContain('[alpha]');
-        expect(threadTitles()).toHaveLength(11);
+        expect(threadTitles()).toHaveLength(kept + 1);
       });
 
       it('tells the group that older threads are archived and can be searched for', async () => {
-        await eleven();
+        await overfull();
         expect($$('#thread-list li.archived').map((li) => li.textContent)).toEqual([
           'Older threads have been archived. You can still find them in search.',
         ]);
@@ -6258,6 +6523,34 @@ describe('threads', () => {
       it('says nothing when no thread has been archived', async () => {
         await type('hello');
         expect($$('#thread-list li.archived')).toHaveLength(0);
+      });
+
+      // Something can arrive for a thread after it was archived: the reply
+      // that finished while another was on screen, or the one left alone as
+      // the window came up. It comes back rather than waiting unseen.
+      it('brings an archived thread back once something in it needs the user', async () => {
+        await type('thread one');
+        finish(sentId());
+        await newThread(null);
+        await type('thread two');
+        finish(sentId());
+        await vi.waitFor(() => expect(saved().threads).toHaveLength(2));
+
+        const state = saved();
+        const stale = state.threads.find((t: any) => t.title === 'thread one');
+        stale.archived = true;
+        onDisk = JSON.stringify(state);
+        await start();
+        // Archived with nothing waiting in it, so it stays out of the sidebar
+        expect(threadTitles()).toEqual(['thread two']);
+
+        stale.unread = true;
+        onDisk = JSON.stringify(state);
+        await start();
+        expect(threadTitles()).toEqual(['thread one', 'thread two']);
+        await vi.waitFor(() =>
+          expect(saved().threads.find((t: any) => t.title === 'thread one').archived).toBeUndefined()
+        );
       });
     });
 
@@ -6666,7 +6959,7 @@ describe('searching the threads', () => {
 
   it('finds an archived thread, and opening it puts it back at the top of the sidebar', async () => {
     const found = await twoThreads();
-    // Archived as it would be in a workspace with more than ten threads (see archiveStale)
+    // Archived as it would be in a workspace with more than MAX_OPEN_THREADS threads (see archiveStale)
     emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 0, output: 0 }, steps: 1 });
     await vi.waitFor(() => expect(saved().threads).toHaveLength(2));
     const state = saved();
@@ -6901,7 +7194,7 @@ describe('settings screen', () => {
 
     it('gives each provider its own tab, showing one at a time, Anthropic first', async () => {
       await open();
-      expect(names()).toEqual(['Anthropic', 'OpenAI', 'Ollama', 'Sandbox', 'General']);
+      expect(names()).toEqual(['Anthropic', 'OpenAI', 'Ollama', 'GitHub', 'Sandbox', 'General']);
       expect(selected()).toEqual(['Anthropic']);
       expect(visible()).toEqual(['anthropic']);
 
@@ -6946,14 +7239,14 @@ describe('settings screen', () => {
     it('is walked with the arrow keys, with only the one in hand in the tab order', async () => {
       await open();
       const order = () => $$('#settings-tabs [role="tab"]').map((t) => (t as HTMLElement).tabIndex);
-      expect(order()).toEqual([0, -1, -1, -1, -1]);
+      expect(order()).toEqual([0, -1, -1, -1, -1, -1]);
 
       const press = (key: string) =>
         $('#settings-tabs').dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
       press('ArrowDown');
       expect(selected()).toEqual(['OpenAI']);
       expect(visible()).toEqual(['openai']);
-      expect(order()).toEqual([-1, 0, -1, -1, -1]);
+      expect(order()).toEqual([-1, 0, -1, -1, -1, -1]);
 
       press('ArrowUp');
       expect(selected()).toEqual(['Anthropic']);
@@ -8647,6 +8940,43 @@ describe('what a thread is keeping, on a right-click in the sidebar', () => {
       expect(sent().investigate).toBe(true);
     });
 
+    it('is offered for every thread, unchecked, and is sent with what it asks for once checked', async () => {
+      const priority = () => $<HTMLInputElement>('#thread-priority-mode');
+      await rightClick(open());
+      expect($('#thread-priority').hidden).toBe(false);
+      expect(priority().checked).toBe(false);
+      priority().checked = true;
+      priority().dispatchEvent(new Event('change'));
+      $('#thread-dialog-close').click();
+      await asks('change the parser');
+      expect(sent().priority).toBe(true);
+    });
+
+    it('is not sent for a thread left to the model, or when it is put back', async () => {
+      const priority = () => $<HTMLInputElement>('#thread-priority-mode');
+      const kept = () => saved().threads.map((t: { priority?: boolean }) => t.priority);
+      await rightClick(open());
+      priority().checked = true;
+      priority().dispatchEvent(new Event('change'));
+      expect(kept().every((p: boolean | undefined) => p === undefined)).toBe(false);
+      priority().checked = false;
+      priority().dispatchEvent(new Event('change'));
+      expect(kept().every((p: boolean | undefined) => p === undefined)).toBe(true);
+    });
+
+    it('marks the thread in the sidebar at once, and takes the mark back when it is put off', async () => {
+      const priority = () => $<HTMLInputElement>('#thread-priority-mode');
+      const mark = () => $$('#thread-list li.thread .priority').length;
+      expect(mark()).toBe(0);
+      await rightClick(open());
+      priority().checked = true;
+      priority().dispatchEvent(new Event('change'));
+      expect(mark()).toBe(1);
+      priority().checked = false;
+      priority().dispatchEvent(new Event('change'));
+      expect(mark()).toBe(0);
+    });
+
     it("is one thread's own: another thread is still left to the model", async () => {
       await setPlan('always');
       emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 0, output: 0 }, steps: 1 });
@@ -9196,7 +9526,7 @@ describe('picking up a reply the app closed on', () => {
     expect(resumed().did).toEqual([
       'subagent tests (explorer), given "read the tests" reported: They use vitest.',
       'subagent build (worker), given "read the build" was still working when the app closed. ' +
-        'It has been started again and its report will appear in the thread when it is done; do not hand it out again.',
+        'It has been continued, and its report will appear in the thread when it is done; do not hand it out again.',
     ]);
   });
 
@@ -9912,6 +10242,24 @@ describe("asking before the model reads a file on the user's computer", () => {
     expect($('#messages').textContent).toContain('Waiting for your approval');
   });
 
+  it("puts the model's own reason on the card, in its own event", async () => {
+    emit(sentId(), asked('a1', '/home/me/.npmrc'));
+    await flush();
+    emit(sentId(), { type: 'access_justification', id: 'a1', justification: 'to read the npm config.' });
+    await flush();
+    expect(card()?.querySelector('p.justification')?.textContent).toBe('to read the npm config.');
+  });
+
+  it('hands the reason the user gives on a denial to the bridge', async () => {
+    emit(sentId(), asked('a1', '/home/me/.npmrc'));
+    await flush();
+    const denyReason = card()?.querySelector<HTMLInputElement>('.deny-reason');
+    denyReason.value = 'it is a private file';
+    press('Deny');
+    expect(llm.allowFileAccess).toHaveBeenCalledWith('a1', 'deny', 'it is a private file');
+    expect(card()).toBeNull();
+  });
+
   it('offers only the folder where it is a folder that is asked for', async () => {
     emit(sentId(), asked('a1', '/home/me/notes', true));
     await flush();
@@ -9934,7 +10282,7 @@ describe("asking before the model reads a file on the user's computer", () => {
     emit(sentId(), asked('a1', '/home/me/.npmrc'));
     await flush();
     press(label);
-    expect(llm.allowFileAccess).toHaveBeenCalledWith('a1', answer);
+    expect(llm.allowFileAccess).toHaveBeenCalledWith('a1', answer, undefined);
     expect(card()).toBeNull();
     expect($('#messages').textContent).not.toContain('Waiting for your approval');
   });
@@ -9949,8 +10297,8 @@ describe("asking before the model reads a file on the user's computer", () => {
     expect($('#messages').textContent).toContain('Waiting for your approval');
     press('Deny');
     expect(llm.allowFileAccess.mock.calls).toEqual([
-      ['a1', 'once'],
-      ['a2', 'deny'],
+      ['a1', 'once', undefined],
+      ['a2', 'deny', undefined],
     ]);
     expect(card()).toBeNull();
   });
@@ -10005,9 +10353,27 @@ describe("asking before the model runs a command on the user's computer that cou
     emit(sentId(), asked('c1', 'git reset --hard'));
     await flush();
     press(label);
-    expect(llm.allowCommand).toHaveBeenCalledWith('c1', allowed);
+    expect(llm.allowCommand).toHaveBeenCalledWith('c1', allowed, undefined);
     expect(card()).toBeNull();
     expect($('#messages').textContent).not.toContain('Waiting for your approval');
+  });
+
+  it("puts the model's own reason on the card, in its own event", async () => {
+    emit(sentId(), asked('c1', 'git push --force origin main'));
+    await flush();
+    emit(sentId(), { type: 'access_justification', id: 'c1', justification: 'to push the fix.' });
+    await flush();
+    expect(card()?.querySelector('p.justification')?.textContent).toBe('to push the fix.');
+  });
+
+  it('hands the reason the user gives on a denial to the bridge', async () => {
+    emit(sentId(), asked('c1', 'git reset --hard'));
+    await flush();
+    const denyReason = card()?.querySelector<HTMLInputElement>('.deny-reason');
+    denyReason.value = 'it would throw away uncommitted work';
+    press("Don't run it");
+    expect(llm.allowCommand).toHaveBeenCalledWith('c1', false, 'it would throw away uncommitted work');
+    expect(card()).toBeNull();
   });
 
   // The command is the question a reply is most likely stuck on, so it is put first of the two
@@ -10561,6 +10927,37 @@ describe("having a reply's changes checked by a model", () => {
       await flush();
       expect(llm.verify).toHaveBeenCalledTimes(1);
       expect(llm.verify).toHaveBeenCalledWith(expect.objectContaining({ request: 'change a', ...model }));
+    });
+
+    it('marks the change awaiting review while the check goes on, and green once it passes', async () => {
+      let resolveVerify: (value: { passed: boolean; problems: string; model: string }) => void;
+      llm.verify.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveVerify = resolve;
+          }),
+      );
+      settings.autoReview = true;
+      finish();
+      const dot = () => $<HTMLElement>('#thread-list li:not(.group) .status');
+      await flush();
+      expect(llm.verify).toHaveBeenCalledTimes(1);
+      // Not green yet: the change is checked, not written back
+      expect(dot().className).toContain('awaiting-review');
+      expect(dot().title).toBe('Changes awaiting review');
+      resolveVerify({ passed: true, problems: '', model: 'Opus 5' });
+      await flush();
+      expect(dot().className).toContain('changed');
+      expect(dot().className).not.toContain('awaiting-review');
+      expect(dot().title).toBe('Changes to write back');
+    });
+
+    it('marks no change awaiting review when the setting is off', async () => {
+      finish();
+      await flush();
+      const dot = $<HTMLElement>('#thread-list li:not(.group) .status');
+      expect(dot.className).toContain('changed');
+      expect(dot.className).not.toContain('awaiting-review');
     });
 
     it('checks nothing when the setting is off', async () => {

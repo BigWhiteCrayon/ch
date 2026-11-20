@@ -31,6 +31,7 @@ import type {
   Phase,
   ToolImage,
   ToolVideo,
+  RosterEntry,
 } from '../types.js';
 
 export type {
@@ -62,6 +63,7 @@ export type {
   Phase,
   ToolImage,
   ToolVideo,
+  RosterEntry,
 };
 
 export interface Message {
@@ -78,6 +80,10 @@ export interface Message {
   streaming?: boolean;
   // On an 'assistant' message: set when the reply that wrote it finished, and it is the answer rather than narration
   final?: boolean;
+  // On an 'assistant' message: set when the reply declared itself an in-depth
+  // explanation by starting with LARGE_MARKER, which is drawn at the plan's
+  // width (see 'text' in events.ts)
+  large?: boolean;
   // On a reply that has no text yet: what is happening in the meantime
   status?: string;
   // On a 'tool' note: the tool call it reports
@@ -217,7 +223,8 @@ export interface Thread {
   // When the user last opened the thread (see activate)
   opened?: number;
   // Kept out of the sidebar because its group had more than MAX_OPEN_THREADS
-  // (see archiveStale). Still searched; opening it brings it back.
+  // (see archiveStale). Still searched; opening it brings it back, and so does
+  // anything arriving in it that needs the user (see unarchiveNeedy).
   archived?: boolean;
   // Set on a thread that was branched off another while its reply was still on its way (see startOffshoot): the
   // id of that thread. It is a thread in its own right, but the sidebar lists it under the one it came from.
@@ -245,6 +252,11 @@ export interface Thread {
   // follow-ups. Absent is off, and it is kept only when the user turned it on.
   // It takes precedence over plan.
   investigate?: boolean;
+  // The thread's reply takes the lock on the local models ahead of the replies
+  // of other threads, so it is given the gaps between its steps rather than
+  // waiting its turn. Absent is off, and it is kept only when the user turned
+  // it on (see thread-dialog.ts and the queue in ../llm/index.ts).
+  priority?: boolean;
   // How many files the thread was last seen to have changed, which wait to be
   // written back. Kept so that the sidebar can mark the thread before the
   // container is asked; absent is none.

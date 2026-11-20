@@ -46,6 +46,7 @@ import { LEFT_ALONE, continueReply, phaseName, phaseNameDone } from './reply.js'
 import { activeThread, saveSoon } from './threads.js';
 import {
   archiveStale,
+  unarchiveNeedy,
   archivedNote,
   automaticRows,
   groupHeading,
@@ -287,6 +288,7 @@ export function drawMessages(
       div.textContent = m.status;
     } else if (m.role === 'assistant' && (m.text || m.images?.length || m.videos?.length)) {
       div.classList.add('markdown');
+      if (m.large) div.classList.add('large');
       fillReply(div, m);
       if (m.streaming) writing.set(m, div);
     } else if (m.streaming && !m.text) {
@@ -450,6 +452,30 @@ export function drawMessages(
   return streaming;
 }
 
+// The sidebar list on its own: a branch move relocates a thread's row into a new
+// branch sub-heading, so the whole list is rebuilt. It is what makes the branch
+// label update the moment an event lands, on any thread, without the cost of the
+// message view in render().
+export function renderSidebar(): void {
+  // What needs the user comes back first, so that it is in its group before
+  // the group is trimmed again and an idle thread is archived in its place.
+  const brought = unarchiveNeedy();
+  if (archiveStale() || brought) saveSoon();
+  showBadge();
+  threadList.replaceChildren(
+    ...threadGroups().flatMap(({ workspace, threads }) => [
+      groupHeading(workspace, threads),
+      // The threads the app started for itself come first, behind an arrow of
+      // their own: they are the workspace's work rather than the user's, and
+      // what they wrote is already in the workspace's notes.
+      ...(workspace && !isCollapsed(workspace) ? automaticRows(workspace) : []),
+      // ...and under each thread, the subagents it set to work, behind an
+      // arrow of their own in the same way
+      ...(isCollapsed(workspace) ? [] : [...threadsRows(workspace, threads), ...archivedNote(workspace)]),
+    ])
+  );
+}
+
 export function render(): void {
   const active = activeThread();
   // The bubble a reply is streaming into, if one is on screen
@@ -464,20 +490,7 @@ export function render(): void {
   setToTheEnd(false);
   setDrawnThread(active?.id ?? null);
 
-  if (archiveStale()) saveSoon();
-  showBadge();
-  threadList.replaceChildren(
-    ...threadGroups().flatMap(({ workspace, threads }) => [
-      groupHeading(workspace, threads),
-      // The threads the app started for itself come first, behind an arrow of
-      // their own: they are the workspace's work rather than the user's, and
-      // what they wrote is already in the workspace's notes.
-      ...(workspace && !isCollapsed(workspace) ? automaticRows(workspace) : []),
-      // ...and under each thread, the subagents it set to work, behind an
-      // arrow of their own in the same way
-      ...(isCollapsed(workspace) ? [] : [...threadsRows(workspace, threads), ...archivedNote(workspace)]),
-    ])
-  );
+  renderSidebar();
 
   drawMonthCost();
   threadTitle.textContent = active.title;

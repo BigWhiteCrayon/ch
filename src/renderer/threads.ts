@@ -9,6 +9,7 @@ import {
   INDEX_INTERVAL_MS,
   MAX_RECENT_WORKSPACES,
   MAX_RESTARTS,
+  onSave,
   SAVE_INTERVAL_MS,
   saveTimer,
   setIndexed,
@@ -66,8 +67,8 @@ export function load(): State {
           }
           delete was.lines;
           // A subagent that was still working when the app closed is not
-          // working now. It is started again (see resumeSubagents), unless it
-          // cannot be, or has already been started again once and the app
+          // working now. It is continued (see resumeSubagents), unless it
+          // cannot be, or has already been continued once and the app
           // closed on it again: then it is failed, since nothing is going to
           // finish it and left as it was it would show a working mark in the
           // sidebar for ever.
@@ -211,6 +212,10 @@ export function save(): void {
   // its words, whichever way the app goes down.
   window.threads.saveMedia(collectMedia());
   window.threads.save(serialize());
+  // A copy the renderer keeps in step with the threads, such as the roster the
+  // main process holds for a model to read, is pushed from here (see onSave in
+  // shared.ts, registered by renderer/roster.ts)
+  for (const hook of onSave) hook();
   indexSoon();
 }
 

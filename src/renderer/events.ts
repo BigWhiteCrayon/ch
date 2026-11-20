@@ -11,7 +11,7 @@ import {
 } from './shared.js';
 import { activate, save, saveSoon, state } from './threads.js';
 import { branchKey } from './sidebar.js';
-import { drawText, render } from './thread-view.js';
+import { drawText, render, renderSidebar } from './thread-view.js';
 import { about, clock, mergeUsage, recordUsage, tokenCount, usedLine } from './usage.js';
 import {
   CATEGORY_NAMES,
@@ -19,6 +19,7 @@ import {
   CONDENSED,
   CONDENSING,
   describeThread,
+  LARGE_MARKER,
   markFinal,
   phaseName,
   SHORTENING,
@@ -254,6 +255,22 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     return;
   }
 
+  // The model's own reason for the access, written as the question was asked and
+  // put on its card by the question's id (see harness/accessJustifier.ts). It is
+  // not a question: it is said where the question is, and left where the card is
+  // gone by then, as when the question has already been answered or the reply
+  // has moved on.
+  if (event.type === 'access_justification') {
+    const entry =
+      request.fileAccess?.find((asked) => asked.id === event.id) ??
+      request.commandAccess?.find((asked) => asked.id === event.id);
+    if (entry) {
+      entry.justification = event.justification;
+      if (thread.id === state.activeId) render();
+    }
+    return;
+  }
+
   // The model has put a question to the user, asked in the thread like the
   // approval above and not awaited either
   if (event.type === 'question') {
@@ -453,6 +470,19 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     if (!message.text) for (const old of request.thoughts) expanded.delete(old);
     message.text += event.delta;
     request.wrote = true;
+    // A reply declares itself in-depth by starting with the marker, which is
+    // taken out of what it says. Until it is clear whether the marker is
+    // there, a start that could still become it is not drawn.
+    if (!message.large) {
+      const start = message.text.trimStart();
+      if (start.startsWith(LARGE_MARKER)) {
+        message.text = start.slice(LARGE_MARKER.length).trimStart();
+        message.large = true;
+        if (thread.id === state.activeId) render();
+        return;
+      }
+      if (start && LARGE_MARKER.startsWith(start)) return;
+    }
     if (thread.id === state.activeId) drawText(message);
     return;
   }
@@ -530,7 +560,7 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     }
     window.threads.open(thread.id, event.branch.worktree);
     save();
-    if (thread.id === state.activeId) render();
+    renderSidebar();
     return;
   }
 
@@ -664,6 +694,25 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     interject(thread, request, {
       role: 'note',
       text: `Out of credit on ${event.from}; continuing on ${event.to}.`,
+      thoughtId: crypto.randomUUID(),
+    });
+    save();
+    if (thread.id === state.activeId) render();
+    return;
+  }
+
+  if (event.type === 'command_reviewed') {
+    // A git command that could lose work was judged, by a second agent, to be
+    // within the request or non-destructive, and so ran without the user being
+    // asked (see harness/commandReview.ts). It is said in the thread as a compact
+    // note rather than asked as a question: the review is what stood in for the
+    // card, and the user is not put to it.
+    const reason = event.reason.trim();
+    interject(thread, request, {
+      role: 'note',
+      text: reason
+        ? `Command reviewed and run: ${event.why} — ${reason}`
+        : `Command reviewed and run without asking: ${event.why}`,
       thoughtId: crypto.randomUUID(),
     });
     save();

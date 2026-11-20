@@ -2,7 +2,7 @@ import type { Message, ModelInfo, PendingRequest, ProviderStatus, Thread } from 
 
 export const STORAGE_KEY = 'chat-state';
 export const MAX_RECENT_WORKSPACES = 8;
-// How many times a subagent the app closed on is started again before it is
+// How many times a subagent the app closed on is continued before it is
 // failed instead (see resumeSubagents)
 export const MAX_RESTARTS = 1;
 // What the app calls itself in the window title, which the project is added to
@@ -152,6 +152,12 @@ export const automatic = new Map<string, string>();
 export const tabs = new Map<string, string[]>();
 export const onTab = new Map<string, string>();
 export const tabsOf = (thread: Thread) => tabs.get(thread.id) ?? [];
+// Run on every save, alongside it: what keeps a copy the renderer keeps in step
+// with the threads as they are saved. The roster the main process holds is the
+// one such copy, and it is registered here rather than called from save, so that
+// the module that keeps it (which reads the threads as they stand) need not be
+// imported by the one that saves them (a cycle through the threads).
+export const onSave = new Set<() => void>();
 // How each tool is spoken of in the thread: "Reading src/main.ts…" while it
 // is at work and "Read src/main.ts" once it is done. `input` names the part
 // of what the tool was given that says what it is working on; `thing` stands
@@ -194,6 +200,7 @@ export const PURPOSES = {
   compaction: 'Condensing',
   subagent: 'Subagent',
   verification: 'Review',
+  access_justification: 'Reason',
 };
 // How often a reply that is still being written is saved
 export const SAVE_INTERVAL_MS = 1000;
@@ -226,4 +233,4 @@ export const SUMMARY_MIN_MESSAGES = 4;
 export const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // A sidebar group holding more threads than this has the ones opened longest ago
 // archived (see archiveStale): out of the sidebar, but still searched
-export const MAX_OPEN_THREADS = 10;
+export const MAX_OPEN_THREADS = 20;

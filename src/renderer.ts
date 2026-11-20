@@ -30,6 +30,9 @@ import './renderer/rename-feedback.js';
 import './renderer/composer.js';
 import './renderer/attachments.js';
 import './renderer/review-queue.js';
+// The roster of threads the model can list and message, and the messages sent
+// from one thread to another (see ./renderer/roster.ts)
+import './renderer/roster.js';
 
 // The first drawing of the window, and everything else that happens on the way
 // in. Called at the very end of this file, once every module has been evaluated:

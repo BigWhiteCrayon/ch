@@ -475,6 +475,20 @@ describe('classification and routing', () => {
     expect(events[1]).toMatchObject({ type: 'model', model: 'llama:3b', reason: 'picked' });
   });
 
+  // A thread the user marked for priority is given the lock on the local models
+  // ahead of the others' (see src/llm/index.ts), which the queue does when the
+  // request says so: the thread's own reply carries it on, and one left to the
+  // model does not
+  it('gives a thread marked for priority to its reply, and nothing to one left to the model', async () => {
+    script(answer());
+    await collect(run({ ...ask, priority: true }, signal()));
+    expect(snapshots.at(-1)?.priority).toBe(true);
+
+    script(answer());
+    await collect(run(ask, signal()));
+    expect(snapshots.at(-1)?.priority).toBeUndefined();
+  });
+
   it('reports why no model is available, and asks none', async () => {
     mocks.listModels.mockResolvedValue({
       models: [],
@@ -871,6 +885,7 @@ describe('what the model is told', () => {
     expect(system()).toContain('You are a coding agent');
     expect(system()).toContain('This is a question');
     expect(system()).toContain('Write what the user will read in Markdown');
+    expect(system()).toContain('start it with the exact marker <large>');
     expect(snapshots[0].tools).toEqual([]);
     // Everything that only means something to a model holding a tool is left out
     expect(system()).not.toContain('SANDBOX PROMPT');

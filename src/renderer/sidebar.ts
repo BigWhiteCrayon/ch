@@ -1,16 +1,16 @@
 import { state, save, saveSoon, activate, createThread, busy, deleteThread, offshootsOf, sourceOf } from './threads.js';
 import { inflight, MAX_OPEN_THREADS, input, startedAgents, automatic, onTab } from './shared.js';
-import { approvalOf } from './approvals.js';
+import { approvalOf, awaitingReview } from './approvals.js';
 import { questionOf } from './questions.js';
 import { render } from './thread-view.js';
-import { LEFT_ALONE } from './reply.js';
+import { LEFT_ALONE, accountOf } from './reply.js';
 import { openRenameWorkspace } from './rename-feedback.js';
 import { openWorkspaceDialog } from './workspace-dialog.js';
-import { openAgentTab } from './agent-tabs.js';
+import { openAgentTab, agentMessages } from './agent-tabs.js';
 import { postReply, watching } from './events.js';
 import { changesThread, drafting, drawChanges } from './changes.js';
 import { openThreadDialog } from './thread-dialog.js';
-import type { Thread, Message } from './types.js';
+import type { Thread, Message, Resumed } from './types.js';
 
 export function workspaceName(workspace: string): string {
   return state.workspaceNames?.[workspace] ?? ownName(workspace);
@@ -85,6 +85,23 @@ export function archiveStale(): boolean {
   return archived;
 }
 
+// Brings an archived thread back into the sidebar once something is waiting on
+// the user in it. A thread is archived only while it has nothing to say for
+// itself (see archiveStale), but something can arrive for it afterwards: a
+// reply left alone on the way in is the one that happens, since the message
+// saying so is added as the window comes up (see resumeCutOff), by which time
+// the thread had already been archived and nothing looked at it again. Whether
+// any were brought back, for the caller to save.
+export function unarchiveNeedy(): boolean {
+  let brought = false;
+  for (const thread of state.threads) {
+    if (!thread.archived || !needsAttention(thread)) continue;
+    delete thread.archived;
+    brought = true;
+  }
+  return brought;
+}
+
 // Threads by workspace, general chats (no workspace) together, each ordered by
 // byRecency. A group sits where its first thread would, so a thread that has
 // an update brings its workspace to the top with it.
@@ -111,19 +128,42 @@ export function threadGroups(): { workspace: string | undefined; threads: Thread
 function collapsedMark(threads: Thread[]): HTMLSpanElement | null {
   const asking = threads.some((t) => approvalOf(t) || questionOf(t));
   const working = threads.some((t) => inflight.has(t.id));
+  // A reply the app has stopped on, left for the user to pick up again (see threadItem)
+  const stopped = threads.some((t) => leftAlone(t));
+  // A change that, with automatic review on, is not read as green until it has
+  // been checked (see awaitingReview); it sits between a reply the app stopped on
+  // and a change that has waited out its review
+  const awaiting = threads.some(awaitingReview);
   const changed = threads.some((t) => t.changes);
-  if (!asking && !working && !changed && !threads.some((t) => t.unread)) return null;
+  if (!asking && !working && !stopped && !awaiting && !changed && !threads.some((t) => t.unread)) return null;
   const status = document.createElement('span');
-  status.className = `status ${asking ? 'approval' : working ? 'working' : changed ? 'changed' : 'unread'}`;
+  // The order the per-thread rows use, so a folded heading says what the rows
+  // under it would (see threadItem)
+  const kind = asking
+    ? 'approval'
+    : working
+      ? 'working'
+      : stopped
+        ? 'failed'
+        : awaiting
+          ? 'awaiting-review'
+          : changed
+            ? 'changed'
+            : 'unread';
+  status.className = `status ${kind}`;
   status.title = asking
     ? threads.some((t) => approvalOf(t))
       ? 'Needs your approval'
       : 'Needs your answer'
     : working
       ? 'Replying…'
-      : changed
-        ? 'Changes to write back'
-        : 'New reply';
+      : stopped
+        ? 'The app closed on this reply more than once'
+        : awaiting
+          ? 'Changes awaiting review'
+          : changed
+            ? 'Changes to write back'
+            : 'New reply';
   return status;
 }
 
@@ -406,15 +446,36 @@ export function subagentItem(thread: Thread, subagent: Message): HTMLLIElement {
 // two clicks of the same row are one retry
 export const retryingAgents = new Set<string>();
 
-// Runs one failed subagent again (see ../subagents/retry.ts). What it did
-// before is cleared rather than added to: this is the same piece of work being
-// done over, and half of one account followed by half of another would read
-// as neither.
-export async function retrySubagent(thread: Thread, subagent: Message): Promise<void> {
+// What a subagent had done when the app closed on it, so a run that picks it up
+// carries on where it left off rather than starting over (see resumeSubagents in
+// ./reply.js). Its work is read out of the events the window kept of it, the
+// same way its tab is drawn (see agentMessages): a line per tool call and per
+// subagent, with in brief what came back. None, where it had done nothing to
+// carry on from — then it is started again from the top, as a subagent the user
+// asks for again is.
+export function resumedSubagent(subagent: Message): Resumed | undefined {
+  const turn = agentMessages({ name: subagent.text, task: subagent.task, events: subagent.events, working: false });
+  const did = accountOf(turn);
+  const text = turn.flatMap((m) => (m.role === 'assistant' && m.text ? [m.text] : [])).join('\n\n') || undefined;
+  if (did.length === 0 && !text) return undefined;
+  return { did, text };
+}
+
+// Runs one subagent again, in its thread's own container (see
+// ../subagents/retry.ts). Where an account of what it had done is given, it is
+// picked up where the app left it off and that work is kept, so the run that
+// follows reads on from it. Without one — a subagent the user asks for again —
+// it is the same piece of work being done over, so what it did before is
+// cleared rather than added to: half of one account followed by half of another
+// would read as neither.
+export async function retrySubagent(thread: Thread, subagent: Message, resumed?: Resumed): Promise<void> {
   const id = subagent.thoughtId;
   if (!id || !subagent.task || retryingAgents.has(id)) return;
   retryingAgents.add(id);
-  subagent.events = [];
+  // Picked up, not done over: its work so far is kept, so the run that follows
+  // reads on from it. Done over, and it is cleared, so the new work is not left
+  // mixed in with the old.
+  if (!resumed) subagent.events = [];
   delete subagent.finding;
   delete subagent.failed;
   startedAgents.set(subagent, Date.now());
@@ -428,6 +489,9 @@ export async function retrySubagent(thread: Thread, subagent: Message): Promise<
     name: subagent.text,
     task: subagent.task,
     kind: subagent.kind,
+    // What it had done, where it is picked up rather than done over: a subagent
+    // the user asks for again carries none, so the key is not written.
+    ...(resumed ? { resumed } : {}),
   };
   const result = await window.llm.retrySubagent(asked).catch((err: Error) => ({ text: err.message, isError: true }));
   retryingAgents.delete(id);
@@ -585,7 +649,8 @@ export function threadItem(thread: Thread): HTMLLIElement {
     input.focus();
   });
 
-  // A dot: pulsing while a reply is on its way, green while changes wait to be
+  // A dot: pulsing while a reply is on its way, amber while automatic review has
+  // changes to check that are not yet through it, green while changes wait to be
   // written back (whether or not the thread has been read), solid once a reply
   // is waiting unread, red once the app has stopped on a reply (see LEFT_ALONE).
   // An automatic thread has no reply of its own; what is on its way there is the
@@ -594,10 +659,23 @@ export function threadItem(thread: Thread): HTMLLIElement {
   const asking = approving || questionOf(thread) !== undefined;
   const working = inflight.has(thread.id) || isWorking(thread);
   const stopped = leftAlone(thread);
+  // A change that, with automatic review on, is not read as green until it has
+  // been checked (see awaitingReview)
+  const awaiting = awaitingReview(thread);
   const changed = !!thread.changes;
-  if (asking || working || stopped || changed || thread.unread) {
+  if (asking || working || stopped || awaiting || changed || thread.unread) {
     const status = document.createElement('span');
-    const kind = asking ? 'approval' : working ? 'working' : stopped ? 'failed' : changed ? 'changed' : 'unread';
+    const kind = asking
+      ? 'approval'
+      : working
+        ? 'working'
+        : stopped
+          ? 'failed'
+          : awaiting
+            ? 'awaiting-review'
+            : changed
+              ? 'changed'
+              : 'unread';
     status.className = `status ${kind}`;
     status.title = asking
       ? approving
@@ -607,15 +685,26 @@ export function threadItem(thread: Thread): HTMLLIElement {
         ? 'Replying…'
         : stopped
           ? 'The app closed on this reply more than once'
-          : changed
-            ? 'Changes to write back'
-            : 'New reply';
+          : awaiting
+            ? 'Changes awaiting review'
+            : changed
+              ? 'Changes to write back'
+              : 'New reply';
     li.append(status);
   }
 
   const name = document.createElement('span');
   name.className = 'name';
   name.textContent = thread.title;
+
+  // A thread the user marked for priority, so its replies take the local models
+  // ahead of the others' (see thread-dialog.ts). Shown next to its name
+  // whichever status the thread is in.
+  const mark = document.createElement('span');
+  mark.className = 'priority';
+  mark.textContent = '▲';
+  mark.title =
+    'Priority: this thread’s replies take the local models ahead of the other threads’';
 
   const del = document.createElement('button');
   del.className = 'delete';
@@ -635,6 +724,7 @@ export function threadItem(thread: Thread): HTMLLIElement {
     render();
   });
 
+  if (thread.priority) li.append(mark);
   li.append(name, del);
   // ...and on a thread, what the thread itself is keeping
   li.addEventListener('contextmenu', (e) => {
