@@ -44,6 +44,7 @@ import {
   commit,
   defaultBranch,
   ensureWorktree,
+  isMainWorktree,
   mainWorktree,
   mergeToDefault,
   pull,
@@ -109,6 +110,41 @@ describe('mainWorktree', () => {
   it('is nothing when git lists no worktree at all', async () => {
     proc.respond = () => ({ stdout: '\n' });
     expect(await mainWorktree(REPO)).toBeNull();
+  });
+});
+
+describe('isMainWorktree', () => {
+  const listing =
+    `worktree ${REPO}\nHEAD abc\nbranch refs/heads/main\n` +
+    '\nworktree /data/wt\nHEAD def\nbranch refs/heads/feature\n';
+  // Git lists the worktrees, and says which one's top level the folder asked about is in
+  const toplevel = (top: string) => (args: string[]) =>
+    args[2] === 'worktree' ? { stdout: listing } : { stdout: `${top}\n` };
+
+  it("is true in the root of the user's checkout", async () => {
+    proc.respond = toplevel(REPO);
+    expect(await isMainWorktree(REPO)).toBe(true);
+    expect(ran()).toContainEqual(['rev-parse', '--show-toplevel']);
+  });
+
+  it('is true in a folder inside the checkout', async () => {
+    proc.respond = toplevel(REPO);
+    expect(await isMainWorktree(`${REPO}/src`)).toBe(true);
+  });
+
+  it('is false in a worktree of the repository', async () => {
+    proc.respond = toplevel('/data/wt');
+    expect(await isMainWorktree('/data/wt')).toBe(false);
+  });
+
+  it('is false for a folder that is not in a repository', async () => {
+    proc.respond = () => ({ code: 128, stderr: 'fatal: not a git repository' });
+    expect(await isMainWorktree(REPO)).toBe(false);
+  });
+
+  it('is false when git cannot say where the top level is', async () => {
+    proc.respond = (args) => (args[2] === 'worktree' ? { stdout: listing } : { code: 128, stderr: 'fatal' });
+    expect(await isMainWorktree(REPO)).toBe(false);
   });
 });
 
