@@ -39,6 +39,8 @@ function defaults(): Settings {
     openai: { apiKey: '', disabledModels: [] },
     // Any OpenAI-compatible server: Ollama (default), llama.cpp server, LM Studio, ...
     local: { baseURL: defaultLocalURL(), apiKey: '' },
+    // A GitHub API token: no model list, just the key
+    github: { apiKey: '' },
     sophistication: {},
     // '' lets each workspace decide from its own files (see sandbox/docker.ts)
     sandbox: { image: '' },
@@ -135,6 +137,7 @@ export function load(): Settings {
       anthropic: { ...base.anthropic, ...saved.anthropic },
       openai: { ...base.openai, ...saved.openai },
       local: { ...base.local, ...saved.local },
+      github: { ...base.github, ...saved.github },
       sophistication: { ...saved.sophistication },
       sandbox: { ...base.sandbox, ...saved.sandbox },
       // What was not saved is what it is by default, which for an app being tested is not what it is for a user
@@ -171,7 +174,7 @@ export function get(): Settings {
 export function update(patch: SettingsPatch): Settings {
   const next = structuredClone(settings);
 
-  for (const provider of ['anthropic', 'openai', 'local'] as const) {
+  for (const provider of ['anthropic', 'openai', 'local', 'github'] as const) {
     const apiKey = patch[provider]?.apiKey;
     if (apiKey !== undefined) next[provider].apiKey = (apiKey ?? '').trim();
   }
@@ -255,6 +258,7 @@ export function publicView(): PublicSettings {
       hasKey: Boolean(settings.local.apiKey),
       maxContext: settings.local.maxContext,
     },
+    github: { hasKey: Boolean(settings.github.apiKey) },
     sophistication: settings.sophistication,
     sandbox: settings.sandbox,
     offline: settings.offline,

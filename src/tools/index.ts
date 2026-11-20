@@ -14,6 +14,7 @@ import * as context from './context';
 import * as diff from './diff';
 import * as files from './files';
 import * as hostReading from './hostReading';
+import * as jobTools from './jobs';
 import * as list from './list';
 import * as notes from './notes';
 import * as reading from './reading';
@@ -31,6 +32,7 @@ export {
   context,
   diff,
   hostReading,
+  jobTools,
   list,
   notes,
   reading,
@@ -64,6 +66,7 @@ const registered: Tool[] = [
   ...context.tools,
   ...notes.tools,
   ...subagents.tools,
+  ...jobTools.tools,
   ask.tool,
   // Asking for more rounds than the allowance holds, which every loop that
   // counts rounds answers (see ../harness/allowance.ts)

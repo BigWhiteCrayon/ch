@@ -234,6 +234,7 @@ beforeEach(async () => {
     anthropic: { hasKey: true, disabledModels: [] },
     openai: { hasKey: false, disabledModels: [] },
     local: { baseURL: 'http://localhost:11434/v1', hasKey: false },
+    github: { hasKey: false },
     sophistication: {},
     sandbox: { image: '' },
     offline: false,
@@ -6955,7 +6956,7 @@ describe('settings screen', () => {
 
     it('gives each provider its own tab, showing one at a time, Anthropic first', async () => {
       await open();
-      expect(names()).toEqual(['Anthropic', 'OpenAI', 'Ollama', 'Sandbox', 'General']);
+      expect(names()).toEqual(['Anthropic', 'OpenAI', 'Ollama', 'GitHub', 'Sandbox', 'General']);
       expect(selected()).toEqual(['Anthropic']);
       expect(visible()).toEqual(['anthropic']);
 
@@ -7000,14 +7001,14 @@ describe('settings screen', () => {
     it('is walked with the arrow keys, with only the one in hand in the tab order', async () => {
       await open();
       const order = () => $$('#settings-tabs [role="tab"]').map((t) => (t as HTMLElement).tabIndex);
-      expect(order()).toEqual([0, -1, -1, -1, -1]);
+      expect(order()).toEqual([0, -1, -1, -1, -1, -1]);
 
       const press = (key: string) =>
         $('#settings-tabs').dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
       press('ArrowDown');
       expect(selected()).toEqual(['OpenAI']);
       expect(visible()).toEqual(['openai']);
-      expect(order()).toEqual([-1, 0, -1, -1, -1]);
+      expect(order()).toEqual([-1, 0, -1, -1, -1, -1]);
 
       press('ArrowUp');
       expect(selected()).toEqual(['Anthropic']);
