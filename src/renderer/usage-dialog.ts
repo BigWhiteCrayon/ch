@@ -126,6 +126,7 @@ export const PURPOSE_HUE: Record<string, number> = {
   compaction: 95,
   subagent: 30,
   verification: 120,
+  access_justification: 150,
 };
 const EARLIER_HUE = 270;
 export const purposeHue = (key: string): number =>

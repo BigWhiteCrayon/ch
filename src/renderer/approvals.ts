@@ -54,27 +54,27 @@ export type CommandAccessEvent = Extract<HarnessEvent, { type: 'command_access' 
 // Everything the thread can be waiting on an answer to
 export type Asked = ApprovalEvent | FileAccessEvent | CommandAccessEvent;
 
-export function answerFileAccess(requestId: string, answer: FileAccessAnswer): void {
+export function answerFileAccess(requestId: string, answer: FileAccessAnswer, reason?: string): void {
   const request = requests.get(requestId);
   const [asked, ...rest] = request?.fileAccess ?? [];
   if (!request || !asked) return;
   if (rest.length > 0) request.fileAccess = rest;
   else delete request.fileAccess;
   if (!request.approval && !waiting(request) && request.message.status === APPROVING) delete request.message.status;
-  window.llm.allowFileAccess(asked.id, answer);
+  window.llm.allowFileAccess(asked.id, answer, reason);
   render();
 }
 
 // The answer to the command question: this once, or not at all. Nothing is remembered either way — the next command
 // like it is asked about again (see harness/access.ts).
-export function answerCommandAccess(requestId: string, allowed: boolean): void {
+export function answerCommandAccess(requestId: string, allowed: boolean, reason?: string): void {
   const request = requests.get(requestId);
   const [asked, ...rest] = request?.commandAccess ?? [];
   if (!request || !asked) return;
   if (rest.length > 0) request.commandAccess = rest;
   else delete request.commandAccess;
   if (!request.approval && !waiting(request) && request.message.status === APPROVING) delete request.message.status;
-  window.llm.allowCommand(asked.id, allowed);
+  window.llm.allowCommand(asked.id, allowed, reason);
   render();
 }
 
@@ -148,12 +148,15 @@ export function fileAccessCard(requestId: string, event: FileAccessEvent): HTMLE
   card.setAttribute('role', 'group');
   const text = document.createElement('p');
   text.textContent = `The model wants to read ${event.isFolder ? 'the folder ' : ''}${event.path} on your computer.`;
+  const { row: reasonRow, get: getReason } = reasonInput();
   const button = (className: string, label: string, answer: FileAccessAnswer) => {
     const el = document.createElement('button');
     el.type = 'button';
     el.className = className;
     el.textContent = label;
-    el.addEventListener('click', () => answerFileAccess(requestId, answer));
+    el.addEventListener('click', () =>
+      answerFileAccess(requestId, answer, answer === 'deny' ? getReason() : undefined)
+    );
     return el;
   };
   const actions = document.createElement('div');
@@ -174,7 +177,9 @@ export function fileAccessCard(requestId: string, event: FileAccessEvent): HTMLE
           ]
         : [])
   );
-  card.append(text, actions);
+  card.append(text, reasonRow, actions);
+  const line = justificationLine(event);
+  if (line) card.insertBefore(line, actions);
   return card;
 }
 
@@ -194,11 +199,12 @@ export function commandAccessCard(requestId: string, event: CommandAccessEvent):
   const code = document.createElement('code');
   code.textContent = event.command;
   what.append(code);
+  const { row: reasonRow, get: getReason } = reasonInput();
   const decline = document.createElement('button');
   decline.type = 'button';
   decline.className = 'decline';
   decline.textContent = "Don't run it";
-  decline.addEventListener('click', () => answerCommandAccess(requestId, false));
+  decline.addEventListener('click', () => answerCommandAccess(requestId, false, getReason()));
   const allow = document.createElement('button');
   allow.type = 'button';
   allow.className = 'approve primary';
@@ -207,8 +213,43 @@ export function commandAccessCard(requestId: string, event: CommandAccessEvent):
   const actions = document.createElement('div');
   actions.className = 'actions';
   actions.append(decline, allow);
-  card.append(text, what, actions);
+  card.append(text, what, reasonRow, actions);
+  const line = justificationLine(event);
+  if (line) card.insertBefore(line, actions);
   return card;
+}
+
+// The model's own reason for the access, shown on the card as it is written (see
+// the 'access_justification' event in events.ts). The user is being asked to
+// judge the access, and the reason is what they judge, so it is said under the
+// question rather than left to be read out of the thread.
+function justificationLine(event: { justification?: string }): HTMLElement | undefined {
+  if (!event.justification) return undefined;
+  const p = document.createElement('p');
+  p.className = 'justification';
+  p.textContent = event.justification;
+  return p;
+}
+
+// An optional "why" the user may give on a denial, put back to the model so it
+// can adjust rather than only be told no. It returns the row to show and a way
+// to read what the user wrote. Left blank, nothing is said: the plain refusal
+// stands, and the bridge call keeps its two arguments.
+function reasonInput(): { row: HTMLElement; get: () => string | undefined } {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'deny-reason';
+  input.placeholder = 'Why? (optional)';
+  // Not clicked through to the card it sits on, which would answer the question
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('focus', (e) => e.stopPropagation());
+  const row = document.createElement('div');
+  row.className = 'deny-reason-row';
+  const label = document.createElement('label');
+  label.textContent = 'Reason (if you decline)';
+  label.append(input);
+  row.append(label);
+  return { row, get: () => input.value.trim() || undefined };
 }
 
 // Having the changes a reply left checked by a model at least as capable as the

@@ -31,6 +31,7 @@ import type {
   Phase,
   ToolImage,
   ToolVideo,
+  RosterEntry,
 } from '../types.js';
 
 export type {
@@ -62,6 +63,7 @@ export type {
   Phase,
   ToolImage,
   ToolVideo,
+  RosterEntry,
 };
 
 export interface Message {
@@ -87,12 +89,8 @@ export interface Message {
   // user's turn as far as the model is concerned, but nobody typed it, and it
   // is drawn so that nobody thinks they did.
   fromApp?: boolean;
-  // On a 'subagent' message: how much of its piece it says is done, 0 to 100,
-  // while it is still working (see the 'progress' event). Undefined for one
-  // that has not said, or has finished.
-  progress?: number;
-  // ...and the model it is waiting its turn for, while it is waiting for one.
-  // Subagents of one thread take turns at a local model (see
+  // On a 'subagent' message: the model it is waiting its turn for, while it is
+  // waiting for one. Subagents of one thread take turns at a local model (see
   // llm/cachelock.ts), so the row for one that is doing nothing says which.
   waiting?: string;
   // ...and, once it has finished, whether its report was cut for length
@@ -221,7 +219,8 @@ export interface Thread {
   // When the user last opened the thread (see activate)
   opened?: number;
   // Kept out of the sidebar because its group had more than MAX_OPEN_THREADS
-  // (see archiveStale). Still searched; opening it brings it back.
+  // (see archiveStale). Still searched; opening it brings it back, and so does
+  // anything arriving in it that needs the user (see unarchiveNeedy).
   archived?: boolean;
   // Set on a thread that was branched off another while its reply was still on its way (see startOffshoot): the
   // id of that thread. It is a thread in its own right, but the sidebar lists it under the one it came from.
@@ -407,7 +406,4 @@ export interface PendingRequest {
   // written its last word and then had a note put after it is holding an empty
   // bubble and has still answered (see the 'done' event).
   wrote?: boolean;
-  // How far along an agent that is itself a thread says it is, 0 to 100 (see
-  // the 'progress' event). Only the head explorer sends these.
-  progress?: number;
 }

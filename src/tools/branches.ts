@@ -17,8 +17,9 @@
 // The reply and several subagents may work at once, and the thread has one place to live, so the first one to move
 // wins and the rest are told so rather than each moving the thread somewhere else.
 
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import { join } from 'path';
+import * as changes from '../sandbox/changes';
 import * as docker from '../sandbox/docker';
 import { contextFile } from '../sandbox';
 import { withFileLock } from '../sandbox/lock';
@@ -27,6 +28,8 @@ import type { Tool } from '../types';
 
 export const CREATE_TOOL = 'create_branch';
 export const ENTER_TOOL = 'enter_branch';
+export const PUBLISH_TOOL = 'publish_to_branch';
+export const MERGE_TOOL = 'merge_to_main';
 
 // Where worktrees are kept, which is the app's data directory. Set at startup from main.ts, as the other modules
 // that write under it are (see harness/project.ts and search/index.ts).
@@ -64,6 +67,16 @@ const recorded = (branch: Branch) =>
 
 // The repository a branch is made in: the folder the thread works from, resolved to the user's own checkout, so that
 // a thread already on a branch makes its next one in the same place a thread on the main checkout would.
+// Whether two paths are the same folder, asked of the filesystem so that a worktree reached by one name and the
+// checkout reached by another are not taken for two places (/tmp and /private/tmp on macOS, among others).
+function samePlace(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return a === b;
+  }
+}
+
 async function repoOf(workspace: string): Promise<string> {
   const main = await worktree.mainWorktree(workspace);
   if (!main) throw new Error(`${workspace} is not a Git repository, so it has no branches to work on.`);
@@ -169,6 +182,118 @@ a subagent or reply working alongside you has already moved it, you will be told
       return (
         `This thread is now on the branch ${name}, made from ${branch.base}. The files in ${docker.WORKDIR} are ` +
         `unchanged and what has been written in them is a change to ${name}. Carry on with the work you were given.`
+      );
+    },
+  },
+  {
+    name: PUBLISH_TOOL,
+    // Publishes the thread's own changes onto a branch and out to its remote, so they reach whoever else is
+    // on the repository. Like create_branch it does not move the thread anywhere: the branch's worktree is
+    // filled in, committed and pushed, and the thread stays on its own checkout.
+    phases: ['execute'],
+    needsWorkspace: true,
+    description: `Publish this thread's uncommitted changes onto a branch, making the branch if it has no name in
+use, and push it to its remote. The changes are copied into the branch's own folder and committed there, so the
+branch carries them; this thread stays on its own checkout and is not moved, which is what ${ENTER_TOOL} is for.
+A name in use gets the branch it already has, and a name with none makes one starting at this thread's current
+commit. Use it to hand work off onto a branch that another thread or the user can take up.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        branch: {
+          type: 'string',
+          description: 'The branch to publish to, a few words with dashes, e.g. "fix-upload-retry".',
+        },
+        message: {
+          type: 'string',
+          description: 'The commit message for the published changes. Without one, one is made up for you.',
+        },
+      },
+      required: ['branch'],
+    },
+    async run(input, { threadId, workspace }) {
+      if (!threadId) throw new Error('This message has no thread to publish from.');
+      if (!workspace) throw new Error('This thread has no workspace, so there is no repository to publish in.');
+      if (!root) throw new Error('Branches are not set up in this session.');
+      const branch = requireString(input, 'branch');
+      const message = typeof input?.message === 'string' && input.message.trim() ? input.message.trim() : undefined;
+      const repo = await repoOf(workspace);
+      // What the thread's own folder has checked out, which is what its files were copied from: a branch made from
+      // anything else would not match them, and the changes would not read against it.
+      const { current, names } = await worktree.branches(repo);
+      if (!current) throw new Error(`${workspace} has no branch checked out, so there is nothing to publish from.`);
+      const exists = names.includes(branch);
+      // A name with a worktree already in it is filled in as it stands; a name with none is made at the thread's
+      // current commit, so the published changes start from where the thread stands.
+      const wt = await worktree.ensureWorktree(repo, root, branch, current, !exists);
+      // The changes are written in over the branch's worktree, so a worktree that already holds uncommitted work
+      // would have it swept into the published commit. Refuse rather than publish somebody else's work.
+      if (!(await worktree.isClean(wt))) {
+        return `The branch ${branch} already has uncommitted work in its own folder, so nothing was published to it: ` +
+          `publishing would commit that work as well. Settle or remove it first, then publish again.`;
+      }
+      // Writing the thread's changes into the branch's worktree is all or nothing: a conflict in one file writes
+      // none of them. Applying them advances this thread's own baseline, so the changes that go to the branch are
+      // not written back to its checkout again.
+      const r = await changes.apply(threadId, wt);
+      if (r.conflicts.length > 0) {
+        const clash = r.conflicts.map((c) => `- ${c.path}: ${c.reason}`).join('\n');
+        const plural = r.conflicts.length === 1 ? '' : 's';
+        return (
+          `Nothing was published to ${branch}: ${r.conflicts.length} file${plural} conflict${plural} ` +
+          `with what is in its folder, and cannot be written over:\n${clash}`
+        );
+      }
+      if (r.applied.length === 0) {
+        return `No changes to publish to \`${branch}\`: this thread has nothing written in it to copy.`;
+      }
+      const plural = r.applied.length === 1 ? '' : 's';
+      const ok = await worktree.commit(wt, message || `Published from ${current}`);
+      if (!ok) return `Nothing new was found to commit to ${branch}.`;
+      const upstream = await worktree.push(wt);
+      return `Published ${r.applied.length} file${plural} to the branch ${branch} from ${current}, ` +
+        `and pushed it${upstream ? ` to ${upstream}` : ''}.`;
+    },
+  },
+  {
+    name: MERGE_TOOL,
+    phases: ['execute'],
+    needsWorkspace: true,
+    description: `Merge this thread's branch into the repository's main branch. Use it when the work on the branch is
+done and the user has asked for it to go into main.
+
+The main branch is not checked out for this, here or anywhere: if main has moved on it is brought into this thread's
+branch first, in the thread's own folder, and main is then moved forward onto the branch. So a conflict is yours to
+settle, in the folder you work in, where you can try what you settled on; and main itself is only ever moved forward,
+never left holding a half-settled merge. Never check main out to merge it — you do not need it checked out, and it
+belongs to the user's own checkout.
+
+It merges commits, so commit the branch's work first; this is refused while anything in the branch's folder is
+uncommitted. It does not push: ask the user whether to, and say that main has moved locally.`,
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    async run(_input, { workspace, threadId }) {
+      if (!threadId) throw new Error('This message has no thread whose branch could be merged.');
+      if (!workspace) throw new Error('This thread has no workspace, so there is no branch to merge.');
+      const repo = await repoOf(workspace);
+      // A thread working in the user's own checkout has no branch of its own, and what is in that folder is the
+      // user's work rather than the thread's: there is nothing here to merge from.
+      if (samePlace(repo, workspace)) {
+        throw new Error(
+          `This thread works in ${repo}, the user's own checkout, rather than on a branch of its own, so it has ` +
+            `nothing to merge. Make a branch with ${CREATE_TOOL} and move onto it with ${ENTER_TOOL} first.`
+        );
+      }
+      const merged = await worktree.mergeToDefault(repo, workspace);
+      if (merged.already) {
+        return `${merged.target} already has everything on ${merged.branch}, so there was nothing to merge.`;
+      }
+      const brought = merged.brought
+        ? `${merged.target} had moved on and was brought into ${merged.branch} first, `
+        : '';
+      return (
+        `Merged ${merged.branch} into ${merged.target}. ${brought}${merged.target} is now at ` +
+        `${merged.sha.slice(0, 7)}. It was moved forward without being checked out anywhere, and has not been ` +
+        'pushed: the commits are on this computer only until the user asks for them to go to the remote.'
       );
     },
   },
