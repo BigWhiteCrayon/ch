@@ -1,6 +1,6 @@
 import { state, save, saveSoon, activate, createThread, busy, deleteThread, offshootsOf, sourceOf } from './threads.js';
 import { inflight, MAX_OPEN_THREADS, input, startedAgents, automatic, onTab } from './shared.js';
-import { approvalOf } from './approvals.js';
+import { approvalOf, awaitingReview } from './approvals.js';
 import { questionOf } from './questions.js';
 import { render } from './thread-view.js';
 import { LEFT_ALONE, accountOf } from './reply.js';
@@ -130,10 +130,26 @@ function collapsedMark(threads: Thread[]): HTMLSpanElement | null {
   const working = threads.some((t) => inflight.has(t.id));
   // A reply the app has stopped on, left for the user to pick up again (see threadItem)
   const stopped = threads.some((t) => leftAlone(t));
+  // A change that, with automatic review on, is not read as green until it has
+  // been checked (see awaitingReview); it sits between a reply the app stopped on
+  // and a change that has waited out its review
+  const awaiting = threads.some(awaitingReview);
   const changed = threads.some((t) => t.changes);
-  if (!asking && !working && !stopped && !changed && !threads.some((t) => t.unread)) return null;
-  const kind = asking ? 'approval' : working ? 'working' : stopped ? 'failed' : changed ? 'changed' : 'unread';
+  if (!asking && !working && !stopped && !awaiting && !changed && !threads.some((t) => t.unread)) return null;
   const status = document.createElement('span');
+  // The order the per-thread rows use, so a folded heading says what the rows
+  // under it would (see threadItem)
+  const kind = asking
+    ? 'approval'
+    : working
+      ? 'working'
+      : stopped
+        ? 'failed'
+        : awaiting
+          ? 'awaiting-review'
+          : changed
+            ? 'changed'
+            : 'unread';
   status.className = `status ${kind}`;
   status.title = asking
     ? threads.some((t) => approvalOf(t))
@@ -143,9 +159,11 @@ function collapsedMark(threads: Thread[]): HTMLSpanElement | null {
       ? 'Replying…'
       : stopped
         ? 'The app closed on this reply more than once'
-        : changed
-          ? 'Changes to write back'
-          : 'New reply';
+        : awaiting
+          ? 'Changes awaiting review'
+          : changed
+            ? 'Changes to write back'
+            : 'New reply';
   return status;
 }
 
@@ -631,7 +649,8 @@ export function threadItem(thread: Thread): HTMLLIElement {
     input.focus();
   });
 
-  // A dot: pulsing while a reply is on its way, green while changes wait to be
+  // A dot: pulsing while a reply is on its way, amber while automatic review has
+  // changes to check that are not yet through it, green while changes wait to be
   // written back (whether or not the thread has been read), solid once a reply
   // is waiting unread, red once the app has stopped on a reply (see LEFT_ALONE).
   // An automatic thread has no reply of its own; what is on its way there is the
@@ -640,10 +659,23 @@ export function threadItem(thread: Thread): HTMLLIElement {
   const asking = approving || questionOf(thread) !== undefined;
   const working = inflight.has(thread.id) || isWorking(thread);
   const stopped = leftAlone(thread);
+  // A change that, with automatic review on, is not read as green until it has
+  // been checked (see awaitingReview)
+  const awaiting = awaitingReview(thread);
   const changed = !!thread.changes;
-  if (asking || working || stopped || changed || thread.unread) {
+  if (asking || working || stopped || awaiting || changed || thread.unread) {
     const status = document.createElement('span');
-    const kind = asking ? 'approval' : working ? 'working' : stopped ? 'failed' : changed ? 'changed' : 'unread';
+    const kind = asking
+      ? 'approval'
+      : working
+        ? 'working'
+        : stopped
+          ? 'failed'
+          : awaiting
+            ? 'awaiting-review'
+            : changed
+              ? 'changed'
+              : 'unread';
     status.className = `status ${kind}`;
     status.title = asking
       ? approving
@@ -653,9 +685,11 @@ export function threadItem(thread: Thread): HTMLLIElement {
         ? 'Replying…'
         : stopped
           ? 'The app closed on this reply more than once'
-          : changed
-            ? 'Changes to write back'
-            : 'New reply';
+          : awaiting
+            ? 'Changes awaiting review'
+            : changed
+              ? 'Changes to write back'
+              : 'New reply';
     li.append(status);
   }
 

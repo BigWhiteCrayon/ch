@@ -331,6 +331,13 @@ button {
   background: #16a34a;
 }
 
+/* A change automatic review has set out to check but has not reached yet: not
+   green, because it is not yet written back, and not a question, so the warn
+   colour the rest of the "needs a look" marks use */
+#thread-list .status.awaiting-review {
+  background: var(--warn);
+}
+
 /* A reply held up until the user says whether a model may be used */
 #thread-list .status.approval {
   background: var(--warn);
