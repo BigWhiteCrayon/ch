@@ -11,7 +11,7 @@ import {
 } from './shared.js';
 import { activate, save, saveSoon, state } from './threads.js';
 import { branchKey } from './sidebar.js';
-import { drawText, render } from './thread-view.js';
+import { drawText, render, renderSidebar } from './thread-view.js';
 import { about, clock, mergeUsage, recordUsage, tokenCount, usedLine } from './usage.js';
 import {
   CATEGORY_NAMES,
@@ -532,7 +532,7 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     }
     window.threads.open(thread.id, event.branch.worktree);
     save();
-    if (thread.id === state.activeId) render();
+    renderSidebar();
     return;
   }
 

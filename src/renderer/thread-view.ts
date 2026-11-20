@@ -451,20 +451,11 @@ export function drawMessages(
   return streaming;
 }
 
-export function render(): void {
-  const active = activeThread();
-  // The bubble a reply is streaming into, if one is on screen
-  let streaming: HTMLElement | undefined;
-  // Measured before the thread is redrawn, since redrawing it is what moves
-  // the scroll out from under the answer (see FOLLOWING). Of whichever pane is
-  // showing, as it was left by the last render: the other one is not on screen
-  // and has no scroll of its own to speak of, and reading both would have the
-  // hidden one — with no height at all — answer for the one being read.
-  const reading = agentView.hidden ? messagesEl : agentView;
-  const following = toTheEnd || drawnThread !== active?.id || atEnd(reading);
-  setToTheEnd(false);
-  setDrawnThread(active?.id ?? null);
-
+// The sidebar list on its own: a branch move relocates a thread's row into a new
+// branch sub-heading, so the whole list is rebuilt. It is what makes the branch
+// label update the moment an event lands, on any thread, without the cost of the
+// message view in render().
+export function renderSidebar(): void {
   // What needs the user comes back first, so that it is in its group before
   // the group is trimmed again and an idle thread is archived in its place.
   const brought = unarchiveNeedy();
@@ -482,6 +473,23 @@ export function render(): void {
       ...(isCollapsed(workspace) ? [] : [...threadsRows(workspace, threads), ...archivedNote(workspace)]),
     ])
   );
+}
+
+export function render(): void {
+  const active = activeThread();
+  // The bubble a reply is streaming into, if one is on screen
+  let streaming: HTMLElement | undefined;
+  // Measured before the thread is redrawn, since redrawing it is what moves
+  // the scroll out from under the answer (see FOLLOWING). Of whichever pane is
+  // showing, as it was left by the last render: the other one is not on screen
+  // and has no scroll of its own to speak of, and reading both would have the
+  // hidden one — with no height at all — answer for the one being read.
+  const reading = agentView.hidden ? messagesEl : agentView;
+  const following = toTheEnd || drawnThread !== active?.id || atEnd(reading);
+  setToTheEnd(false);
+  setDrawnThread(active?.id ?? null);
+
+  renderSidebar();
 
   drawMonthCost();
   threadTitle.textContent = active.title;
