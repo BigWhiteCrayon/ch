@@ -133,3 +133,41 @@ export function loadMedia(): string | null {
   const held = readMedia();
   return Object.keys(held).length ? JSON.stringify(held) : null;
 }
+
+// The saved jobs, as JSON, or null if nothing usable is saved. Kept in its own
+// file beside the threads rather than in them: the engine that owns it parses
+// and writes the string itself, so this file never has to know its shape.
+const jobsPath = () => path.join(app.getPath('userData'), 'jobs.json');
+
+// As JSON, or null when nothing usable is saved. A file that can't be read as
+// JSON is moved aside, not written over, just as the threads and media are.
+export function loadJobs(): string | null {
+  let text: string;
+  try {
+    text = fs.readFileSync(jobsPath(), 'utf8');
+  } catch {
+    return null; // nothing saved yet
+  }
+  try {
+    JSON.parse(text);
+    return text;
+  } catch (err) {
+    log.error('jobs.load', { ok: false, error: (err as Error).message });
+    try {
+      fs.renameSync(jobsPath(), `${jobsPath()}.unreadable`);
+    } catch {}
+    return null;
+  }
+}
+
+// Never throws: a save that fails is logged, and the next one tries again.
+export function saveJobs(json: string): void {
+  const file = jobsPath();
+  const temporary = `${file}.tmp`;
+  try {
+    fs.writeFileSync(temporary, json, { mode: 0o600 });
+    fs.renameSync(temporary, file);
+  } catch (err) {
+    log.error('jobs.save', { ok: false, bytes: json.length, error: (err as Error).message });
+  }
+}

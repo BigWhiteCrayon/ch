@@ -923,6 +923,42 @@ main > header {
   overflow-wrap: anywhere;
 }
 
+/* The model's own reason for the access, shown as the question is being decided
+   (see the 'access_justification' event). Not the bold lead line the question is,
+   and not the block the command shows as: it is set between them, as what the user
+   is being asked to judge rather than what they are judging. */
+.message.approval .justification {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* The optional reason the user gives on a denial, said to the model. The label
+   and the input sit on one row, as the actions below do. */
+.message.approval .deny-reason-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.message.approval .deny-reason-row label {
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.message.approval .deny-reason {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  font: 13px var(--font);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+}
+
 /* How long the question stands before the fallback is used on its own */
 .message.approval .deadline {
   margin: 8px 0 0;
@@ -1135,10 +1171,11 @@ main > header {
   cursor: zoom-in;
 }
 
-/* Never shrunk to the bubble (no max-width): diagram.ts sets the size with DIAGRAM_SCALE and TARGET_WIDTH, so the
-   words stay legible and a wide diagram scrolls in .diagram instead */
+/* Fits its full-column bubble: the bubble that carries wide media stretches to the column (see below) and
+   .diagram svg scales down to it with max-width; a click opens it full-size */
 .diagram svg {
   display: block;
+  max-width: 100%;
   height: auto;
   font-size: 13px;
 }
@@ -1153,6 +1190,14 @@ main > header {
   fill: var(--text);
   text-anchor: middle;
   dominant-baseline: central;
+}
+
+/* A message that carries wide media takes the whole column, the same way .message.plan does */
+.message:has(.diagram),
+.message:has(.tool-image),
+.message:has(.tool-video) {
+  align-self: stretch;
+  max-width: none;
 }
 
 .diagram .edge path {

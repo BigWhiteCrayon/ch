@@ -101,11 +101,13 @@ describe('defaults', () => {
       anthropic: { apiKey: '', disabledModels: [] },
       openai: { apiKey: '', disabledModels: [] },
       local: { baseURL: 'http://localhost:11434/v1', apiKey: '' },
+      github: { apiKey: '' },
       sophistication: {},
       sandbox: { image: '' },
       offline: false,
       fast: false,
       autoReview: false,
+      commandReview: false,
       approvalCeiling: 5,
       theme: {},
       readable: { global: [], workspaces: {} },
@@ -152,11 +154,13 @@ describe('update', () => {
       anthropic: { apiKey: 'sk-ant-secret', disabledModels: ['claude-haiku-4-5'] },
       openai: { apiKey: 'sk-openai-secret', disabledModels: [] },
       local: { baseURL: 'http://other:1/v1', apiKey: 'local-secret' },
+      github: { apiKey: '' },
       sophistication: { 'local/llama3.2:3b': 4 },
       sandbox: { image: 'node:22-bookworm-slim' },
       offline: true,
       fast: true,
       autoReview: false,
+      commandReview: false,
       approvalCeiling: 5,
       theme: {},
       readable: { global: [], workspaces: {} },
@@ -325,6 +329,17 @@ describe('update', () => {
     expect(settings.get().autoReview).toBe(false);
   });
 
+  it('switches command review on and off, and starts with it off', () => {
+    expect(settings.get().commandReview).toBe(false);
+    settings.update({ commandReview: true });
+    expect(settings.get().commandReview).toBe(true);
+    expect(settings.publicView().commandReview).toBe(true);
+    settings.update({ fast: true });
+    expect(settings.get().commandReview).toBe(true);
+    settings.update({ commandReview: 'yes' as unknown as boolean });
+    expect(settings.get().commandReview).toBe(false);
+  });
+
   it('takes an approval ceiling from 1 to 5 and ignores anything else', () => {
     settings.update({ approvalCeiling: 3 });
     expect(settings.get().approvalCeiling).toBe(3);
@@ -424,11 +439,13 @@ describe('load', () => {
       anthropic: { apiKey: 'k', disabledModels: [] },
       openai: { apiKey: '', disabledModels: [] },
       local: { baseURL: 'http://x/v1', apiKey: '' },
+      github: { apiKey: '' },
       sophistication: {},
       sandbox: { image: '' },
       offline: false,
       fast: false,
       autoReview: false,
+      commandReview: false,
       approvalCeiling: 5,
       theme: {},
       readable: { global: [], workspaces: {} },
@@ -463,11 +480,13 @@ describe('publicView', () => {
       anthropic: { hasKey: true, disabledModels: ['m'] },
       openai: { hasKey: false, disabledModels: [] },
       local: { baseURL: 'http://localhost:11434/v1', hasKey: true },
+      github: { hasKey: false },
       sandbox: { image: '' },
       sophistication: { 'local/a': 2 },
       offline: false,
       fast: false,
       autoReview: false,
+      commandReview: false,
       approvalCeiling: 5,
       theme: { '--bg': '#abcdef' },
       setup: { completed: false, version: 0, skipped: [] },

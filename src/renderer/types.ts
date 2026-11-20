@@ -31,6 +31,7 @@ import type {
   Phase,
   ToolImage,
   ToolVideo,
+  RosterEntry,
 } from '../types.js';
 
 export type {
@@ -62,6 +63,7 @@ export type {
   Phase,
   ToolImage,
   ToolVideo,
+  RosterEntry,
 };
 
 export interface Message {
@@ -217,7 +219,8 @@ export interface Thread {
   // When the user last opened the thread (see activate)
   opened?: number;
   // Kept out of the sidebar because its group had more than MAX_OPEN_THREADS
-  // (see archiveStale). Still searched; opening it brings it back.
+  // (see archiveStale). Still searched; opening it brings it back, and so does
+  // anything arriving in it that needs the user (see unarchiveNeedy).
   archived?: boolean;
   // Set on a thread that was branched off another while its reply was still on its way (see startOffshoot): the
   // id of that thread. It is a thread in its own right, but the sidebar lists it under the one it came from.

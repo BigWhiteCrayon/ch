@@ -3,6 +3,8 @@ import os from 'os';
 import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as access from '../../src/harness/access';
+import * as commandReview from '../../src/harness/commandReview';
+import * as worktree from '../../src/sandbox/worktree';
 import { tool } from '../../src/tools/hostReading';
 
 vi.mock('../../src/harness/access', () => ({
@@ -12,17 +14,34 @@ vi.mock('../../src/harness/access', () => ({
   relativeToWorkspace: vi.fn(() => null),
 }));
 
+// The thread works in a folder of its own, on a branch, in a repository whose main branch is called main. Changed
+// by the tests about threads that are not on a branch of their own.
+vi.mock('../../src/sandbox/worktree', () => ({
+  mainWorktree: vi.fn(),
+  defaultBranch: vi.fn(),
+}));
+
+// The command reviewer (see ../../src/harness/commandReview.ts) is mocked here so the gate can be asked about its
+// verdict rather than run a subagent: the tests of the runner itself are in ../../tests/harness/commandReview.test.ts.
+vi.mock('../../src/harness/commandReview', () => ({ review: vi.fn() }));
+
+const mainWorktree = vi.mocked(worktree.mainWorktree);
+const defaultBranch = vi.mocked(worktree.defaultBranch);
 const permitted = vi.mocked(access.permitted);
 const confirmed = vi.mocked(access.confirmed);
 const inside = vi.mocked(access.relativeToWorkspace);
+const review = vi.mocked(commandReview.review);
 const context = { signal: new AbortController().signal, threadId: 't1', workspace: '/w', emit: vi.fn() } as any;
 const run = (input: Record<string, unknown>) => tool.run(input, context);
 let dir: string;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  permitted.mockResolvedValue(true);
-  confirmed.mockResolvedValue(true);
+  permitted.mockResolvedValue({ allowed: true });
+  confirmed.mockResolvedValue({ allowed: true });
+  review.mockResolvedValue(null);
+  mainWorktree.mockResolvedValue('/repo');
+  defaultBranch.mockResolvedValue('main');
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'host-command-'));
 });
 
@@ -155,9 +174,52 @@ describe('run_host_command', () => {
   });
 
   it('does not run it when the user says no, and says so', async () => {
-    confirmed.mockResolvedValue(false);
+    confirmed.mockResolvedValue({ allowed: false });
     await expect(run({ path: dir, command: 'git reset --hard' })).rejects.toThrow('did not allow "git reset --hard"');
     expect(fs.existsSync(path.join(dir, '.git'))).toBe(false);
+  });
+
+  // With the opt-in command review on, a second agent stands in for the question (see
+  // ../../src/harness/commandReview.ts). The gate asks it, and an approval lets the command run without the user
+  // being asked, the review shown as a note rather than as a card; a hold, or a run that came back no verdict,
+  // falls through to the question as it always did.
+  describe('the opt-in command review', () => {
+    it('runs the command without asking when the reviewer approves it, and says so as a note', async () => {
+      review.mockResolvedValue({ approved: true, reason: 'within the request' });
+      const result = await run({ path: dir, command: 'git reset --hard HEAD~3' });
+      expect(result).toContain('exit code');
+      expect(review).toHaveBeenCalledTimes(1);
+      expect(confirmed).not.toHaveBeenCalled();
+      expect(permitted).not.toHaveBeenCalled();
+      // The note is emitted rather than the card, with the risk and the reason
+      expect(context.emit).toHaveBeenCalledWith({
+        type: 'command_reviewed',
+        command: 'git reset --hard HEAD~3',
+        path: dir,
+        why: expect.any(String),
+        reason: 'within the request',
+      });
+      // What it approved still ran through the confinement below, not past it
+      expect(review.mock.calls[0][0]).toMatchObject({
+        command: 'git reset --hard HEAD~3',
+        path: dir,
+        intention: context.intention ?? '',
+      });
+    });
+
+    it('asks the user when the reviewer holds, as it did before the review', async () => {
+      review.mockResolvedValue({ approved: false, reason: 'not within the request' });
+      await run({ path: dir, command: 'git push --force origin main' });
+      expect(confirmed).toHaveBeenCalledTimes(1);
+      expect(context.emit).not.toHaveBeenCalled();
+    });
+
+    it('asks the user when the review comes back no verdict, the review off or a run that did not decide', async () => {
+      review.mockResolvedValue(null);
+      await run({ path: dir, command: 'git clean -fd' });
+      expect(confirmed).toHaveBeenCalledTimes(1);
+      expect(context.emit).not.toHaveBeenCalled();
+    });
   });
 
   // The thread's own workspace is not asked about as a folder, the thread working on it already; what could lose
@@ -193,7 +255,7 @@ describe('run_host_command', () => {
   });
 
   it('refuses when the user does not allow the folder', async () => {
-    permitted.mockResolvedValue(false);
+    permitted.mockResolvedValue({ allowed: false });
     await expect(run({ path: dir, command: 'ls' })).rejects.toThrow('did not allow');
     expect(permitted).toHaveBeenCalledWith(dir, true, context);
   });
@@ -256,5 +318,51 @@ describe('run_host_command', () => {
     fs.writeFileSync(path.join(dir, 'big.txt'), 'a'.repeat(70 * 1024));
     const result = await run({ path: dir, command: 'cat big.txt' });
     expect(result).toContain('output cut at');
+  });
+
+  // A thread on a branch of its own may not take the repository's main branch away from the user's checkout. This is
+  // the one thing refused outright rather than put to the user: "git worktree add wt main" reads as a reasonable step
+  // towards a merge, and what is wrong with it — the folder left behind holding main — is not what the question would
+  // be about. The merge it is reaching for needs no checkout at all (see merge_to_main).
+  describe("the user's main branch", () => {
+    it.each(['git checkout main', 'git switch main', 'git worktree add main-merge-wt main'])(
+      'refuses %s from a thread on a branch, without asking',
+      async (command) => {
+        await expect(run({ path: dir, command })).rejects.toThrow('merge_to_main');
+        expect(confirmed).not.toHaveBeenCalled();
+        expect(permitted).not.toHaveBeenCalled();
+      }
+    );
+
+    it('says what to do instead', async () => {
+      await expect(run({ path: dir, command: 'git checkout main' })).rejects.toThrow(
+        /belongs to the user's checkout at \/repo/
+      );
+    });
+
+    it('refuses whatever the branch is called here', async () => {
+      defaultBranch.mockResolvedValue('trunk');
+      await expect(run({ path: dir, command: 'git switch trunk' })).rejects.toThrow('merge_to_main');
+      // ...and lets through the name that is not this repository's
+      await run({ path: dir, command: 'git switch main' });
+      expect(permitted).toHaveBeenCalled();
+    });
+
+    it('leaves reading it alone', async () => {
+      await run({ path: dir, command: 'git log main' });
+      await run({ path: dir, command: 'git worktree list' });
+      expect(confirmed).toHaveBeenCalledTimes(1); // the worktree subcommand, asked about as it always was
+    });
+
+    it('leaves a thread working in the checkout itself alone', async () => {
+      mainWorktree.mockResolvedValue('/w');
+      await run({ path: dir, command: 'git checkout main' });
+      expect(permitted).toHaveBeenCalled();
+    });
+
+    it('leaves other branches alone', async () => {
+      await run({ path: dir, command: 'git checkout feature' });
+      expect(permitted).toHaveBeenCalled();
+    });
   });
 });

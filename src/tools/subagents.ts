@@ -35,11 +35,8 @@ const READS_ONLY = 'explorer';
 // are the same in the two.
 const explorerOnly = (phase?: Phase) => phase === 'explore' || phase === 'plan';
 
-// The description in the parts a step may or may not be told. The finding-out
-// step may send one kind and no other (see run below), so it is given neither
-// the kinds it cannot ask for nor the reasons for choosing between them: a
-// description is resent on every round of every request, and the choice it
-// would be describing is one the model would be refused if it ever made it.
+// What handing out is, which no step is told differently (see EVERY_STEP for
+// the parts that used to be).
 const WHAT_IT_IS = `Hand pieces of a job to subagents, each working in the same container on the same files as you.
 Each one starts with nothing but the task you write for it, and that is the point: a piece stated plainly and done by
 someone holding only that piece is done better than the same piece done by you, holding the whole conversation
@@ -57,10 +54,35 @@ would bring back the first third of it and a report saying so. Start it without 
 want to be able to talk to it as it works: an agent stays for as long as you have anything more to say to it, and
 ${MESSAGE_TOOL} is how you say it.`;
 
-const EVERY_KIND = `Use it when a job splits into pieces that do not depend on each other and each takes real work:
+// What handing out is for, which is not the same in every step: the
+// finding-out and planning steps may send one kind and no other (see run
+// below), and the doing step holds no tool that writes a file (see
+// ./sandbox.ts), so there a change reaches the files through a coder or not at
+// all. Each step used to be told its own part and no more, a description being
+// resent on every round of every request.
+//
+// They are told all three now, each named by the step it holds for. What that
+// costs is the two sentences a step does not need; what it buys is a tool that
+// renders the same in every step, which is what lets it be written at the top
+// of the list every step is sent and lets two steps of a reply share the whole
+// of that list (see breadth in ../harness/phases.ts). A step is told which one
+// it is by its own instructions (see PROMPTS there), so naming the steps here
+// is a rule a model can follow rather than one it has to guess at.
+const EVERY_STEP = `Use it when a job splits into pieces that do not depend on each other and each takes real work:
 making the same kind of change in several places, or finding out about several parts of the project at once. Do not
-use it for work where one piece needs the result of another, for something you can do in a single tool call, or for
-pieces that would write to the same file.
+use it for work where one piece needs the result of another, for something you can do in a single tool call of your
+own, or for pieces that would write to the same file.
+
+Which step you are in settles what it is for. In the finding-out step and the planning step every piece goes to an
+${READS_ONLY}, which reads the project and writes what it finds into the workspace's notes, in a window of its own
+rather than in yours; a piece for any other kind is refused there. In the doing step this is how the change is made:
+no tool there writes a file, so every change in the plan goes to a coder, which makes it in this container's files
+and checks it. The other kinds are for what the doing still needs — something looked up, something checked — and
+what you keep for yourself is what needs the whole job in view.
+
+Hand out as many pieces at once as are genuinely independent. Never give two pieces the same file to write: that is
+one piece, however much of it there is. Never hand out a piece that needs what another piece is doing; wait for that
+one and hand this out after it.
 
 Say which kind of subagent each piece wants. They are told different things and given different tools, so the kind is
 most of what decides whether a piece comes back done:
@@ -70,32 +92,6 @@ ${THE_AGENT}
 
 A piece for a coder is always rated lower than the complexity of this thread's request; a higher rating is lowered
 to fit.`;
-
-// ...and in the doing step, where it is not one way of working but the only
-// one: that step holds no tool that writes a file (see ../tools/sandbox.ts), so
-// a change reaches the files through a coder or not at all. What EVERY_KIND
-// says about a single tool call is untrue here for the same reason.
-const MAKES_THE_CHANGE = `In this step this is how the change is made: no tool here writes a file, so every change
-in the plan goes to a coder, which makes it in this container's files and checks it. The other kinds are for what the
-doing still needs — something looked up, something checked — and what you keep for yourself is what needs the whole
-job in view.
-
-Hand out as many pieces as are genuinely independent. Never give two pieces the same file to write: that is one
-piece, however much of it there is. Never hand out a piece that needs what another piece is doing; wait for that one
-and hand this out after it.
-
-Say which kind of subagent each piece wants. They are told different things and given different tools, so the kind is
-most of what decides whether a piece comes back done:
-${choices}
-
-${THE_AGENT}
-
-A piece for a coder is always rated lower than the complexity of this thread's request; a higher rating is lowered
-to fit.`;
-
-const READERS_ONLY = `In this step every piece goes to an explorer, which reads the project and writes what it finds
-into the workspace's notes, in a window of its own rather than in yours. Hand out as many at once as there are parts
-of the project that do not depend on each other.`;
 
 const HOW_TO_WRITE_ONE = `Rate each piece as well: how capable a model it needs, and how much work it is. A piece goes
 to the least capable model that meets its rating, so rating the easy pieces low is what makes handing work out quick
@@ -112,13 +108,24 @@ What you can do, once a piece you did not wait for is running, is write to it wi
 to narrow it, to tell it something you have since found out, or to ask how far along it is. So a task that was stated
 imperfectly is worth a message rather than a second subagent.`;
 
-const described = (middle: string) => [WHAT_IT_IS, middle, HOW_TO_WRITE_ONE].join('\n\n');
+const DESCRIPTION = [WHAT_IT_IS, EVERY_STEP, HOW_TO_WRITE_ONE].join('\n\n');
 
-// What it takes, given the kinds the step asking may send. Where there is only
-// one, the enum is that one and `kind` is required: the default is a worker,
-// and a worker asked for from the finding-out step is refused, so leaving the
-// field out there costs a round to be told so.
-const schema = (kinds: string[]): Record<string, unknown> => ({
+// What it takes, which is the same in every step - the two that may send one
+// kind only included (see explorerOnly). The bound on what they may send is
+// kept by the refusal in run below and no longer by the schema as well.
+//
+// An enum of one was the shorter way to say it, and it saved the finding-out
+// step the round it spends being refused where it asks for a kind it cannot
+// have. What it cost is the tool list: Ollama's renderers write the tool
+// definitions above the instructions, so a schema that changes with the step
+// ends what two steps of a reply share of their prompts at this tool, and
+// everything written below it is read again at every step boundary (see
+// breadth in ../harness/phases.ts). Offered in all four steps, this tool is at
+// the top of that list, so what it cost was the whole of it.
+//
+// What a step may send is said in words instead, in a description that is also
+// the same in every step (see EVERY_STEP).
+const EVERY_KIND_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
     tasks: {
@@ -133,11 +140,8 @@ const schema = (kinds: string[]): Record<string, unknown> => ({
           },
           kind: {
             type: 'string',
-            enum: kinds,
-            description:
-              kinds.length === 1
-                ? `Which kind of subagent is to do this piece. In this step it can only be "${kinds[0]}".`
-                : `Which kind of subagent is to do this piece. Defaults to ${DEFAULT_KIND.name}.`,
+            enum: KINDS.map(({ name }) => name),
+            description: `Which kind of subagent is to do this piece. Defaults to ${DEFAULT_KIND.name}.`,
           },
           task: {
             type: 'string',
@@ -168,15 +172,12 @@ want to talk to while it works, and for an agent you mean to keep. True for a pi
 one or two calls answer it. medium: some looking and a few steps. high: many steps, or work across several files.`,
           },
         },
-        required: kinds.length === 1 ? ['name', 'task', 'kind'] : ['name', 'task'],
+        required: ['name', 'task'],
       },
     },
   },
   required: ['tasks'],
-});
-
-const EVERY_KIND_SCHEMA = schema(KINDS.map(({ name }) => name));
-const READERS_ONLY_SCHEMA = schema([READS_ONLY]);
+};
 
 export const tool: Tool = {
   name: TOOL_NAME,
@@ -185,16 +186,13 @@ export const tool: Tool = {
   // and before it. In the two that change nothing (finding out, planning) it is
   // the way out of reading a project into a window that has a plan to fit in, and
   // there only an explorer may be sent (see run below). In the suggest step the
-  // change being made in a demo copy that is reverted, so it falls to EVERY_KIND,
-  // the change reaching the files through whoever is handed the piece (see
+  // change is made in a demo copy that is reverted, so every kind may be sent
+  // there, the change reaching the files through whoever is handed the piece (see
   // phases.SUGGESTION). What it may hand out in the changeless steps is checked in
   // run below.
   phases: ['explore', 'plan', 'execute', 'suggest'],
-  description: described(EVERY_KIND),
-  describe: (phase) =>
-    described(explorerOnly(phase) ? READERS_ONLY : phase === 'execute' ? MAKES_THE_CHANGE : EVERY_KIND),
+  description: DESCRIPTION,
   inputSchema: EVERY_KIND_SCHEMA,
-  schemaFor: (phase) => (explorerOnly(phase) ? READERS_ONLY_SCHEMA : EVERY_KIND_SCHEMA),
 
   async run(input, context) {
     const pieces = parse(input);

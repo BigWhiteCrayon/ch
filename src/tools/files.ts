@@ -110,8 +110,10 @@ to read is searched or sampled with run_host_command instead (rg, grep, head, ta
     } catch {
       // Reported after the question, if it is still a problem then
     }
-    if (!(await access.permitted(target, isFolder, context))) {
-      throw new Error(`The user did not allow reading ${target}.`);
+    const accessResult = await access.permitted(target, isFolder, context);
+    if (!accessResult.allowed) {
+      const reason = accessResult.reason ? ` ${accessResult.reason}` : '';
+      throw new Error(`The user did not allow reading ${target}.${reason}`);
     }
     try {
       fs.statSync(target);

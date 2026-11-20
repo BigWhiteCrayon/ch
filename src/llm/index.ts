@@ -345,7 +345,7 @@ const howLong = (ms: number) =>
   ms < 60_000 ? `${Math.round(ms / 1000)} seconds` : `${Math.round(ms / 60_000)} minutes`;
 
 // A signal that aborts after `ms`, unless that is called off first
-function deadline(ms: number): { signal: AbortSignal; clear(): void } {
+export function deadline(ms: number): { signal: AbortSignal; clear(): void } {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   return { signal: controller.signal, clear: () => clearTimeout(timer) };
@@ -395,7 +395,7 @@ export function backoff(attempt: number, asked?: number, random = Math.random): 
 const ESTIMATE_EVERY_MS = 250;
 
 // Waits, unless whoever asked has given up first
-const wait = (ms: number, signal: AbortSignal) =>
+export const wait = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
     const timer = setTimeout(done, ms);
     function done() {

@@ -240,6 +240,22 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     return;
   }
 
+  // The model's own reason for the access, written as the question was asked and
+  // put on its card by the question's id (see harness/accessJustifier.ts). It is
+  // not a question: it is said where the question is, and left where the card is
+  // gone by then, as when the question has already been answered or the reply
+  // has moved on.
+  if (event.type === 'access_justification') {
+    const entry =
+      request.fileAccess?.find((asked) => asked.id === event.id) ??
+      request.commandAccess?.find((asked) => asked.id === event.id);
+    if (entry) {
+      entry.justification = event.justification;
+      if (thread.id === state.activeId) render();
+    }
+    return;
+  }
+
   // The model has put a question to the user, asked in the thread like the
   // approval above and not awaited either
   if (event.type === 'question') {
@@ -650,6 +666,25 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     interject(thread, request, {
       role: 'note',
       text: `Out of credit on ${event.from}; continuing on ${event.to}.`,
+      thoughtId: crypto.randomUUID(),
+    });
+    save();
+    if (thread.id === state.activeId) render();
+    return;
+  }
+
+  if (event.type === 'command_reviewed') {
+    // A git command that could lose work was judged, by a second agent, to be
+    // within the request or non-destructive, and so ran without the user being
+    // asked (see harness/commandReview.ts). It is said in the thread as a compact
+    // note rather than asked as a question: the review is what stood in for the
+    // card, and the user is not put to it.
+    const reason = event.reason.trim();
+    interject(thread, request, {
+      role: 'note',
+      text: reason
+        ? `Command reviewed and run: ${event.why} — ${reason}`
+        : `Command reviewed and run without asking: ${event.why}`,
       thoughtId: crypto.randomUUID(),
     });
     save();
