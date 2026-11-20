@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as access from '../../src/harness/access';
+import * as worktree from '../../src/sandbox/worktree';
 import { tool } from '../../src/tools/hostReading';
 
 vi.mock('../../src/harness/access', () => ({
@@ -12,6 +13,15 @@ vi.mock('../../src/harness/access', () => ({
   relativeToWorkspace: vi.fn(() => null),
 }));
 
+// The thread works in a folder of its own, on a branch, in a repository whose main branch is called main. Changed
+// by the tests about threads that are not on a branch of their own.
+vi.mock('../../src/sandbox/worktree', () => ({
+  mainWorktree: vi.fn(),
+  defaultBranch: vi.fn(),
+}));
+
+const mainWorktree = vi.mocked(worktree.mainWorktree);
+const defaultBranch = vi.mocked(worktree.defaultBranch);
 const permitted = vi.mocked(access.permitted);
 const confirmed = vi.mocked(access.confirmed);
 const inside = vi.mocked(access.relativeToWorkspace);
@@ -23,6 +33,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   permitted.mockResolvedValue(true);
   confirmed.mockResolvedValue(true);
+  mainWorktree.mockResolvedValue('/repo');
+  defaultBranch.mockResolvedValue('main');
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'host-command-'));
 });
 
@@ -256,5 +268,51 @@ describe('run_host_command', () => {
     fs.writeFileSync(path.join(dir, 'big.txt'), 'a'.repeat(70 * 1024));
     const result = await run({ path: dir, command: 'cat big.txt' });
     expect(result).toContain('output cut at');
+  });
+
+  // A thread on a branch of its own may not take the repository's main branch away from the user's checkout. This is
+  // the one thing refused outright rather than put to the user: "git worktree add wt main" reads as a reasonable step
+  // towards a merge, and what is wrong with it — the folder left behind holding main — is not what the question would
+  // be about. The merge it is reaching for needs no checkout at all (see merge_to_main).
+  describe("the user's main branch", () => {
+    it.each(['git checkout main', 'git switch main', 'git worktree add main-merge-wt main'])(
+      'refuses %s from a thread on a branch, without asking',
+      async (command) => {
+        await expect(run({ path: dir, command })).rejects.toThrow('merge_to_main');
+        expect(confirmed).not.toHaveBeenCalled();
+        expect(permitted).not.toHaveBeenCalled();
+      }
+    );
+
+    it('says what to do instead', async () => {
+      await expect(run({ path: dir, command: 'git checkout main' })).rejects.toThrow(
+        /belongs to the user's checkout at \/repo/
+      );
+    });
+
+    it('refuses whatever the branch is called here', async () => {
+      defaultBranch.mockResolvedValue('trunk');
+      await expect(run({ path: dir, command: 'git switch trunk' })).rejects.toThrow('merge_to_main');
+      // ...and lets through the name that is not this repository's
+      await run({ path: dir, command: 'git switch main' });
+      expect(permitted).toHaveBeenCalled();
+    });
+
+    it('leaves reading it alone', async () => {
+      await run({ path: dir, command: 'git log main' });
+      await run({ path: dir, command: 'git worktree list' });
+      expect(confirmed).toHaveBeenCalledTimes(1); // the worktree subcommand, asked about as it always was
+    });
+
+    it('leaves a thread working in the checkout itself alone', async () => {
+      mainWorktree.mockResolvedValue('/w');
+      await run({ path: dir, command: 'git checkout main' });
+      expect(permitted).toHaveBeenCalled();
+    });
+
+    it('leaves other branches alone', async () => {
+      await run({ path: dir, command: 'git checkout feature' });
+      expect(permitted).toHaveBeenCalled();
+    });
   });
 });
