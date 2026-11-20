@@ -4162,6 +4162,13 @@ describe('commenting on a reply', () => {
     expect(width).toBeGreaterThan(height);
   });
 
+  it('draws a small graph at its natural size instead of scaling it up', async () => {
+    await answered('```mermaid\nflowchart TD\nA[One] --> B[Two]\n```');
+    const svg = $('#messages .message.assistant .diagram svg');
+    const { width } = diagramBox();
+    expect(Number(svg.getAttribute('width'))).toBe(width);
+  });
+
   it('turns a long right-to-left diagram bottom-up, then packs it into a grid of columns', async () => {
     await answered(chain('RL'));
     const svg = $('#messages .message.assistant .diagram svg');
@@ -4192,6 +4199,39 @@ describe('commenting on a reply', () => {
     );
     expect(childY.size).toBeLessThanOrEqual(3);
     expect(height).toBeLessThan(712);
+  });
+
+  // jsdom lays nothing out, so a thread's width is given to the column the diagram is measured against
+  const columnWidth = (px: number) => Object.defineProperty($('#messages'), 'clientWidth', { value: px, configurable: true });
+  const shortChain = (direction: string) =>
+    '```mermaid\nflowchart ' + direction + '\nA[Step] --> B[Step] --> C[Step] --> D[Step]\n```';
+
+  it('keeps a left-to-right diagram that fits a wide thread left to right instead of flipping it', async () => {
+    columnWidth(2400);
+    await answered(chain('LR'));
+    const { width, height } = diagramBox();
+    expect(width).toBeGreaterThan(height);
+  });
+
+  it('turns a left-to-right diagram top-down when the thread is too narrow for it', async () => {
+    columnWidth(400);
+    await answered(shortChain('LR'));
+    const { width, height } = diagramBox();
+    expect(height).toBeGreaterThan(width);
+  });
+
+  it('keeps that same diagram left to right when the thread is not measurable', async () => {
+    await answered(shortChain('LR'));
+    const { width, height } = diagramBox();
+    expect(width).toBeGreaterThan(height);
+  });
+
+  it('wraps a fan-out to the width of the thread, not to a fixed width', async () => {
+    const fan =
+      '```mermaid\nflowchart TD\n' + Array.from({ length: 6 }, (_, i) => 'A --> C' + i + '[Branch ' + i + ']').join('\n') + '\n```';
+    columnWidth(500);
+    await answered(fan);
+    expect(diagramBox().width).toBeLessThan(500);
   });
 
   // Clicking a picture or a diagram opens it larger in #zoom-dialog (see src/renderer/zoom.ts)
