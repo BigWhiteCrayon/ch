@@ -1111,6 +1111,9 @@ export interface LlmBridge {
   // Keeps the user's verdict on a classification in a file beside the log
   feedback(feedback: ClassificationFeedback): void;
   cancel(requestId: string): void;
+  // Nudges an in-progress request with a line the user typed while it runs;
+  // mid-turn delivery is not implemented yet
+  nudge(requestId: string, text: string): void;
   // The user's answer to a 'file_access' event, by the event's id. On a denial
   // the reason they gave, which is put back to the model (see access.ts).
   allowFileAccess(id: string, answer: FileAccessAnswer, reason?: string): void;

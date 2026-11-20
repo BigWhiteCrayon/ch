@@ -1896,7 +1896,8 @@ main > header {
 }
 
 #new-thread-dialog,
-#rename-workspace-dialog {
+#rename-workspace-dialog,
+#edit-message-dialog {
   width: 460px;
 }
 
@@ -2305,6 +2306,7 @@ main > header {
   #usage,
   #new-thread-dialog,
   #rename-workspace-dialog,
+  #edit-message-dialog,
   #changes-dialog,
   #workspace-dialog,
   #thread-dialog,
@@ -2319,6 +2321,7 @@ main > header {
     #usage,
     #new-thread-dialog,
     #rename-workspace-dialog,
+    #edit-message-dialog,
     #changes-dialog,
     #workspace-dialog,
     #thread-dialog,
@@ -2330,7 +2333,16 @@ main > header {
   font-size: 16px;
 }
 
-:is(#settings, #usage, #new-thread-dialog, #rename-workspace-dialog, #changes-dialog, #setup-dialog, #notice-dialog)
+:is(
+    #settings,
+    #usage,
+    #new-thread-dialog,
+    #rename-workspace-dialog,
+    #edit-message-dialog,
+    #changes-dialog,
+    #setup-dialog,
+    #notice-dialog
+  )
   .hint {
   margin: 4px 0 0;
   color: var(--muted);
@@ -2361,6 +2373,34 @@ main > header {
 :is(#settings, #new-thread-dialog, #rename-workspace-dialog, #changes-dialog, #setup-dialog, #notice-dialog)
   input:not([type='checkbox']) {
   width: 100%;
+}
+
+/* The box a sent message is edited in: the composer's own box, standing in for
+   it so the edit reads as another thing said rather than a separate page */
+#edit-message-input {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 10px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+  outline: none;
+}
+
+#edit-message-input:focus {
+  border-color: var(--accent);
+}
+
+/* Save, the primary action, and Cancel on one line at the bottom of the editor */
+#edit-message-dialog .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 /* The x in the top right of Settings and the token usage page. Named with the

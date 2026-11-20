@@ -336,8 +336,20 @@
     </dialog>
     <div id="message-menu" role="menu" hidden>
       <button type="button" role="menuitem" id="menu-retry">Retry</button>
+      <button type="button" role="menuitem" id="menu-edit">Edit</button>
       <button type="button" role="menuitem" id="menu-delete">Delete</button>
     </div>
+    <dialog id="edit-message-dialog">
+      <form id="edit-message-form">
+        <h2>Edit message</h2>
+        <p id="edit-message-hint" class="hint"></p>
+        <textarea id="edit-message-input" rows="3"></textarea>
+        <div class="actions">
+          <button type="button" id="edit-message-cancel">Cancel</button>
+          <button type="submit" id="edit-message-save" class="primary">Save</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="new-thread-dialog">
       <form id="new-thread-form">
         <h2>New thread</h2>
