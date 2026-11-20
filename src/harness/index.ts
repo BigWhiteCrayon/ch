@@ -427,7 +427,7 @@ const HANDS_WORK_OUT = new Set([subagents.TOOL_NAME, subagents.WAIT_TOOL, subage
 // ever, and a cap that also charged it for writing its findings down would buy
 // the shallower pass at the price of the notes, which are the thing worth
 // keeping out of it.
-const WRITES_DOWN = new Set([ADD_TO_CONTEXT, 'save_context', 'add_workspace_note']);
+const WRITES_DOWN = new Set([ADD_TO_CONTEXT, 'save_context', 'add_workspace_note', 'report_missing_capability']);
 
 // The tool that puts a file in front of the step, and the two whose results
 // say what is in a file the step never opened for itself: the handing out,

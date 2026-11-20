@@ -95,6 +95,10 @@ describe('the tools a step that changes nothing is offered', () => {
     // way message_subagent is.
     'list_threads',
     'send_message',
+    // Appends a row to a file beside the log saying what the model could not do
+    // (see tools/capabilities.ts). The finding-out step is where a gap is
+    // usually noticed, and nothing in the project changes
+    'report_missing_capability',
   ]);
 
   it('is only those, out of every tool the app has', () => {

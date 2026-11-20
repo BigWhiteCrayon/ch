@@ -10,6 +10,7 @@ import { breadth } from '../harness/phases';
 import type { Tool } from '../types';
 import * as ask from './ask';
 import * as branches from './branches';
+import * as capabilityTools from './capabilities';
 import * as context from './context';
 import * as diff from './diff';
 import * as files from './files';
@@ -30,6 +31,7 @@ import * as workspaces from './workspaces';
 export {
   ask,
   branches,
+  capabilityTools,
   context,
   diff,
   hostReading,
@@ -72,6 +74,8 @@ const registered: Tool[] = [
   // subagent tools just above (see ./threads.ts)
   ...threads.tools,
   ...jobTools.tools,
+  // A model saying what it could not do for want of a tool (see ./capabilities.ts)
+  ...capabilityTools.tools,
   ask.tool,
   // Asking for more rounds than the allowance holds, which every loop that
   // counts rounds answers (see ../harness/allowance.ts)
