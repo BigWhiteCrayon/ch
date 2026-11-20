@@ -45,10 +45,24 @@ const GAP = 28;
 // The most a diagram is drawn bigger than its laid-out size in the chat. Only the svg's width and height
 // use it; the viewBox keeps the geometry, so nodes, arrows and text all grow together.
 const DIAGRAM_SCALE = 1.4;
-// The width in px a diagram should fit without scrolling sideways. The renderer cannot measure the bubble, so
-// this is a tuned guess: a left-to-right chart wider than it turns to run top-down, and a narrower one is only
-// scaled up as far as it.
+// The width in px a diagram should fit without scrolling sideways where the thread cannot be measured (a
+// column that is not on screen yet): a tuned guess. A left-to-right chart wider than the target turns to run
+// top-down, and a narrower one is only scaled up as far as it.
 const TARGET_WIDTH = 960;
+// The narrowest target taken from a measurement, so a squeezed window still gets a readable diagram
+const MIN_TARGET_WIDTH = 320;
+// What a message takes of its column's width besides the diagram: the column's padding and the message's own,
+// both sides of each (see :is(#messages, #agent-view) and .message in styles.css)
+const COLUMN_CHROME = 2 * 16 + 2 * 12;
+
+// The width the diagram can take: the thread (or a subagent's pane) on screen, less what surrounds the
+// diagram. A message with a diagram is stretched to the whole column (see .message:has(.diagram)), and the
+// diagram is built before it is in the page, so the column is what is measured. Where there is none to
+// measure (nothing laid out) this is TARGET_WIDTH.
+function targetWidth(): number {
+  const column = [...document.querySelectorAll<HTMLElement>('#messages, #agent-view')].find((el) => el.clientWidth > 0);
+  return column ? Math.max(MIN_TARGET_WIDTH, column.clientWidth - COLUMN_CHROME) : TARGET_WIDTH;
+}
 
 const HEADER = /^(?:flowchart|graph)(?:\s+(TD|TB|BT|LR|RL))?$/i;
 const IGNORED = /^(?:%%|(?:style|classDef|class|linkStyle|click)\s)/;
@@ -359,10 +373,11 @@ function drawEdge(chart: Flowchart, edge: DiagramEdge) {
 export function renderDiagram(source: string): HTMLElement | null {
   const chart = parseFlowchart(source);
   if (!chart) return null;
+  const widthTarget = targetWidth();
   let size = layout(chart);
   // A chart that would run past the target width turns to run down the page instead; layout() starts afresh
   let flipped = false;
-  if ((chart.direction === 'LR' || chart.direction === 'RL') && size.x * DIAGRAM_SCALE > TARGET_WIDTH) {
+  if ((chart.direction === 'LR' || chart.direction === 'RL') && size.x * DIAGRAM_SCALE > widthTarget) {
     chart.direction = chart.direction === 'LR' ? 'TD' : 'BT';
     size = layout(chart);
     flipped = true;
@@ -373,8 +388,8 @@ export function renderDiagram(source: string): HTMLElement | null {
   // A layer wider than the target (a fan-out of many parallel nodes) wraps into rows that fit the width
   // instead of running past it: the same packing as above, on the other axis, and it leaves the
   // neighbours where they were, so a flipped chain packed above keeps its columns
-  if (size.x > TARGET_WIDTH) size = packWide(chart, TARGET_WIDTH);
-  const scale = Math.min(DIAGRAM_SCALE, Math.max(1, TARGET_WIDTH / size.x));
+  if (size.x > widthTarget) size = packWide(chart, widthTarget);
+  const scale = Math.min(DIAGRAM_SCALE, Math.max(1, widthTarget / size.x));
   const root = svg('svg', {
     viewBox: `0 0 ${round(size.x)} ${round(size.y)}`,
     width: round(size.x * scale),
