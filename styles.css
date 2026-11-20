@@ -271,6 +271,11 @@ button {
   content: '▸';
 }
 
+/* The branch heading's arrow in the accent, so it reads as a section top, not a subagent toggle's grey arrow */
+#thread-list li.group.branch::before {
+  color: var(--accent);
+}
+
 #thread-list li.group:hover {
   color: var(--text);
 }
@@ -306,12 +311,20 @@ button {
   padding-top: 4px;
 }
 
-/* A branch inside a workspace: indented under the workspace's heading, in the thread's own case and weight */
+/* A branch inside a workspace: indented under the workspace's heading, in the thread's own case.
+   Set larger and bolder than the 11px workspace heading and subagent toggle — and in the app's accent —
+   so it reads as the top of its own subsection, not as another grey subagent line. One step up from the
+   14px thread rows, so it stands as the section's top rather than blending into the threads beneath it. */
 #thread-list li.group.branch {
   padding: 6px 8px 2px 16px;
-  font-weight: 500;
+  font-size: 15px;
+  font-weight: 700;
   letter-spacing: normal;
   text-transform: none;
+  color: var(--accent);
+  /* No left bar: it would clash with the other sidebar formatting. Declared explicitly so the heading
+     cannot pick one up from a base rule. */
+  border: none;
 }
 
 #thread-list .status {
