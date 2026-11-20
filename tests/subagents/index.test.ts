@@ -85,7 +85,6 @@ const updates = (id?: string) =>
       if (event.type === 'condensing') return 'condensing';
       if (event.type === 'condensed') return event.changed ? 'condensed' : 'condensed (unchanged)';
       if (event.type === 'shortening') return 'shortening';
-      if (event.type === 'progress') return `progress ${event.percent}`;
       if (event.type === 'tool_call') return `${event.name}(${JSON.stringify(event.input ?? {})})`;
       return `${event.isError ? 'failed' : 'returned'}: ${event.output}`;
     });
@@ -375,42 +374,44 @@ describe('the tool it offers', () => {
     expect(systems.some((said) => said.startsWith(WORKER.prompt))).toBe(true);
   });
 
-  it('asks how much is left now and then, and keeps the answer out of the work', async () => {
-    // Three rounds of tool calls, so the third is the one that is asked
+  // Nothing is put to a working subagent between its rounds. It used to be
+  // asked how far along it was every third round, which appended a turn of its
+  // own; on a local model that moves the last user turn and costs the whole
+  // prompt, and the step then went to the back of a queue its own fan-out was
+  // filling. Measured over seven hours of the log: 77 steps, 753,088 tokens
+  // read again, about 1.4 hours of prefill (see llm/cachelock.ts).
+  it('puts nothing to it between rounds, so its prompt only ever grows', async () => {
+    // Three rounds of tool calls: the third is where the asking used to land
     const round = (id: string): ChatEvent[] => [call(id, 'look', {}), done('tool_use')];
     tools.register({ name: 'look', description: 'Looks.', inputSchema: { type: 'object' }, run: () => 'Looked.' });
     answers({
-      'do a': [
-        round('n1'),
-        round('n2'),
-        [text('Remaining: 25%\nStill reading.'), ...round('n3')],
-        [text('Done.'), done()],
-      ],
+      'do a': [round('n1'), round('n2'), [text('Still reading.'), ...round('n3')], [text('Done.'), done()]],
     });
     await run([task('a', 'do a')]);
 
-    // Asked in a turn of its own, the instructions being the same at every
-    // step of a run: they sign the model's thinking (see tell in run.ts)
+    // The instructions are the same at every step of a run: they sign the
+    // model's thinking (see tell in run.ts)
     const systems = requests().map((request) => unwrapped(String(request.system)));
     expect(new Set(systems).size).toBe(1);
-    expect(systems[2]).not.toContain('Remaining: NN%');
-    // Asked after the second round of calls and before the third, once, and
-    // left in the conversation as any other turn is
+    // The task, then nothing but what the work itself added: no turn of ours
+    // after the one that set it going
     const conversation = requests().at(-1)!.messages;
     // prettier-ignore
     expect(conversation.map(({ role }) => role))
-      .toEqual(['user', 'assistant', 'tool', 'assistant', 'tool', 'user', 'assistant', 'tool']);
-    expect(String(conversation[5].content)).toContain('Remaining: NN%');
-    expect(conversation.filter((m) => String(m.content).includes('Remaining: NN%'))).toHaveLength(1);
-    // What it said is a status for the window...
-    expect(seen).toContainEqual({
-      type: 'subagent_update',
-      id: expect.any(String),
-      event: { type: 'progress', percent: 75 },
-    });
-    // ...and is taken out of what it said, which is its own work
+      .toEqual(['user', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool']);
+    expect(conversation.filter(({ role }) => role === 'user')).toHaveLength(1);
+    // Each step carries on from the one before it, which is what keeps a local
+    // model's prompt (see llm/cachelock.brokeBy)
+    const shapes = requests().map((request) => [
+      String(request.system),
+      (request.tools ?? []).map(({ name }) => name).join(' '),
+      request.messages.filter(({ role }) => role === 'user').length,
+    ]);
+    for (const [before, after] of shapes.slice(0, -1).map((s, i) => [s, shapes[i + 1]])) {
+      expect(after).toEqual(before);
+    }
+    // ...and what it wrote is its own work, whole
     expect(updates()).toContain('Still reading.');
-    expect(updates().join(' ')).not.toContain('Remaining:');
   });
 
   it('tells each kind how much room its report has, in its own figure', async () => {
@@ -1314,7 +1315,16 @@ describe('a piece that goes wrong', () => {
   // Six of the twenty-four coders in two days of the log came back this way:
   // a round that said what it was about to do, taken for the report because
   // nothing was called in it, and handed to the thread as a finding with
-  // nothing wrong with it (see the carry-on in run.ts)
+  // nothing wrong with it (see the carry-on in run.ts).
+  //
+  // Every one of those six had been asked how far along it was on the step it
+  // stopped on, and the "Remaining:" line it wrote was the second way such a
+  // turn was told from a real report. Both are gone with the asking. What is
+  // left is the sentence (see harness/announced.ts), so a turn that claims its
+  // work is undone without announcing anything — "Nothing is edited yet", on
+  // its own — is now taken as the report. The asking was what produced those
+  // turns, so they should be rarer than they were; if they are not, the signal
+  // to add is a reading of what it said, not another turn put to it.
   describe('a round that says what it is going to do and does none of it', () => {
     beforeEach(() => {
       tools.register({ name: 'read_file', description: 'Read.', inputSchema: { type: 'object' }, run: () => 'more' });
@@ -1323,7 +1333,7 @@ describe('a piece that goes wrong', () => {
     it('is not its report: it is told to carry on, and what it does then is', async () => {
       answers({
         'do a': [
-          [text('Remaining: 85%\n\nNothing is edited yet. The edit is still to do.'), done()],
+          [text("I'll read src/a.ts first. Nothing is edited yet."), done()],
           [text('I edited src/a.ts.'), done()],
         ],
       });
@@ -1339,19 +1349,6 @@ describe('a piece that goes wrong', () => {
         role: 'user',
         content: expect.stringContaining('said what you were going to do rather than doing it'),
       });
-    });
-
-    it('is read as one by the line it wrote itself, wherever its rounds had got to', async () => {
-      answers({
-        'do a': [
-          [text('Remaining: 70%\n\nI have read the file.'), done()],
-          [text('Changed it.'), done()],
-        ],
-      });
-      await run([task('a', 'do a')]);
-      // ...and the line is still the ring on its tab, not a part of the work
-      expect(updates()).toContain('progress 30');
-      expect(requests()).toHaveLength(2);
     });
 
     it('is read as one by the sentence, where it wrote no line', async () => {
@@ -1373,15 +1370,9 @@ describe('a piece that goes wrong', () => {
       expect(requests()).toHaveLength(1);
     });
 
-    it('is not what a progress line saying nothing is left is, either', async () => {
-      answers({ 'do a': [[text('Remaining: 0%\n\nI made the change in src/a.ts.'), done()]] });
-      expect(await run([task('a', 'do a')])).toBe('## a\n\nI made the change in src/a.ts.');
-      expect(requests()).toHaveLength(1);
-    });
-
     it('is taken as the report in the end, so that a model which only narrates still ends', async () => {
       answers({ 'do a': [] });
-      mocks.stream.mockImplementation(() => from([text("Remaining: 90%\n\nI'll read the file next."), done()]));
+      mocks.stream.mockImplementation(() => from([text("I'll read the file next."), done()]));
       expect(await run([task('a', 'do a')])).toBe("## a\n\nI'll read the file next.");
       // Twice, and each asking costs it a round of the eight a worker has
       expect(requests()).toHaveLength(3);
@@ -1421,15 +1412,6 @@ describe('a piece that goes wrong', () => {
       expect(said).not.toContain('Start.');
       // A model that reasons answers a request to shorten by reasoning again, and comes back empty
       expect(requests().some((request) => request.system.includes('is too long'))).toBe(false);
-    });
-
-    it('leaves the progress line out of it, wherever the model wrote it', async () => {
-      reads();
-      // The line is a status for the window, and a model that writes its
-      // answer in its reasoning writes that there too (see PROGRESS in run.ts)
-      reasons((request) => (reportAsked(request) ? 'What I found.\nRemaining: 40%\n' : 'Reading.'));
-      expect(await run([task('a', 'do a')])).toBe('## a\n\nWhat I found.');
-      expect(updates()).toContain('progress 60');
     });
 
     it('sends what it reasoned back as its own turn, so it is not blank', async () => {

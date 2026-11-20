@@ -15,6 +15,7 @@ import type { Effort, Phase, ToolContext } from '../types';
 import type { Comment } from '../harness/review';
 import { AGENT } from './agent';
 import { CODER } from './coder';
+import { COMMAND_REVIEWER } from './commandReviewer';
 import { EXPLORER } from './explorer';
 import { TOOL_NAME, type Kind } from './kind';
 import { REVIEWER } from './reviewer';
@@ -23,6 +24,7 @@ import { WORKER } from './worker';
 
 export { AGENT } from './agent';
 export { CODER } from './coder';
+export { COMMAND_REVIEWER } from './commandReviewer';
 export { EXPLORER } from './explorer';
 export { HEAD_EXPLORER } from './head';
 export { REVIEWER } from './reviewer';

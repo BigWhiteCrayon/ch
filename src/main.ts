@@ -3,6 +3,8 @@ import path from 'path';
 import * as contextmenu from './contextmenu';
 import * as feedback from './feedback';
 import * as harness from './harness';
+import * as jobs from './jobs';
+import * as githubJobs from './jobs/github';
 import * as llm from './llm';
 import * as cachelock from './llm/cachelock';
 import * as ollama from './llm/ollama';
@@ -13,6 +15,7 @@ import * as search from './search';
 import * as settings from './settings';
 import * as setup from './setup';
 import * as store from './store';
+import * as roster from './roster';
 import * as tools from './tools';
 import type {
   ClassificationFeedback,
@@ -27,6 +30,7 @@ import type {
   SetupProgress,
   SuggestionRequest,
   SummaryRequest,
+  RosterEntry,
   ThreadPiece,
   VerificationRequest,
   WorkspaceNote,
@@ -317,13 +321,13 @@ ipcMain.on('llm:cancel', (_event, requestId: string) => {
   active.get(requestId)?.abort();
 });
 
-ipcMain.on('llm:allow-file-access', (_event, id: string, answer: FileAccessAnswer) =>
-  harness.answerFileAccess(id, answer)
+ipcMain.on('llm:allow-file-access', (_event, id: string, answer: FileAccessAnswer, reason?: string) =>
+  harness.answerFileAccess(id, answer, reason)
 );
 
 // Whether one command that could lose work may run (see harness/access.ts)
-ipcMain.on('llm:allow-command', (_event, id: string, allowed: boolean) =>
-  harness.answerCommandAccess(id, allowed === true)
+ipcMain.on('llm:allow-command', (_event, id: string, allowed: boolean, reason?: string) =>
+  harness.answerCommandAccess(id, allowed === true, reason)
 );
 
 ipcMain.on('llm:approve', (_event, requestId: string, approved: boolean) =>
@@ -429,6 +433,14 @@ async function follow(workspace: string): Promise<void> {
 harness.project.onSurveyed((workspace, note) => {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('project:surveyed', workspace, note);
+  }
+});
+
+// A job starting, ticking, or settling, pushed so every window can show its
+// progress under the thread it is of — the same way a look is pushed
+jobs.onEvent((thread, id, event, data) => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('job:event', thread, id, event, data);
   }
 });
 
@@ -596,6 +608,14 @@ ipcMain.on('threads:save', (event, state: string) => {
   event.returnValue = true;
 });
 
+// The roster of threads the model can list and message, pushed from the renderer
+// on every save alongside the threads themselves (see renderer/roster.ts). It is
+// the main process's copy of what a thread is doing, for a model that is not the
+// renderer to read (see roster.ts).
+ipcMain.on('threads:roster', (_event, value: RosterEntry[]) => {
+  roster.set(value);
+});
+
 // The screenshots and clips a reply took, kept in a sidecar beside the threads
 // so the JSON stays small (see store.saveMedia). Written as the JSON is, and
 // read back when the JSON is, so the two always say the same thing.
@@ -710,6 +730,10 @@ app.whenReady().then(() => {
   // Where the branches a subagent makes keep their worktrees (see tools/branches.ts)
   tools.branches.init(app.getPath('userData'));
   tools.registerAll(harness.tools);
+  // A job survives an app close: its cursor is persisted, so on open it is re-driven
+  // from where it left off (see jobs.ts). It uses the injected store, which defaults
+  // to loadJobs/saveJobs.
+  jobs.init();
   // Before the window, so the menu is never the default one, even briefly.
   // With the switches greyed out until the first check comes back, which is
   // the safe way round: a switch that becomes usable is better than one that
@@ -734,6 +758,9 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   // How each tool did this session: calls, failures and latency
   log.info('app.quit', { tools: harness.tools.stats() });
+  // Persist the running jobs before the containers go, so a job out at close is
+  // re-driven from its cursor on the next open.
+  jobs.flush();
   sandbox.stopAll();
 });
 

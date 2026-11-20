@@ -108,6 +108,33 @@ export const offers = (tool: Tool, phase: Phase) =>
     ? tool.name === ASK_TOOL || HANDS_WORK_OUT.has(tool.name)
     : hasTools(phase) && (tool.phases?.includes(phase) ?? true);
 
+// The steps that can hold a tool at all, which is what breadth is counted over
+const OFFERING: Phase[] = ['explore', 'plan', 'execute', 'suggest'];
+
+// How many steps a tool is offered in, which is the order the registry keeps
+// the tools in (see ../tools/index.ts).
+//
+// Ollama's renderers put the tool definitions above the instructions, so what
+// two steps of a reply share of their prompts starts with the tools they both
+// offer, in the order they are offered - and ends at the first place the two
+// lists differ. A tool only one step holds, written in the middle of the list,
+// therefore costs the steps either side of it everything written after it. In
+// the order breadth gives, what every step offers is at the top of the list and
+// what one step offers is at the bottom, so the steps of a reply share as much
+// of the list as they have in common.
+//
+// Zero where what the tool renders is not the same in every step that offers
+// it: a description or a schema that changes with the step cannot be part of
+// what two steps share however broadly the tool is offered, so it is ordered
+// with the narrowest rather than ahead of the tools that can be shared. Found
+// by rendering it rather than declared, so that a tool made to say the same
+// thing in every step moves up the list of its own accord.
+export function breadth(tool: Tool): number {
+  const steps = OFFERING.filter((phase) => offers(tool, phase));
+  const rendered = steps.map((phase) => JSON.stringify([tool.describe?.(phase), tool.schemaFor?.(phase)]));
+  return rendered.every((shown) => shown === rendered[0]) ? steps.length : 0;
+}
+
 // Whether this reply is worked through in steps at all.
 //
 // Working a change through in four steps buys a plan the user can stop before

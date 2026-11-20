@@ -5,7 +5,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // A stand-in for child_process.spawn. Each test supplies `respond`, which
 // decides how a git command ends; nothing is really run.
-type Outcome = { code?: number | null; stdout?: string; stderr?: string };
+// `stderrFirst` has what git says reach the caller before what it writes, which is the way round it comes when the
+// two are pipes and only one of them is buffered: a caller that reads the two as one stream sees them interleaved.
+type Outcome = { code?: number | null; stdout?: string; stderr?: string; stderrFirst?: boolean };
 
 const proc = vi.hoisted(() => ({
   spawn: undefined as any,
@@ -18,8 +20,17 @@ proc.spawn = vi.fn((command: string, args: string[], options: any) => {
   child.stderr = new EventEmitter();
   Promise.resolve().then(() => {
     const outcome = proc.respond(args);
-    if (outcome.stdout) child.stdout.emit('data', Buffer.from(outcome.stdout));
-    if (outcome.stderr) child.stderr.emit('data', Buffer.from(outcome.stderr));
+    const say = {
+      out: () => outcome.stdout && child.stdout.emit('data', Buffer.from(outcome.stdout)),
+      err: () => outcome.stderr && child.stderr.emit('data', Buffer.from(outcome.stderr)),
+    };
+    if (outcome.stderrFirst) {
+      say.err();
+      say.out();
+    } else {
+      say.out();
+      say.err();
+    }
     child.emit('close', outcome.code ?? 0);
   });
   return child;
@@ -27,7 +38,19 @@ proc.spawn = vi.fn((command: string, args: string[], options: any) => {
 
 vi.mock('child_process', () => ({ spawn: (...args: any[]) => proc.spawn(...args) }));
 
-import { branches, commit, ensureWorktree, mainWorktree, pull, push, remove, status } from '../../src/sandbox/worktree';
+import {
+  branches,
+  checkedOutAt,
+  commit,
+  defaultBranch,
+  ensureWorktree,
+  mainWorktree,
+  mergeToDefault,
+  pull,
+  push,
+  remove,
+  status,
+} from '../../src/sandbox/worktree';
 
 const REPO = '/home/me/project';
 const ROOT = '/data';
@@ -257,5 +280,164 @@ describe('remove', () => {
     proc.respond = () => ({ code: 128, stderr: "fatal: '/wt' contains modified or untracked files\n" });
     await expect(remove(REPO, WT)).rejects.toThrow('contains modified or untracked files');
     expect(ran()).toEqual([['worktree', 'remove', WT]]);
+  });
+});
+
+describe('defaultBranch', () => {
+  it("answers with what origin's HEAD points at", async () => {
+    proc.respond = () => ({ stdout: 'origin/trunk\n' });
+    expect(await defaultBranch(REPO)).toBe('trunk');
+  });
+
+  it('falls back to whichever usual name the repository has a branch under', async () => {
+    proc.respond = (args) => {
+      if (args.includes('symbolic-ref')) return { code: 1 };
+      return { code: args.includes('refs/heads/master') ? 0 : 1 };
+    };
+    expect(await defaultBranch(REPO)).toBe('master');
+  });
+
+  it('is null where it has neither', async () => {
+    proc.respond = () => ({ code: 1 });
+    expect(await defaultBranch(REPO)).toBeNull();
+  });
+});
+
+describe('mergeToDefault', () => {
+  const WORK = '/data/trees/feature';
+  const SHA = '1111111111111111111111111111111111111111';
+  const WAS = '2222222222222222222222222222222222222222';
+
+  // Answers the calls the merge makes. Each test says only what it is about; the rest is a branch two commits ahead
+  // of a main that has not moved, in a folder with nothing uncommitted in it, main checked out nowhere.
+  const repo = (state: {
+    current?: string;
+    dirty?: string;
+    ahead?: string;
+    behind?: string;
+    conflicts?: string[];
+    mergeFails?: boolean;
+    heldBy?: string;
+    ffFails?: boolean;
+  }) => {
+    proc.respond = (args: string[]): Outcome => {
+      const at = args[1];
+      const rest = args.slice(2);
+      const [sub, ...flags] = rest;
+      if (sub === 'symbolic-ref') return { stdout: 'origin/main\n' };
+      if (sub === 'branch' && flags[0] === '--show-current') return { stdout: `${state.current ?? 'feature'}\n` };
+      if (sub === 'status') return { stdout: state.dirty ?? '' };
+      if (sub === 'rev-list') {
+        const range = rest[rest.length - 1];
+        const counting = range.startsWith('main..');
+        const count = (counting ? state.ahead : state.behind) ?? (counting ? '2' : '0');
+        return { stdout: `${count}\n` };
+      }
+      if (sub === 'merge-tree') {
+        // As git writes it: the merged tree, the files that clashed, then a blank line and an account of them —
+        // which is git talking, not a filename, and has no business in what the model is told
+        return state.conflicts
+          ? {
+              code: 1,
+              stdout: ['atree', ...state.conflicts, '', ...state.conflicts.map((f) => `CONFLICT: in ${f}`)].join('\n'),
+              stderr: 'Auto-merging src/app.ts\n',
+              stderrFirst: true,
+            }
+          : { stdout: 'atree\n' };
+      }
+      if (sub === 'merge' && flags.includes('--ff-only')) return state.ffFails ? { code: 1, stdout: 'not clean' } : {};
+      if (sub === 'merge' && flags.includes('--abort')) return {};
+      if (sub === 'merge') return state.mergeFails ? { code: 1, stdout: 'CONFLICT' } : {};
+      if (sub === 'rev-parse' && flags[0] === 'HEAD') return { stdout: `${SHA}\n` };
+      if (sub === 'rev-parse') return { stdout: `${WAS}\n` };
+      if (sub === 'worktree' && flags[0] === 'list') {
+        return {
+          stdout: state.heldBy
+            ? `worktree ${REPO}\nbranch refs/heads/other\n\nworktree ${state.heldBy}\nbranch refs/heads/main\n`
+            : `worktree ${REPO}\nbranch refs/heads/other\n`,
+        };
+      }
+      if (at === WORK && sub === 'commit') return {};
+      return {};
+    };
+  };
+
+  // Every git run, as "<folder> <args>", so that what was run where can be read in one line
+  const where = () =>
+    proc.spawn.mock.calls.map((call: any[]) => {
+      const args = call[1] as string[];
+      return `${args[1]} ${args.slice(2).join(' ')}`;
+    });
+
+  it('moves main forward onto the branch without checking it out anywhere', async () => {
+    repo({});
+    const merged = await mergeToDefault(REPO, WORK);
+    expect(merged).toEqual({ branch: 'feature', target: 'main', sha: SHA, brought: false, already: false });
+    // The ref is moved on its own, and told what it is expected to be at
+    expect(where()).toContain(`${REPO} update-ref refs/heads/main ${SHA} ${WAS}`);
+    // ...and nothing anywhere checked main out to do it
+    expect(where().some((line) => /checkout|switch|worktree add/.test(line))).toBe(false);
+  });
+
+  it("brings main into the branch first, in the branch's own folder, when main has moved on", async () => {
+    repo({ behind: '3' });
+    const merged = await mergeToDefault(REPO, WORK);
+    expect(merged.brought).toBe(true);
+    const lines = where();
+    expect(lines).toContain(`${WORK} merge --no-edit main`);
+    // The merge that could conflict happens in the thread's folder, before main is moved at all
+    expect(lines.findIndex((l) => l === `${WORK} merge --no-edit main`)).toBeLessThan(
+      lines.findIndex((l) => l.startsWith(`${REPO} update-ref`))
+    );
+  });
+
+  it('refuses while there is work in the folder that is not committed, and does nothing', async () => {
+    repo({ dirty: ' M src/app.ts\n' });
+    await expect(mergeToDefault(REPO, WORK)).rejects.toThrow('not committed');
+    expect(where().some((line) => /merge|update-ref/.test(line))).toBe(false);
+  });
+
+  it('refuses a merge that would conflict, naming the files, without changing anything', async () => {
+    repo({ behind: '3', conflicts: ['src/app.ts', 'styles.css'] });
+    // The files, and only the files: git's own account of them is not a list of names
+    await expect(mergeToDefault(REPO, WORK)).rejects.toThrow('conflicts in src/app.ts, styles.css.');
+    const lines = where();
+    expect(lines.some((line) => line.includes('merge --no-edit'))).toBe(false);
+    expect(lines.some((line) => line.includes('update-ref'))).toBe(false);
+  });
+
+  it('fast-forwards the worktree that holds main, rather than moving the ref out from under it', async () => {
+    repo({ heldBy: '/home/me/project' });
+    await mergeToDefault(REPO, WORK);
+    const lines = where();
+    expect(lines).toContain('/home/me/project merge --ff-only feature');
+    expect(lines.some((line) => line.includes('update-ref'))).toBe(false);
+  });
+
+  it('says so when that worktree has work of its own in the way, rather than forcing it', async () => {
+    repo({ heldBy: '/home/me/project', ffFails: true });
+    await expect(mergeToDefault(REPO, WORK)).rejects.toThrow('could not be moved forward');
+  });
+
+  it('does nothing when main already has the branch', async () => {
+    repo({ ahead: '0' });
+    const merged = await mergeToDefault(REPO, WORK);
+    expect(merged.already).toBe(true);
+    expect(where().some((line) => /merge|update-ref/.test(line))).toBe(false);
+  });
+
+  it('refuses a folder that is on main itself', async () => {
+    repo({ current: 'main' });
+    await expect(mergeToDefault(REPO, WORK)).rejects.toThrow('nothing to merge into it');
+  });
+});
+
+describe('checkedOutAt', () => {
+  it('answers with the worktree holding the branch, or null', async () => {
+    proc.respond = () => ({
+      stdout: `worktree ${REPO}\nbranch refs/heads/main\n\nworktree /data/f\nbranch refs/heads/feature\n`,
+    });
+    expect(await checkedOutAt(REPO, 'feature')).toBe('/data/f');
+    expect(await checkedOutAt(REPO, 'nothing')).toBeNull();
   });
 });

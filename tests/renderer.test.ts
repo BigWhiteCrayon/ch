@@ -97,6 +97,9 @@ const threads = {
   onLookEvent: vi.fn(),
   // Kept so the push can be fired at the renderer in tests
   onSurveyed: vi.fn(),
+  // The roster the renderer pushes to main, and messages main pushes back
+  roster: vi.fn(),
+  onInject: vi.fn(),
   index: vi.fn(),
   search: vi.fn(),
 };
@@ -234,6 +237,7 @@ beforeEach(async () => {
     anthropic: { hasKey: true, disabledModels: [] },
     openai: { hasKey: false, disabledModels: [] },
     local: { baseURL: 'http://localhost:11434/v1', hasKey: false },
+    github: { hasKey: false },
     sophistication: {},
     sandbox: { image: '' },
     offline: false,
@@ -2764,7 +2768,7 @@ describe('token use', () => {
         $<HTMLElement>('#messages .subagent .open').click();
         await flush();
         expect($('#agent-view').textContent).toContain('Trying again.');
-        // Its old work is not left mixed in with the new
+        // Its old work is cleared, so the new work is not left mixed in with it
         expect($('#agent-view').textContent).not.toContain('Reading them.');
         expect($('#agent-view .message.assistant').textContent).toBe('They use vitest.');
       });
@@ -2917,32 +2921,6 @@ describe('token use', () => {
         'Working · 0s elapsed',
         'Working…',
       ]);
-    });
-
-    it('fills a ring on its tab as it says how much of its piece is left', async () => {
-      sub('s1', 'tests', 'read the tests');
-      toggle().click();
-      $<HTMLElement>('#thread-list li.subagent').click();
-      await flush();
-      // Nothing said yet, so the dot pulses as it did before
-      expect($<HTMLElement>('#tabs .tab .status').className).toContain('working');
-
-      did('s1', { type: 'progress', percent: 40 });
-      await flush();
-      const ring = $<SVGElement>('#tabs .tab .status.ring');
-      expect(ring.getAttribute('aria-label')).toBe('40% done');
-      // Filled four tenths of the way round, measured in the circumference
-      const [drawn] = String($<SVGElement>('#tabs .tab .status.ring .done').getAttribute('stroke-dasharray')).split(
-        ' '
-      );
-      expect(Number(drawn) / (2 * Math.PI * 4.5)).toBeCloseTo(0.4);
-      // ...and the estimate is a status, not a line of its work
-      expect($('#agent-view').textContent).not.toContain('40');
-
-      // A later estimate replaces it rather than adding to it
-      did('s1', { type: 'progress', percent: 90 });
-      await flush();
-      expect($<SVGElement>('#tabs .tab .status.ring').getAttribute('aria-label')).toBe('90% done');
     });
 
     it('marks a finished subagent done, and one whose report was cut as neither done nor failed', async () => {
@@ -3137,20 +3115,32 @@ describe('token use', () => {
       expect(mark()).toContain('done');
     });
 
-    it('is started again by an app that closed mid-run, from the top', async () => {
+    it('is continued by an app that closed mid-run, from where it left off', async () => {
       sub('s1', 'tests', 'read the tests');
       did('s1', { type: 'tool_call', id: 'c1', name: 'read_file', input: { path: 'a.ts' } });
+      did('s1', { type: 'tool_result', id: 'c1', name: 'read_file', output: 'export const p = 1;', isError: false });
       llm.retrySubagent.mockImplementation(() => new Promise(() => {}));
+      // Closing the window runs the save it had pending, so the subagent is on
+      // disk with its work, the way a reply the app closed on is (see quit)
+      window.dispatchEvent(new Event('beforeunload'));
       await start();
       expect(llm.retrySubagent).toHaveBeenCalledTimes(1);
+      // It is given what it had done, so the run that follows carries on
       expect(llm.retrySubagent).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 's1', name: 'tests', task: 'read the tests', kind: 'worker' })
+        expect.objectContaining({
+          id: 's1',
+          name: 'tests',
+          task: 'read the tests',
+          kind: 'worker',
+          resumed: expect.objectContaining({ did: expect.arrayContaining([expect.stringContaining('read_file')]) }),
+        })
       );
+      // Its work so far is kept, not cleared, so the run reads on from it
       toggle().click();
       expect($$<HTMLElement>('#thread-list li.subagent .status').map((el) => el.className)).toEqual(['status working']);
     });
 
-    it('says what a subagent started again brought back, in the thread', async () => {
+    it('says what a subagent continued brought back, in the thread', async () => {
       sub('s1', 'tests', 'read the tests');
       llm.retrySubagent.mockResolvedValue({ text: 'They use vitest.', isError: false });
       await start();
@@ -3160,16 +3150,16 @@ describe('token use', () => {
       expect($('#agent-view .message.assistant').textContent).toBe('They use vitest.');
     });
 
-    it('is told to the reply picked up with it that it was started again', async () => {
+    it('is told to the reply picked up with it that it was continued', async () => {
       sub('s1', 'tests', 'read the tests');
       llm.retrySubagent.mockImplementation(() => new Promise(() => {}));
       await start();
       const [line] = sent().resumed!.did;
       expect(line).toContain('subagent tests (worker)');
-      expect(line).toContain('started again');
+      expect(line).toContain('continued');
     });
 
-    it('is failed rather than started again a second time that the app closes on it', async () => {
+    it('is failed rather than continued a second time that the app closes on it', async () => {
       sub('s1', 'tests', 'read the tests');
       did('s1', { type: 'tool_call', id: 'c1', name: 'read_file', input: { path: 'a.ts' } });
       llm.retrySubagent.mockImplementation(() => new Promise(() => {}));
@@ -4156,11 +4146,14 @@ describe('commenting on a reply', () => {
   const chain = (direction: string) =>
     '```mermaid\nflowchart ' + direction + '\n' + 'ABCDEFGH'.split('').join('[Step] --> ') + '[Step]\n```';
 
-  it('turns a long left-to-right diagram top-down so it fits the width', async () => {
+  it('turns a long left-to-right diagram top-down, then packs it into a grid of columns', async () => {
     await answered(chain('LR'));
-    const { width, height, nodes } = diagramBox();
-    expect(height).toBeGreaterThan(width);
+    const svg = $('#messages .message.assistant .diagram svg');
+    const { height, nodes } = diagramBox();
     expect(nodes).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']);
+    const columns = new Set([...svg.querySelectorAll('[data-node] rect')].map((r) => Number(r.getAttribute('x')))).size;
+    expect(columns).toBeGreaterThan(1);
+    expect(height).toBeLessThan(712);
   });
 
   it('keeps a short left-to-right diagram left to right', async () => {
@@ -4169,10 +4162,36 @@ describe('commenting on a reply', () => {
     expect(width).toBeGreaterThan(height);
   });
 
-  it('turns a long right-to-left diagram bottom-up so it fits the width', async () => {
+  it('turns a long right-to-left diagram bottom-up, then packs it into a grid of columns', async () => {
     await answered(chain('RL'));
+    const svg = $('#messages .message.assistant .diagram svg');
+    const { height, nodes } = diagramBox();
+    expect(nodes).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']);
+    const columns = new Set([...svg.querySelectorAll('[data-node] rect')].map((r) => Number(r.getAttribute('x')))).size;
+    expect(columns).toBeGreaterThan(1);
+    expect(height).toBeLessThan(712);
+  });
+
+  it('wraps a wide fan-out of parallel nodes into sub-columns instead of running past the width', async () => {
+    const fan =
+      '```mermaid\nflowchart TD\nA[Root] --> B[Branch 0]\n' +
+      Array.from({ length: 9 }, (_, i) => 'A --> C' + i + '[Branch ' + i + ']').join('\n') +
+      '\n```';
+    await answered(fan);
+    const svg = $('#messages .message.assistant .diagram svg');
     const { width, height } = diagramBox();
-    expect(height).toBeGreaterThan(width);
+    // the children sit in sub-columns, not one wide row
+    const childX = new Set(
+      [...svg.querySelectorAll('[data-node="B"], [data-node^="C"] rect')].map((r) => Number(r.getAttribute('x')))
+    );
+    expect(childX.size).toBeGreaterThan(1);
+    // the wrap keeps the chart within the target width, and the children stay on a short list of rows
+    expect(width).toBeLessThan(960);
+    const childY = new Set(
+      [...svg.querySelectorAll('[data-node="B"], [data-node^="C"] rect')].map((r) => Number(r.getAttribute('y')))
+    );
+    expect(childY.size).toBeLessThanOrEqual(3);
+    expect(height).toBeLessThan(712);
   });
 
   // Clicking a picture or a diagram opens it larger in #zoom-dialog (see src/renderer/zoom.ts)
@@ -4535,7 +4554,11 @@ describe('markdown in a reply', () => {
 
     it('reads the lines of the file when the note is opened, numbered', async () => {
       threads.workspaceFile.mockResolvedValue({
-        path: 'src/main.ts', lines: ['alpha', 'beta'], from: 442, total: 451, more: 9,
+        path: 'src/main.ts',
+        lines: ['alpha', 'beta'],
+        from: 442,
+        total: 451,
+        more: 9,
       });
       const el = await inWorkspace('```file\nsrc/main.ts:442-451\n```\n');
       const details = $<HTMLDetailsElement>('#messages .message.assistant details.file-ref');
@@ -5755,7 +5778,10 @@ describe('threads', () => {
         expect(rows()).toEqual(['second', '[spin-off]', 'plain']);
         expect($('#thread-list li.group.branch').title).toBe('spin-off (from main, not pushed)');
         expect(branchOf('plain')).toEqual(branch);
-        expect(threads.open).toHaveBeenCalledWith(saved().threads.find((t) => t.title === 'plain')!.id, '/worktrees/spin-off');
+        expect(threads.open).toHaveBeenCalledWith(
+          saved().threads.find((t) => t.title === 'plain')!.id,
+          '/worktrees/spin-off'
+        );
       });
 
       // A move can come in for a thread that is not the one on screen — a reply still going in
@@ -5828,6 +5854,28 @@ describe('threads', () => {
         await type('busy');
         $('#thread-list li.group.branch').click();
         expect($('#thread-list li.group.branch .status').classList.contains('working')).toBe(true);
+      });
+
+      it('shows a red dot on a folded branch when one of its replies was left alone', async () => {
+        const quit = async () => {
+          window.dispatchEvent(new Event('beforeunload'));
+          await start();
+          await flush();
+        };
+        await onFeature('on feature');
+        // A reply that the app closes on it, then again: it is left alone, red in its row
+        await type('go on');
+        emit(sentId(), { type: 'text', delta: 'Half an ans' });
+        await quit();
+        await quit();
+        expect($$('#thread-list li.thread .status.failed')).toHaveLength(1);
+        expect($('#thread-list li.group.branch .status')).toBeNull();
+
+        // The branch is folded over the red thread, and its mark comes through
+        $('#thread-list li.group.branch').click();
+        const mark = $<HTMLElement>('#thread-list li.group.branch .status');
+        expect(mark.classList.contains('failed')).toBe(true);
+        expect(mark.title).toBe('The app closed on this reply more than once');
       });
 
       it('opens a branch again when a new thread is started on it', async () => {
@@ -6271,22 +6319,26 @@ describe('threads', () => {
     });
 
     describe('archiving', () => {
-      // Eleven read threads in General chat, 'thread 0' opened longest ago and
-      // 'thread 10' on screen; replies are left running in those named in `running`
-      const eleven = async (running: string[] = []) => {
+      // One thread more than a group keeps, in General chat: 'thread 0' opened
+      // longest ago and the last one on screen; replies are left running in
+      // those named in `running`. Answers with how many a group keeps, so that
+      // a change to MAX_OPEN_THREADS is not a change to these tests.
+      const overfull = async (running: string[] = []) => {
+        const { MAX_OPEN_THREADS } = await import('../src/renderer/shared');
         vi.useFakeTimers({ toFake: ['Date'] });
-        for (let i = 0; i <= 10; i++) {
+        for (let i = 0; i <= MAX_OPEN_THREADS; i++) {
           vi.setSystemTime(Date.now() + 1000);
           if (i > 0) await newThread(null);
           await type(`thread ${i}`);
           if (!running.includes(`thread ${i}`)) finish(sentId());
         }
         vi.useRealTimers();
+        return MAX_OPEN_THREADS;
       };
 
-      it('archives the thread opened longest ago once a group has more than ten', async () => {
-        await eleven();
-        expect(threadTitles()).toHaveLength(10);
+      it('archives the thread opened longest ago once a group has more than it keeps', async () => {
+        const kept = await overfull();
+        expect(threadTitles()).toHaveLength(kept);
         expect(threadTitles()).not.toContain('thread 0');
         await vi.waitFor(() => expect(saved().threads.find((t: any) => t.title === 'thread 0').archived).toBe(true), {
           timeout: 3000,
@@ -6294,21 +6346,21 @@ describe('threads', () => {
       });
 
       it('keeps a thread that is working or has something to look at, and archives the next instead', async () => {
-        await eleven(['thread 0']);
+        const kept = await overfull(['thread 0']);
         expect(threadTitles()[0]).toBe('thread 0');
-        expect(threadTitles()).toHaveLength(10);
+        expect(threadTitles()).toHaveLength(kept);
         expect(threadTitles()).not.toContain('thread 1');
       });
 
       it('counts each workspace on its own', async () => {
-        await eleven();
+        const kept = await overfull();
         await newThread('/projects/alpha');
         expect(sidebar()).toContain('[alpha]');
-        expect(threadTitles()).toHaveLength(11);
+        expect(threadTitles()).toHaveLength(kept + 1);
       });
 
       it('tells the group that older threads are archived and can be searched for', async () => {
-        await eleven();
+        await overfull();
         expect($$('#thread-list li.archived').map((li) => li.textContent)).toEqual([
           'Older threads have been archived. You can still find them in search.',
         ]);
@@ -6319,6 +6371,34 @@ describe('threads', () => {
       it('says nothing when no thread has been archived', async () => {
         await type('hello');
         expect($$('#thread-list li.archived')).toHaveLength(0);
+      });
+
+      // Something can arrive for a thread after it was archived: the reply
+      // that finished while another was on screen, or the one left alone as
+      // the window came up. It comes back rather than waiting unseen.
+      it('brings an archived thread back once something in it needs the user', async () => {
+        await type('thread one');
+        finish(sentId());
+        await newThread(null);
+        await type('thread two');
+        finish(sentId());
+        await vi.waitFor(() => expect(saved().threads).toHaveLength(2));
+
+        const state = saved();
+        const stale = state.threads.find((t: any) => t.title === 'thread one');
+        stale.archived = true;
+        onDisk = JSON.stringify(state);
+        await start();
+        // Archived with nothing waiting in it, so it stays out of the sidebar
+        expect(threadTitles()).toEqual(['thread two']);
+
+        stale.unread = true;
+        onDisk = JSON.stringify(state);
+        await start();
+        expect(threadTitles()).toEqual(['thread one', 'thread two']);
+        await vi.waitFor(() =>
+          expect(saved().threads.find((t: any) => t.title === 'thread one').archived).toBeUndefined()
+        );
       });
     });
 
@@ -6727,7 +6807,7 @@ describe('searching the threads', () => {
 
   it('finds an archived thread, and opening it puts it back at the top of the sidebar', async () => {
     const found = await twoThreads();
-    // Archived as it would be in a workspace with more than ten threads (see archiveStale)
+    // Archived as it would be in a workspace with more than MAX_OPEN_THREADS threads (see archiveStale)
     emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 0, output: 0 }, steps: 1 });
     await vi.waitFor(() => expect(saved().threads).toHaveLength(2));
     const state = saved();
@@ -6962,7 +7042,7 @@ describe('settings screen', () => {
 
     it('gives each provider its own tab, showing one at a time, Anthropic first', async () => {
       await open();
-      expect(names()).toEqual(['Anthropic', 'OpenAI', 'Ollama', 'Sandbox', 'General']);
+      expect(names()).toEqual(['Anthropic', 'OpenAI', 'Ollama', 'GitHub', 'Sandbox', 'General']);
       expect(selected()).toEqual(['Anthropic']);
       expect(visible()).toEqual(['anthropic']);
 
@@ -7007,14 +7087,14 @@ describe('settings screen', () => {
     it('is walked with the arrow keys, with only the one in hand in the tab order', async () => {
       await open();
       const order = () => $$('#settings-tabs [role="tab"]').map((t) => (t as HTMLElement).tabIndex);
-      expect(order()).toEqual([0, -1, -1, -1, -1]);
+      expect(order()).toEqual([0, -1, -1, -1, -1, -1]);
 
       const press = (key: string) =>
         $('#settings-tabs').dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
       press('ArrowDown');
       expect(selected()).toEqual(['OpenAI']);
       expect(visible()).toEqual(['openai']);
-      expect(order()).toEqual([-1, 0, -1, -1, -1]);
+      expect(order()).toEqual([-1, 0, -1, -1, -1, -1]);
 
       press('ArrowUp');
       expect(selected()).toEqual(['Anthropic']);
@@ -9257,7 +9337,7 @@ describe('picking up a reply the app closed on', () => {
     expect(resumed().did).toEqual([
       'subagent tests (explorer), given "read the tests" reported: They use vitest.',
       'subagent build (worker), given "read the build" was still working when the app closed. ' +
-        'It has been started again and its report will appear in the thread when it is done; do not hand it out again.',
+        'It has been continued, and its report will appear in the thread when it is done; do not hand it out again.',
     ]);
   });
 
@@ -9539,8 +9619,6 @@ describe("reviewing a thread's changes", () => {
 
     emit(sentId(), { type: 'subagent', id: 's1', name: 'c1', task: 'deal with [c1]', kind: 'reviewer' });
     expect($('#changes-files .comment .progress').textContent).toContain('Reviewer working…');
-    emit(sentId(), { type: 'subagent_update', id: 's1', event: { type: 'progress', percent: 40 } });
-    expect($('#changes-files .comment .progress').textContent).toContain('Reviewer working… 40%');
     emit(sentId(), { type: 'subagent_done', id: 's1', text: 'Done.', isError: false });
     expect($('#changes-files .comment .progress').textContent).toContain('Reviewer finished');
 
@@ -9975,6 +10053,24 @@ describe("asking before the model reads a file on the user's computer", () => {
     expect($('#messages').textContent).toContain('Waiting for your approval');
   });
 
+  it("puts the model's own reason on the card, in its own event", async () => {
+    emit(sentId(), asked('a1', '/home/me/.npmrc'));
+    await flush();
+    emit(sentId(), { type: 'access_justification', id: 'a1', justification: 'to read the npm config.' });
+    await flush();
+    expect(card()?.querySelector('p.justification')?.textContent).toBe('to read the npm config.');
+  });
+
+  it('hands the reason the user gives on a denial to the bridge', async () => {
+    emit(sentId(), asked('a1', '/home/me/.npmrc'));
+    await flush();
+    const denyReason = card()?.querySelector<HTMLInputElement>('.deny-reason');
+    denyReason.value = 'it is a private file';
+    press('Deny');
+    expect(llm.allowFileAccess).toHaveBeenCalledWith('a1', 'deny', 'it is a private file');
+    expect(card()).toBeNull();
+  });
+
   it('offers only the folder where it is a folder that is asked for', async () => {
     emit(sentId(), asked('a1', '/home/me/notes', true));
     await flush();
@@ -9997,7 +10093,7 @@ describe("asking before the model reads a file on the user's computer", () => {
     emit(sentId(), asked('a1', '/home/me/.npmrc'));
     await flush();
     press(label);
-    expect(llm.allowFileAccess).toHaveBeenCalledWith('a1', answer);
+    expect(llm.allowFileAccess).toHaveBeenCalledWith('a1', answer, undefined);
     expect(card()).toBeNull();
     expect($('#messages').textContent).not.toContain('Waiting for your approval');
   });
@@ -10012,8 +10108,8 @@ describe("asking before the model reads a file on the user's computer", () => {
     expect($('#messages').textContent).toContain('Waiting for your approval');
     press('Deny');
     expect(llm.allowFileAccess.mock.calls).toEqual([
-      ['a1', 'once'],
-      ['a2', 'deny'],
+      ['a1', 'once', undefined],
+      ['a2', 'deny', undefined],
     ]);
     expect(card()).toBeNull();
   });
@@ -10068,9 +10164,27 @@ describe("asking before the model runs a command on the user's computer that cou
     emit(sentId(), asked('c1', 'git reset --hard'));
     await flush();
     press(label);
-    expect(llm.allowCommand).toHaveBeenCalledWith('c1', allowed);
+    expect(llm.allowCommand).toHaveBeenCalledWith('c1', allowed, undefined);
     expect(card()).toBeNull();
     expect($('#messages').textContent).not.toContain('Waiting for your approval');
+  });
+
+  it("puts the model's own reason on the card, in its own event", async () => {
+    emit(sentId(), asked('c1', 'git push --force origin main'));
+    await flush();
+    emit(sentId(), { type: 'access_justification', id: 'c1', justification: 'to push the fix.' });
+    await flush();
+    expect(card()?.querySelector('p.justification')?.textContent).toBe('to push the fix.');
+  });
+
+  it('hands the reason the user gives on a denial to the bridge', async () => {
+    emit(sentId(), asked('c1', 'git reset --hard'));
+    await flush();
+    const denyReason = card()?.querySelector<HTMLInputElement>('.deny-reason');
+    denyReason.value = 'it would throw away uncommitted work';
+    press("Don't run it");
+    expect(llm.allowCommand).toHaveBeenCalledWith('c1', false, 'it would throw away uncommitted work');
+    expect(card()).toBeNull();
   });
 
   // The command is the question a reply is most likely stuck on, so it is put first of the two

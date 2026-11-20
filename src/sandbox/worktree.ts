@@ -10,7 +10,9 @@ import { join } from 'path';
 import { toolEnv } from './env';
 import type { BranchStatus } from '../types';
 
-type GitResult = { code: number | null; output: string };
+// `output` is everything git said, which is what an error carries; `stdout` is what it wrote to be read, kept apart
+// for the one caller that parses rather than reports (see mergeToDefault).
+type GitResult = { code: number | null; output: string; stdout: string };
 
 // Runs git in the repository and resolves with how it ended and what it wrote.
 // A git that cannot be started resolves like one that failed, so that callers
@@ -19,15 +21,19 @@ function git(repo: string, args: string[]): Promise<GitResult> {
   return new Promise((resolve) => {
     const child = spawn('git', ['-C', repo, ...args], { env: toolEnv() });
     let output = '';
-    const collect = (chunk: Buffer | string) => {
+    let out = '';
+    child.stdout.on('data', (chunk: Buffer | string) => {
+      out += chunk;
       output += chunk;
-    };
-    child.stdout.on('data', collect);
-    child.stderr.on('data', collect);
-    child.on('error', (err: NodeJS.ErrnoException) => {
-      resolve({ code: null, output: err.code === 'ENOENT' ? 'The "git" command was not found.' : err.message });
     });
-    child.on('close', (code) => resolve({ code, output }));
+    child.stderr.on('data', (chunk: Buffer | string) => {
+      output += chunk;
+    });
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      const message = err.code === 'ENOENT' ? 'The "git" command was not found.' : err.message;
+      resolve({ code: null, output: message, stdout: '' });
+    });
+    child.on('close', (code) => resolve({ code, output, stdout: out }));
   });
 }
 
@@ -77,6 +83,12 @@ export async function status(worktree: string): Promise<BranchStatus> {
   return { upstream, ahead, behind, dirty: changed.output.trim() !== '' };
 }
 
+// Whether a worktree has work in it that is not committed yet: the opposite of
+// status()'s `dirty` flag, run through the same git channel.
+export async function isClean(worktree: string): Promise<boolean> {
+  return !(await status(worktree)).dirty;
+}
+
 // Commits everything in the worktree. False, with nothing done, if there was nothing to commit.
 export async function commit(worktree: string, message: string): Promise<boolean> {
   if (!message.trim()) throw new Error('A commit needs a message.');
@@ -120,6 +132,137 @@ export async function remove(repo: string, worktree: string): Promise<void> {
   const removed = await git(repo, ['worktree', 'remove', worktree]);
   if (removed.code !== 0) throw new Error(removed.output.trim());
   await git(repo, ['worktree', 'prune']);
+}
+
+// The repository's default branch: what "main" means in it, asked of the repository rather than assumed, since not
+// every one calls it that. What origin's HEAD points at is the answer where there is a remote to have one; failing
+// that, whichever of the two usual names the repository has a branch under. Null where it has neither.
+export async function defaultBranch(repo: string): Promise<string | null> {
+  const head = await git(repo, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+  if (head.code === 0) {
+    const name = head.output.trim().replace(/^origin\//, '');
+    if (name) return name;
+  }
+  for (const name of ['main', 'master']) {
+    const found = await git(repo, ['show-ref', '--verify', '--quiet', `refs/heads/${name}`]);
+    if (found.code === 0) return name;
+  }
+  return null;
+}
+
+// The worktree holding `branch`, or null where none does. A branch no worktree has checked out can be moved on by
+// its ref alone; one a worktree holds has files that the ref moving would leave behind it (see mergeToDefault).
+export async function checkedOutAt(repo: string, branch: string): Promise<string | null> {
+  const listed = await git(repo, ['worktree', 'list', '--porcelain']);
+  if (listed.code !== 0) throw new Error(listed.output.trim());
+  for (const entry of listed.output.split(/\r?\n\r?\n/)) {
+    const lines = entry.split(/\r?\n/);
+    if (!lines.includes(`branch refs/heads/${branch}`)) continue;
+    const found = lines.find((line) => line.startsWith('worktree '));
+    if (found) return found.slice('worktree '.length).trim() || null;
+  }
+  return null;
+}
+
+export interface Merged {
+  // The branch merged, and the branch it was merged into
+  branch: string;
+  target: string;
+  // Where the target stands now
+  sha: string;
+  // Whether the target had moved on and was brought into the branch on the way
+  brought: boolean;
+  // Whether the target already had the branch, so that nothing was done
+  already: boolean;
+}
+
+// Merges the worktree's branch into the repository's default branch, with that branch checked out nowhere for it.
+//
+// The order is the whole of it. What the target has and the branch has not is merged into the *branch* first, in the
+// branch's own folder: that is where a conflict belongs, because that is where the thread works, where its container
+// was made from and where what it settles on can be tried before anyone else sees it. Once that is done the branch
+// holds everything the target holds, so the target has only to be moved forward onto it — a fast-forward, which
+// needs no working tree and cannot conflict. The target therefore never holds a half-settled merge, and no folder
+// anywhere has to have it checked out for this.
+//
+// Nothing is written where the first merge would conflict: it is tried against the commits first, and the merge only
+// runs when that comes out clean.
+export async function mergeToDefault(repo: string, tree: string): Promise<Merged> {
+  const target = await defaultBranch(repo);
+  if (!target) throw new Error('This repository has no main branch to merge into.');
+  const current = await git(tree, ['branch', '--show-current']);
+  const branch = current.output.trim();
+  if (current.code !== 0 || !branch) throw new Error('This folder is not on a branch, so it has nothing to merge.');
+  if (branch === target) throw new Error(`This folder is on ${target} itself, so there is nothing to merge into it.`);
+
+  // Committed work only: what is merged is the branch's commits, and anything still loose in the folder would be
+  // left out of the merge while looking as though it went in.
+  const changed = await git(tree, ['status', '--porcelain']);
+  if (changed.code !== 0) throw new Error(changed.output.trim());
+  if (changed.output.trim()) {
+    throw new Error(
+      `There is work in ${tree} that is not committed, and a merge carries commits only. Commit it first, then ` +
+        'merge.'
+    );
+  }
+
+  const ahead = await git(repo, ['rev-list', '--count', `${target}..${branch}`]);
+  if (ahead.code !== 0) throw new Error(ahead.output.trim());
+  if (Number(ahead.output.trim()) === 0) {
+    const at = await git(repo, ['rev-parse', target]);
+    return { branch, target, sha: at.output.trim(), brought: false, already: true };
+  }
+
+  const behind = await git(repo, ['rev-list', '--count', `${branch}..${target}`]);
+  if (behind.code !== 0) throw new Error(behind.output.trim());
+  const brought = Number(behind.output.trim()) > 0;
+  if (brought) {
+    const tried = await git(repo, ['merge-tree', '--write-tree', '--name-only', branch, target]);
+    if (tried.code !== 0) {
+      // What it writes is the merged tree, then a line for each file that clashed, then a blank line and an account
+      // of the clashes meant for reading. The names are what is wanted, so it stops at that blank line.
+      const names: string[] = [];
+      for (const line of tried.stdout.split(/\r?\n/).slice(1)) {
+        if (!line.trim()) break;
+        names.push(line.trim());
+      }
+      throw new Error(
+        `${target} has moved on since ${branch} left it, and bringing it in conflicts in ` +
+          `${names.join(', ') || 'this branch'}. Nothing has been changed. Settle it in ${tree} — merge ${target} ` +
+          'there, fix what clashes and commit — then merge again.'
+      );
+    }
+    const merged = await git(tree, ['merge', '--no-edit', target]);
+    if (merged.code !== 0) {
+      await git(tree, ['merge', '--abort']);
+      throw new Error(
+        `Bringing ${target} into ${branch} failed, and nothing has been changed: ${merged.output.trim()}`
+      );
+    }
+  }
+
+  const tip = await git(tree, ['rev-parse', 'HEAD']);
+  if (tip.code !== 0) throw new Error(tip.output.trim());
+  const sha = tip.output.trim();
+
+  // Where a worktree holds the target, the move is that worktree's own fast-forward, so its files come with it and a
+  // folder with uncommitted work in it refuses rather than being written over. Where none holds it, the ref is moved
+  // on its own, told the commit it is expected to be at: a target that moved while this ran is refused, not lost.
+  const held = await checkedOutAt(repo, target);
+  if (held) {
+    const forward = await git(held, ['merge', '--ff-only', branch]);
+    if (forward.code !== 0) {
+      throw new Error(
+        `${target} is checked out in ${held} and could not be moved forward onto ${branch}: ${forward.output.trim()}`
+      );
+    }
+  } else {
+    const was = await git(repo, ['rev-parse', target]);
+    if (was.code !== 0) throw new Error(was.output.trim());
+    const moved = await git(repo, ['update-ref', `refs/heads/${target}`, sha, was.output.trim()]);
+    if (moved.code !== 0) throw new Error(moved.output.trim());
+  }
+  return { branch, target, sha, brought, already: false };
 }
 
 // The path of a worktree with the branch checked out, making one under `root`

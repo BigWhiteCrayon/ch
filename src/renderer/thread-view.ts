@@ -46,6 +46,7 @@ import { LEFT_ALONE, continueReply, phaseName, phaseNameDone } from './reply.js'
 import { activeThread, saveSoon } from './threads.js';
 import {
   archiveStale,
+  unarchiveNeedy,
   archivedNote,
   automaticRows,
   groupHeading,
@@ -455,7 +456,10 @@ export function drawMessages(
 // label update the moment an event lands, on any thread, without the cost of the
 // message view in render().
 export function renderSidebar(): void {
-  if (archiveStale()) saveSoon();
+  // What needs the user comes back first, so that it is in its group before
+  // the group is trimmed again and an idle thread is archived in its place.
+  const brought = unarchiveNeedy();
+  if (archiveStale() || brought) saveSoon();
   showBadge();
   threadList.replaceChildren(
     ...threadGroups().flatMap(({ workspace, threads }) => [

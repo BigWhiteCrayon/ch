@@ -88,6 +88,11 @@ async function turn(
       messages,
       rounds: Infinity,
       agent: { name, depth },
+      // Where the app picked this agent up where it closed on it, what it had
+      // done, so the flow carries on rather than starting over. The flow splices
+      // it in for a thread's own reply (see ../harness/index.ts), and does the
+      // same here.
+      resumed: context.resumed,
       ...(picked ? { provider: picked.provider, model: picked.model } : {}),
     },
     signal
@@ -107,7 +112,6 @@ async function turn(
       case 'condensing':
       case 'condensed':
       case 'shortening':
-      case 'progress':
       case 'rate_limited':
       case 'fell_back':
         says(event);

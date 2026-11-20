@@ -29,6 +29,7 @@ const localMaxContextInput = element<HTMLInputElement>('local-max-context');
 export const sandboxImageInput = element<HTMLInputElement>('sandbox-image');
 export const approvalCeilingSelect = element<HTMLSelectElement>('approval-ceiling');
 export const autoReviewBox = element<HTMLInputElement>('auto-review');
+export const commandReviewBox = element<HTMLInputElement>('command-review');
 export const themeInputs = [...document.querySelectorAll<HTMLInputElement>('[data-theme-var]')];
 export const themeReset = element('theme-reset');
 const offlineWarning = element('settings-offline-warning');
@@ -36,6 +37,7 @@ export const keyInputs = {
   anthropic: element<HTMLInputElement>('anthropic-key'),
   openai: element<HTMLInputElement>('openai-key'),
   local: element<HTMLInputElement>('local-key'),
+  github: element<HTMLInputElement>('github-key'),
 };
 export type ProviderId = keyof typeof keyInputs;
 export const PROVIDER_IDS = Object.keys(keyInputs) as ProviderId[];
@@ -533,6 +535,7 @@ export function renderSettings(): void {
   sandboxImageInput.value = settings.sandbox.image;
   approvalCeilingSelect.value = String(settings.approvalCeiling);
   autoReviewBox.checked = settings.autoReview;
+  commandReviewBox.checked = settings.commandReview;
 
   for (const input of themeInputs) {
     const name = input.dataset.themeVar ?? '';
@@ -628,6 +631,10 @@ approvalCeilingSelect.addEventListener('change', () => {
 
 autoReviewBox.addEventListener('change', () => {
   saveSettings({ autoReview: autoReviewBox.checked });
+});
+
+commandReviewBox.addEventListener('change', () => {
+  saveSettings({ commandReview: commandReviewBox.checked });
 });
 
 // The colour pickers apply at once too. The patch replaces the whole theme, so an empty one resets it

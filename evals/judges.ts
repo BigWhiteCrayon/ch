@@ -88,6 +88,8 @@ export function configure(): void {
     anthropic: { apiKey: process.env.ANTHROPIC_API_KEY ?? '', disabledModels: [] },
     openai: { apiKey: process.env.OPENAI_API_KEY ?? '', disabledModels: [] },
     local: { baseURL: process.env.CH_LOCAL_URL ?? 'http://127.0.0.1:11434/v1', apiKey: '' },
+    // No suite reaches GitHub, so there is no token to give it
+    github: { apiKey: '' },
     sophistication: {},
     // No suite asks for the faster output, which is a thing a user turns on
     fast: false,
@@ -101,6 +103,9 @@ export function configure(): void {
     // No suite is a reply that changed files, so there is nothing for a review
     // to run on
     autoReview: false,
+    // Nor is any of them a command put to the user, so there is nothing for a
+    // command review to stand in for
+    commandReview: false,
     // Nothing here asks before using a model, and the theme is only for the window
     approvalCeiling: 5,
     theme: {},

@@ -39,6 +39,8 @@ function defaults(): Settings {
     openai: { apiKey: '', disabledModels: [] },
     // Any OpenAI-compatible server: Ollama (default), llama.cpp server, LM Studio, ...
     local: { baseURL: defaultLocalURL(), apiKey: '' },
+    // A GitHub API token: no model list, just the key
+    github: { apiKey: '' },
     sophistication: {},
     // '' lets each workspace decide from its own files (see sandbox/docker.ts)
     sandbox: { image: '' },
@@ -49,6 +51,10 @@ function defaults(): Settings {
     // Whether a reply that changed files is reviewed by a model as soon as it
     // is over
     autoReview: false,
+    // Whether a second agent reviews a git command that could lose work and,
+    // if it is within the user's request or non-destructive, lets it run
+    // without the user being asked
+    commandReview: false,
     // Every model is used without asking until the user lowers the ceiling
     approvalCeiling: 5,
     theme: {},
@@ -131,12 +137,14 @@ export function load(): Settings {
       anthropic: { ...base.anthropic, ...saved.anthropic },
       openai: { ...base.openai, ...saved.openai },
       local: { ...base.local, ...saved.local },
+      github: { ...base.github, ...saved.github },
       sophistication: { ...saved.sophistication },
       sandbox: { ...base.sandbox, ...saved.sandbox },
       // What was not saved is what it is by default, which for an app being tested is not what it is for a user
       offline: saved.offline === undefined ? base.offline : saved.offline === true,
       fast: saved.fast === true,
       autoReview: saved.autoReview === true,
+      commandReview: saved.commandReview === true,
       approvalCeiling: isLevel(saved.approvalCeiling) ? saved.approvalCeiling : 5,
       theme: cleanTheme(saved.theme),
       readable: cleanReadable(saved.readable),
@@ -166,7 +174,7 @@ export function get(): Settings {
 export function update(patch: SettingsPatch): Settings {
   const next = structuredClone(settings);
 
-  for (const provider of ['anthropic', 'openai', 'local'] as const) {
+  for (const provider of ['anthropic', 'openai', 'local', 'github'] as const) {
     const apiKey = patch[provider]?.apiKey;
     if (apiKey !== undefined) next[provider].apiKey = (apiKey ?? '').trim();
   }
@@ -187,6 +195,7 @@ export function update(patch: SettingsPatch): Settings {
   if (patch.offline !== undefined) next.offline = patch.offline === true;
   if (patch.fast !== undefined) next.fast = patch.fast === true;
   if (patch.autoReview !== undefined) next.autoReview = patch.autoReview === true;
+  if (patch.commandReview !== undefined) next.commandReview = patch.commandReview === true;
   if (isLevel(patch.approvalCeiling)) next.approvalCeiling = patch.approvalCeiling;
   if (patch.sophistication) {
     next.sophistication = {};
@@ -249,11 +258,13 @@ export function publicView(): PublicSettings {
       hasKey: Boolean(settings.local.apiKey),
       maxContext: settings.local.maxContext,
     },
+    github: { hasKey: Boolean(settings.github.apiKey) },
     sophistication: settings.sophistication,
     sandbox: settings.sandbox,
     offline: settings.offline,
     fast: settings.fast,
     autoReview: settings.autoReview,
+    commandReview: settings.commandReview,
     approvalCeiling: settings.approvalCeiling,
     theme: settings.theme,
     setup: settings.setup,
