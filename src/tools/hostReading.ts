@@ -1,9 +1,12 @@
 import * as child_process from 'child_process';
 import fs from 'fs';
 import * as access from '../harness/access';
+import * as commandReview from '../harness/commandReview';
 import * as log from '../log';
 import * as seatbelt from '../sandbox/seatbelt';
-import type { Tool } from '../types';
+import * as worktree from '../sandbox/worktree';
+import type { Tool, ToolContext } from '../types';
+import { MERGE_TOOL } from './branches';
 import { GIT_READS, gitSubcommand, READING, refuse, stages } from './reading';
 import { copyHint } from './sandbox';
 
@@ -158,6 +161,49 @@ export function sensitive(argv: string[]): string | null {
     return '"git checkout" with a path writes the committed version of it over what is in the folder now';
   }
   return null;
+}
+
+// Subcommands that would take a branch away from wherever it is checked out and put it somewhere else
+const TAKES_A_BRANCH = new Set(['checkout', 'switch', 'worktree']);
+
+// Why this command may not run at all, or null. One thing is refused rather than asked about: a thread with a
+// branch of its own checking out the repository's main branch.
+//
+// It is refused rather than asked because the question is not one the user can answer well. "git worktree add
+// main-merge-wt main" reads as a reasonable step towards the merge that was asked for, and nothing in it says that
+// the folder it leaves behind holds main until somebody notices — which is how it went wrong the one time (see
+// mergeToDefault in ../sandbox/worktree.ts). The merge that wants main does not need main checked out, so there is
+// nothing here to weigh: the thread has its own folder, main belongs to the user's checkout, and the merge tool is
+// the way between them.
+async function takesTheMainBranch(argv: string[], context: ToolContext): Promise<string | null> {
+  if (argv[0] !== 'git') return null;
+  const sub = gitSubcommand(argv);
+  if (!sub || !TAKES_A_BRANCH.has(sub)) return null;
+  const args = named(argv).slice(named(argv).indexOf(sub) + 1);
+  // Of worktree, only "add" checks a branch out; "list" and the rest are the user's to run here as anywhere
+  if (sub === 'worktree' && !args.includes('add')) return null;
+  if (!context.threadId || !context.workspace) return null;
+  const repo = await worktree.mainWorktree(context.workspace);
+  // Only a thread working in a worktree of its own: one working in the user's checkout is on whatever the user has
+  // checked out, and what it does with branches there is between it and the questions asked below.
+  if (!repo || samePlace(repo, context.workspace)) return null;
+  const main = await worktree.defaultBranch(repo);
+  if (!main || !args.some((arg) => arg === main)) return null;
+  return (
+    `This thread works on a branch of its own, and ${main} belongs to the user's checkout at ${repo}: checking it ` +
+    `out here would take it away from them and leave it held until somebody noticed. To put this thread's work ` +
+    `into ${main}, use ${MERGE_TOOL}, which merges without ${main} being checked out anywhere. To read ${main}, ` +
+    `name it rather than check it out — "git log ${main}", "git diff ${main}...HEAD".`
+  );
+}
+
+// Whether two paths are the same folder, asked of the filesystem rather than of the strings
+function samePlace(a: string, b: string): boolean {
+  try {
+    return fs.realpathSync(a) === fs.realpathSync(b);
+  } catch {
+    return a === b;
+  }
 }
 
 // The environment a stage runs in. Nothing here can answer an editor or a password prompt (see GIT_ENV), and a git
@@ -399,13 +445,35 @@ from a command means it tried to do something else.`,
     // risky about it, answered for this once and remembered for nothing (see access.confirmed). It is asked in place
     // of the question about the folder rather than after it — it says everything that one does and more, and a yes
     // to a folder is a yes that can be kept, which is not a thing to keep about "push --force".
+    // Refused outright, before the questions below: there is no answer to this one that is better than not asking
+    const taken = await takesTheMainBranch(pipeline[0], context);
+    if (taken) throw new Error(taken);
     const risk = sensitive(pipeline[0]);
     if (risk) {
-      if (!(await access.confirmed(command, target, risk, context))) {
-        throw new Error(`The user did not allow "${command}" in ${target}.`);
+      // With the opt-in command review on, a second agent judges whether this
+      // command may run without the user being asked (see ../harness/commandReview.ts).
+      const reviewed = await commandReview.review({
+        command,
+        path: target,
+        risk,
+        intention: context.intention ?? '',
+        context,
+      });
+      if (reviewed?.approved) {
+        context.emit?.({ type: 'command_reviewed', command, path: target, why: risk, reason: reviewed.reason });
+      } else {
+        const accessResult = await access.confirmed(command, target, risk, context);
+        if (!accessResult.allowed) {
+          const reason = accessResult.reason ? ` ${accessResult.reason}` : '';
+          throw new Error(`The user did not allow "${command}" in ${target}.${reason}`);
+        }
       }
-    } else if (!ownWorkspace && !(await access.permitted(target, isFolder, context))) {
-      throw new Error(`The user did not allow running commands in ${target}.`);
+    } else if (!ownWorkspace) {
+      const accessResult = await access.permitted(target, isFolder, context);
+      if (!accessResult.allowed) {
+        const reason = accessResult.reason ? ` ${accessResult.reason}` : '';
+        throw new Error(`The user did not allow running commands in ${target}.${reason}`);
+      }
     }
     let stat: fs.Stats;
     try {

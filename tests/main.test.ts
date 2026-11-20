@@ -183,7 +183,17 @@ const mocks = vi.hoisted(() => ({
     readable: vi.fn(),
     allowRead: vi.fn(),
   },
-  store: { load: vi.fn(), save: vi.fn(), saveMedia: vi.fn(), threadIds: vi.fn(() => null) },
+  store: {
+    load: vi.fn(),
+    save: vi.fn(),
+    saveMedia: vi.fn(),
+    loadJobs: vi.fn(),
+    saveJobs: vi.fn(),
+    threadIds: vi.fn(() => null),
+  },
+  // The async-job engine (see src/jobs.ts); main wires its open/close and pushes
+  // its events to the windows, which is what these tests check
+  jobs: { init: vi.fn(), flush: vi.fn(), onEvent: vi.fn() },
   log: { init: vi.fn(), watchProcess: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), since: vi.fn() },
 }));
 
@@ -194,6 +204,7 @@ vi.mock('../src/tools', () => mocks.tools);
 vi.mock('../src/llm/ollama', () => mocks.ollama);
 vi.mock('../src/log', () => mocks.log);
 vi.mock('../src/store', () => mocks.store);
+vi.mock('../src/jobs', () => mocks.jobs);
 vi.mock('../src/sandbox', () => mocks.sandbox);
 vi.mock('../src/search', () => mocks.search);
 vi.mock('../src/settings', () => mocks.settings);
@@ -260,6 +271,8 @@ describe('startup', () => {
     expect(mocks.sandbox.recipes.init).toHaveBeenCalledWith('/user/userData');
     // ...and where a container that could not be removed is written down
     expect(mocks.sandbox.init).toHaveBeenCalledWith('/user/userData');
+    // And the async-job engine, re-driven from what an earlier session left
+    expect(mocks.jobs.init).toHaveBeenCalled();
     // What the user has allowed the model to read on their computer is kept in the settings
     expect(mocks.harness.access.configure).toHaveBeenCalledWith({
       readable: mocks.settings.readable,
@@ -361,6 +374,11 @@ describe('quitting', () => {
   it('stops the sandbox containers before quitting', () => {
     electron.appEvents['before-quit']();
     expect(mocks.sandbox.stopAll).toHaveBeenCalled();
+  });
+
+  it('persists the running jobs on quitting, so they resume on the next open', () => {
+    electron.appEvents['before-quit']();
+    expect(mocks.jobs.flush).toHaveBeenCalled();
   });
 
   it('logs how each tool did over the session', () => {
@@ -549,7 +567,7 @@ describe('llm channels', () => {
   it("passes the user's answer about reading a file on to harness.answerFileAccess", () => {
     const listener = electron.listeners['llm:allow-file-access'];
     listener({}, 'ask-1', 'folder');
-    expect(mocks.harness.answerFileAccess).toHaveBeenCalledWith('ask-1', 'folder');
+    expect(mocks.harness.answerFileAccess).toHaveBeenCalledWith('ask-1', 'folder', undefined);
   });
 
   it('registers an llm:approve handler which calls harness.answerApproval', async () => {
@@ -918,6 +936,15 @@ describe('thread channels', () => {
     const [listener] = mocks.harness.project.onLook.mock.calls[0];
     listener('/projects/demo', false);
     expect(mocks.harness.project.watch).not.toHaveBeenCalled();
+  });
+
+  it('passes on a job event to every window, the way a look is passed on', () => {
+    // main wires jobs.onEvent to push each event to every open window
+    const [listener] = mocks.jobs.onEvent.mock.calls[0];
+    listener('t1', 'job-1', 'tick', { cursor: 3 });
+    expect(electron.windows[0].webContents.send).toHaveBeenCalledWith('job:event', 't1', 'job-1', 'tick', {
+      cursor: 3,
+    });
   });
 
   it("looks at a workspace again when the window asks, from the open thread's container", async () => {

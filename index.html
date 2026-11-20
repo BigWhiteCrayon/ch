@@ -132,6 +132,17 @@
             <button
               type="button"
               role="tab"
+              id="tab-github"
+              data-tab="github"
+              aria-controls="panel-github"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              GitHub
+            </button>
+            <button
+              type="button"
+              role="tab"
               id="tab-sandbox"
               data-tab="sandbox"
               aria-controls="panel-sandbox"
@@ -207,6 +218,17 @@
             </div>
           </section>
 
+          <section role="tabpanel" id="panel-github" data-panel="github" aria-labelledby="tab-github" hidden>
+            <label for="github-key">API token</label>
+            <div class="row">
+              <input id="github-key" type="password" autocomplete="off" />
+              <button type="button" class="remove-key" data-provider="github">Remove</button>
+            </div>
+            <p class="hint">
+              A GitHub API token, read with pull-request status. It is not a model provider and has no model list.
+            </p>
+          </section>
+
           <section role="tabpanel" id="panel-sandbox" data-panel="sandbox" aria-labelledby="tab-sandbox" hidden>
             <label for="sandbox-image">Container image</label>
             <input id="sandbox-image" type="text" autocomplete="off" placeholder="Chosen from the workspace" />
@@ -232,6 +254,11 @@
             <label class="check">
               <input id="auto-review" type="checkbox" />
               <span>Review changes automatically</span>
+            </label>
+
+            <label class="check">
+              <input id="command-review" type="checkbox" />
+              <span>Let a reviewer approve a risky command</span>
             </label>
 
             <h3 class="settings-group">Colours</h3>

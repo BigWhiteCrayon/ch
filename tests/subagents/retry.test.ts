@@ -103,4 +103,22 @@ describe('running one subagent again', () => {
     });
     expect(await run()).toEqual({ text: 'Docker is not running.', isError: true });
   });
+
+  // A run that picks a subagent up where the app closed on it is given what it
+  // had done, so the piece is carried on rather than started over (see
+  // subagents/retry.ts)
+  it('carries on from what it had done, where the app is picking it up', async () => {
+    await run({
+      ...asked,
+      resumed: { did: ['read_file("a.ts") returned: the file'], text: 'Reading a.ts now.' },
+    });
+    const request = requests()[0];
+    // Its task is still the first thing it is given
+    expect(request.messages[0]).toEqual({ role: 'user', content: 'read the tests' });
+    // ...and what it had done goes in front of it, so it carries on
+    expect(request.messages[1]).toEqual({ role: 'assistant', content: 'Reading a.ts now.' });
+    const picked = String(request.messages.at(-1)?.content ?? '');
+    expect(picked).toContain('read_file');
+    expect(picked).toContain('Carry on');
+  });
 });

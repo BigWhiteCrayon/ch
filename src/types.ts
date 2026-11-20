@@ -295,6 +295,7 @@ export interface Settings {
   anthropic: HostedSettings;
   openai: HostedSettings;
   local: LocalSettings;
+  github: { apiKey: string };
   // Manual sophistication levels (1-5), keyed by "provider/model"
   sophistication: Record<string, number>;
   sandbox: SandboxSettings;
@@ -313,6 +314,10 @@ export interface Settings {
   // Whether a reply that changed files is reviewed by a model as soon as it
   // is over
   autoReview: boolean;
+  // Whether a second agent reviews a git command that could lose work and, if
+  // it is within the user's request or non-destructive, lets it run without
+  // the user being asked (see harness/commandReview.ts)
+  commandReview: boolean;
   // The highest model sophistication (1-5) used without asking the user for
   // approval first
   approvalCeiling: number;
@@ -360,6 +365,7 @@ export interface SettingsPatch {
   openai?: { apiKey?: string | null; disabledModels?: string[] };
   // A maxContext of null takes the limit away
   local?: { apiKey?: string | null; baseURL?: string; maxContext?: number | null };
+  github?: { apiKey?: string | null };
   sophistication?: Record<string, number>;
   sandbox?: { image?: string };
   offline?: boolean;
@@ -367,6 +373,7 @@ export interface SettingsPatch {
   approvalCeiling?: number;
   theme?: Record<string, string>;
   autoReview?: boolean;
+  commandReview?: boolean;
   setup?: { completed?: boolean; version?: number; skipped?: string[] };
 }
 
@@ -375,6 +382,7 @@ export interface PublicSettings {
   anthropic: { hasKey: boolean; disabledModels: string[] };
   openai: { hasKey: boolean; disabledModels: string[] };
   local: { baseURL: string; hasKey: boolean; maxContext?: number };
+  github: { hasKey: boolean };
   sophistication: Record<string, number>;
   sandbox: SandboxSettings;
   offline: boolean;
@@ -382,6 +390,7 @@ export interface PublicSettings {
   approvalCeiling: number;
   theme: Record<string, string>;
   autoReview: boolean;
+  commandReview: boolean;
   setup: SetupSettings;
 }
 
@@ -397,6 +406,11 @@ export interface ToolContext {
   // The subagent making the call, where one is: it keeps its own notes rather
   // than writing over the thread's or another subagent's (see sandbox/index.ts)
   agent?: string;
+  // What the subagent had done when the app closed on it, where it is picked up
+  // from where it left off rather than started again (see subagents/retry.ts).
+  // A subagent the user asks for again carries none: it is the same piece of
+  // work done over, and its work is cleared (see retrySubagent).
+  resumed?: Resumed;
   // How far down the chain of subagents this is: 0 in a reply, 1 in a subagent
   // it sent, and so on. An explorer may send explorers of its own, so there has
   // to be a bottom (see MAX_HANDOUT_DEPTH in subagents/kind.ts).
@@ -407,6 +421,11 @@ export interface ToolContext {
   // in: the finding-out step may hand work out, but only to subagents that
   // cannot change anything (see tools/subagents.ts).
   phase?: Phase;
+  // The conversation the call is in, so a tool that asks a model of its own
+  // about it — a reason for an access, a justification for a request — can see
+  // what the request was (see harness/accessJustifier.ts). The recent part of
+  // the conversation, not the whole of it, as a one-off prompt is cut.
+  conversation?: ChatMessage[];
   // How large the answering model's context window is, where it says. A tool
   // whose result has to fit in it sizes the result to it rather than to the
   // largest model there is (see pageFor in tools/sandbox.ts).
@@ -417,6 +436,13 @@ export interface ToolContext {
   // (see harness/index.ts). A coder subagent is kept below it (see capped in
   // subagents/run.ts).
   sophistication?: number;
+  // The user's request, in their words, as it stands for this reply: the text
+  // that is set where the reply's context is built (see harness/index.ts). A tool
+  // that judges against it — the command reviewer — has it here, so that a
+  // command it may run without asking is judged against what the user asked for.
+  // Unset where a context is built without that in hand, as the one that runs
+  // reviewers over comments is.
+  intention?: string;
   // Lets a tool say what it is doing while it runs, for work that takes long
   // enough to be worth watching (see subagents/)
   emit?(event: HarnessEvent): void;
@@ -585,7 +611,17 @@ export interface Latency {
 export interface ModelUsage extends Usage {
   // What the model was doing
   purpose:
-    'classification' | 'planning' | 'reply' | 'summary' | 'description' | 'compaction' | 'subagent' | 'verification';
+    | 'classification'
+    | 'planning'
+    | 'reply'
+    | 'summary'
+    | 'description'
+    | 'compaction'
+    | 'subagent'
+    | 'verification'
+    // The model's own reason for wanting a file or command on the user's
+    // computer, asked as a one-off prompt (see harness/accessJustifier.ts)
+    | 'access_justification';
   provider: string;
   model: string;
   // In US dollars; null when the model's price isn't known (see llm/pricing.ts)
@@ -646,11 +682,6 @@ export type AgentEvent =
   // asked to say the same thing in less (see subagents/run.ts). As with
   // 'condensing', the app's work rather than the model's.
   | { type: 'shortening' }
-  // How much of what it was given it reckons is done, 0 to 100, which it is
-  // asked for now and then (see PROGRESS in subagents/run.ts). Its own
-  // estimate, so it is a sense of how far along the work is and not a
-  // measurement of it.
-  | { type: 'progress'; percent: number }
   | ToolCallEvent
   | { type: 'tool_result'; id: string; name: string; output: string; isError: boolean; images?: ToolImage[] }
   | RateLimitedEvent
@@ -751,6 +782,10 @@ export interface RetryRequest {
   name: string;
   task: string;
   kind?: string;
+  // What it had done when the app closed on it, so a run that picks it up
+  // carries on where the one before left off rather than starting over. A run
+  // the user asks for again carries none (see retrySubagent).
+  resumed?: Resumed;
 }
 
 // What a subagent brought back, as the window records it
@@ -816,14 +851,38 @@ export type HarnessEvent =
   // harness/access.ts). path is the real path asked for and folder the one it
   // is in (the path itself, where that is a folder); isFolder says which it is.
   // canRemember is whether a yes for good can be kept, which needs a workspace.
-  | { type: 'file_access'; id: string; path: string; folder: string; isFolder: boolean; canRemember: boolean }
+  // justification is the model's own reason for wanting the file (see
+  // harness/accessJustifier.ts), shown on the card so the user can judge it. It
+  // is added after the question is shown, when a one-off call has written it, so
+  // it is absent until then and absent where the call could not be made.
+  | {
+      type: 'file_access';
+      id: string;
+      path: string;
+      folder: string;
+      isFolder: boolean;
+      canRemember: boolean;
+      justification?: string;
+    }
   // The model wants to run a command on the user's own computer that could
   // lose work — a git that forces, resets, cleans or pushes — and the user is
   // being asked whether it may, this once (see harness/access.ts). command is
   // what would be run, path the folder it would run in, and why what is risky
   // about it, in words the card shows as they are. Nothing about it is
   // remembered: there is no answer here that holds for the next one.
-  | { type: 'command_access'; id: string; command: string; path: string; why: string }
+  // justification is the model's own reason for wanting to run it, added as above.
+  | { type: 'command_access'; id: string; command: string; path: string; why: string; justification?: string }
+  // The model's reason for wanting a file or command, arrived after the question
+  // was shown (see the justification field above). Routed to the card waiting on
+  // the id it names, where one is (see the renderer's approvals).
+  | { type: 'access_justification'; id: string; justification: string }
+  // A git command that could lose work was reviewed by a second agent and
+  // approved to run without the user being asked (see harness/commandReview.ts).
+  // why is the risk it was judged against (from sensitive in tools/hostReading.ts)
+  // and reason is what the reviewer said; the window shows both as a compact note,
+  // in the thread rather than as a question, so it is a note and not a thing the
+  // user is put to.
+  | { type: 'command_reviewed'; command: string; path: string; why: string; reason: string }
   // A model above the approval ceiling is wanted and the user is being asked
   // whether it may be used; fallbackName is the model used if they decline.
   // timeoutMs is how long the question stands before it is taken as a decline,
@@ -889,7 +948,6 @@ export type HarnessEvent =
   // again shorter (see subagents/run.ts). Reaches a thread when the agent
   // doing it is the thread itself, as the head explorer is.
   | { type: 'shortening' }
-  | { type: 'progress'; percent: number }
   // A subagent the reply set to work on one piece of a job, so that several
   // pieces are done at once (see subagents/). 'subagent' says one has started,
   // 'subagent_update' is a piece of its work as it happens, and 'subagent_done'
@@ -1049,10 +1107,12 @@ export interface LlmBridge {
   // Nudges an in-progress request with a line the user typed while it runs;
   // mid-turn delivery is not implemented yet
   nudge(requestId: string, text: string): void;
-  // The user's answer to a 'file_access' event, by the event's id
-  allowFileAccess(id: string, answer: FileAccessAnswer): void;
-  // ...and to a 'command_access' event: whether the command it named may run
-  allowCommand(id: string, allowed: boolean): void;
+  // The user's answer to a 'file_access' event, by the event's id. On a denial
+  // the reason they gave, which is put back to the model (see access.ts).
+  allowFileAccess(id: string, answer: FileAccessAnswer, reason?: string): void;
+  // ...and to a 'command_access' event: whether the command it named may run,
+  // and on a no, the reason they gave.
+  allowCommand(id: string, allowed: boolean, reason?: string): void;
   // The user's answer to an 'approval' event: whether the model above the
   // approval ceiling may be used
   approve(requestId: string, approved: boolean): void;
@@ -1063,6 +1123,7 @@ export interface LlmBridge {
   // time. Its work arrives meanwhile through onSubagentEvent.
   retrySubagent(request: RetryRequest): Promise<SubagentResult>;
   onSubagentEvent(callback: (threadId: string, id: string, event: AgentEvent) => void): void;
+  onJobEvent(handler: (threadId: string, id: string, event: string, data?: unknown) => void): () => void;
 }
 
 // One request of a thread and the replies to it, as the window cuts a thread up
@@ -1177,6 +1238,37 @@ export interface ThreadsBridge {
   // harness/notes.remove). Resolves with whether there was one to throw: a
   // note on screen can have been promoted or pruned since it was drawn.
   forgetNote(workspace: string, subject: string, threadId?: string): Promise<boolean>;
+  // The roster of all threads and their current activity, pushed from the renderer
+  // on every save so the main process can serve it to a model that asks
+  roster(entries: RosterEntry[]): void;
+  // A message sent to a thread from another thread, pushed from the main process
+  // to the renderer so the renderer can inject it into the target thread's
+  // conversation (see renderer/roster.ts)
+  onInject(callback: (threadId: string, text: string) => void): void;
+}
+
+// One entry in the roster of threads, pushed from the renderer and read by the
+// list_agents tool (see src/tools/threads.ts).
+//
+// `activity` is what the model reads to decide which threads to message:
+//   'working'        — a reply is in progress (inflight)
+//   'waiting-on-user' — the thread is waiting on an approval or a question
+//   'unread'         — a reply finished while another thread was on screen
+//   'idle'           — otherwise
+//
+// `changes` is the number of files the thread has changed but not yet written
+// back to its workspace (thread.changes > 0 means the work is still in the
+// container). `branch` and `branchWorktree` tell the main process where to look
+// up the git status of a thread that is on a branch.
+export interface RosterEntry {
+  id: string;
+  title: string;
+  activity: 'working' | 'waiting-on-user' | 'unread' | 'idle';
+  // Files the thread has changed but not yet written back to its workspace
+  changes: number;
+  // The branch the thread is on, if any. `worktree` is the host folder the
+  // branch's work is written back to, which is where its git status is read.
+  branch?: { name: string; upstream?: string; worktree: string };
 }
 
 // ---- What is known about a workspace and a thread (see harness/project.ts)

@@ -165,7 +165,7 @@ describe('preload', () => {
     expect(electron.send.mock.calls).toEqual([
       ['llm:send', 'r1', request],
       ['llm:cancel', 'r1'],
-      ['llm:allow-file-access', 'ask-1', 'once'],
+      ['llm:allow-file-access', 'ask-1', 'once', undefined],
       ['llm:approve', 'r1', true],
       ['llm:answer', 'r1', 'the second one'],
     ]);

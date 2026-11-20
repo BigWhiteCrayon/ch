@@ -163,36 +163,6 @@ and say in your report that it changed.
 You cannot start one of these yourself. Nothing you ask reaches it unless it has written to you first, which is why
 your report has to carry everything you have to say.`;
 
-// How often a subagent is asked how far along it is: every third round of
-// tool calls. Often enough that the window is not showing a figure from ten
-// minutes ago, rare enough that the asking is a line at the end of a turn it
-// was going to be sent anyway rather than a thing it spends its rounds on.
-const PROGRESS_EVERY = 3;
-// Asking for it. Said as a share of what is left rather than of what is done,
-// because that is the thing a model part-way through a job can actually
-// judge: it knows what it still has to look at.
-const PROGRESS = `Begin your next message with a line of its own reading "Remaining: NN%", where NN is your estimate
-of how much of what you were given is still to do — 100 if you have not started, 0 if you are about to report. Judge
-it by the work left, not by the rounds left. Write that line and nothing else about it: no explanation, no apology
-for the estimate, and nothing if you are already writing your report.
-
-The line is not an answer and does not end your turn. Write it and carry straight on in the same turn, making
-whatever tool call you were going to make. A turn holding the line, a sentence about what you are about to do, and
-no call spends a round and moves nothing.`;
-// ...and taking it back out. It is a status for the window, not something the
-// model said, so it never reaches the report or the thread's view of the work.
-// Taken out of every step and not only the ones that asked: the asking is a
-// turn and stays in the conversation (see tell in work), so a model may go on
-// answering it unasked, which is a fresher figure for the ring and costs the
-// line it is written on.
-const REMAINING = /^[ \t]*\**\s*remaining:\s*(\d{1,3})\s*%?\**[ \t]*\r?\n?/im;
-function takeProgress(text: string): { text: string; percent?: number } {
-  const found = REMAINING.exec(text);
-  if (!found) return { text };
-  const remaining = Math.min(100, Number(found[1]));
-  return { text: text.replace(REMAINING, ''), percent: 100 - remaining };
-}
-
 // What a subagent is told when it said what it was going to do and then
 // stopped with rounds still in hand. It names the two things it can do from
 // there — the call, or the report — and does not tell it that it went wrong: a
@@ -503,6 +473,16 @@ async function work(
   mailbox.open(context.threadId, name);
 
   const messages: ChatMessage[] = [{ role: 'user', content: task }];
+  // Where the app picked this piece up where it closed on it, what it had done
+  // goes in front of it, so the model carries on rather than starting over. The
+  // small loop has no flow to splice it in for it, so it does the one the flow
+  // does for a reply (see ../harness/index.ts). Imported the same way
+  // ./thread.ts does it, since the flow is what imports this one back.
+  if (context.resumed) {
+    const { pickedUp } = await import('../harness');
+    if (context.resumed.text) messages.push({ role: 'assistant', content: context.resumed.text });
+    messages.push({ role: 'user', content: pickedUp(context.resumed) });
+  }
   // Its own steps share a prompt the way a thread's passes do, and its own
   // prompt is not the thread's, so the key is the subagent's (see
   // ChatRequest.cacheKey)
@@ -648,10 +628,6 @@ async function work(
     // it was part way through went wrong and what it had done would otherwise
     // go back as nothing but the error (see the salvage below)
     const asking = last || nudging || recovering;
-    // ...and, now and then, how far along it thinks it is, for the ring on its
-    // tab (see PROGRESS). Never while it is being asked to report: at that
-    // point how much is left is not the question.
-    const counting = !asking && step % PROGRESS_EVERY === 0;
     // Reading files fills a window quickly, so the older tool results are
     // boiled down to findings when it is nearly full (see ../harness/compactor.ts)
     if (window && nearlyFull(size(messages, prompt), window)) {
@@ -689,12 +665,11 @@ async function work(
     // What this step has to say beyond the work itself. After the condensing
     // above, so that a step which boiled its gathering down still says it.
     if (asking) tell(recovering ? AFTER_FAILURE : nudging ? NOTHING_WRITTEN : REPORT_NOW);
-    else if (counting) tell(PROGRESS);
     // Whether this step carries on from the one before it, which is what keeps
     // a local model on this subagent rather than handing it to the next one
-    // waiting. A step told how far along it is, or asked for its report, has a
-    // turn of its own in front of it and the last of those is no longer the
-    // last, which costs a local model its prompt (see ../llm/cachelock.ts).
+    // waiting. A step asked for its report has a turn of its own in front of
+    // it and the last of those is no longer the last, which costs a local
+    // model its prompt (see ../llm/cachelock.ts).
     const sending = cachelock.shapeOf(prompt, specs, messages);
     const why = sentBefore && cachelock.brokeBy(sentBefore, sending);
     if (why) cachelock.broke(cacheKey, why);
@@ -805,12 +780,6 @@ async function work(
     }
     if (failure) break;
 
-    // The "Remaining:" line, where it wrote one, taken out before anything
-    // else looks at what it said: it is a status for the window, not a part
-    // of the work and not a part of the report (see PROGRESS).
-    const counted = takeProgress(text);
-    text = counted.text;
-    if (counted.percent !== undefined) says({ type: 'progress', percent: counted.percent });
     if (done?.usage && (done.usage.input || done.usage.output)) {
       emit?.({
         type: 'usage',
@@ -904,33 +873,27 @@ async function work(
     // done: "Nothing is edited yet", "I have not edited anything yet", "the
     // edit is still to do", each handed to the thread as a subagent that had
     // finished, each one sent out again under another name. Every one of them
-    // ended on a step that had asked how far along it was — steps 3 and 6 of
-    // 10, PROGRESS_EVERY apart — because a step told to write a line writes
-    // the line and ends its turn, and a turn with no call in it is what the
-    // loop below takes for the end of the work.
+    // ended on a step that had been asked how far along it was, because a step
+    // told to write a line writes the line and ends its turn, and a turn with
+    // no call in it is what the loop below takes for the end of the work. That
+    // asking is gone now, and with it the thing that prompted those turns; the
+    // turns themselves are a model stopping mid-thought and can still happen
+    // without being asked anything.
     //
-    // Told from a real report by the model's own words, two ways. Its
-    // "Remaining:" line, where it wrote one, is its own account of having work
-    // left. And a sentence about what it is about to look at is an intention
-    // rather than a finding (see ../harness/announced.ts).
+    // Told from a real report by the model's own words: a sentence about what
+    // it is about to look at is an intention rather than a finding (see
+    // ../harness/announced.ts).
     //
     // The round is spent rather than handed back: the model was called for it,
     // and a step retried on its own number is a step that can be retried for
     // ever. What bounds the asking is MAX_CARRY_ONS.
-    const unfinished = counted.percent !== undefined && counted.percent < 100;
-    if (!asking && !wasWritten && calls.length === 0 && (unfinished || announcing(text)) && carriedOn < MAX_CARRY_ONS) {
+    if (!asking && !wasWritten && calls.length === 0 && announcing(text) && carriedOn < MAX_CARRY_ONS) {
       carriedOn++;
-      log.info('subagent.announced', {
-        kind: kind.name,
-        subagent: name,
-        step,
-        ...(counted.percent === undefined ? {} : { remaining: 100 - counted.percent }),
-        chars: text.trim().length,
-      });
+      log.info('subagent.announced', { kind: kind.name, subagent: name, step, chars: text.trim().length });
       // Its own words go back in with it, where it wrote any: without them the
-      // turn it is being asked about is not in front of it. Nothing goes in
-      // for a turn that held only the progress line, which is an empty
-      // assistant turn and a thing some providers refuse (see tell above).
+      // turn it is being asked about is not in front of it. A turn that held
+      // nothing at all is an empty assistant turn, which some providers refuse
+      // (see tell above).
       const said = text.trim() || reasoned.trim();
       if (said) messages.push({ role: 'assistant', content: said, raw: done?.raw });
       tell(CARRY_ON);
@@ -950,12 +913,9 @@ async function work(
       // that had landed: five edits in one of them, a rewritten test file in
       // another. So the reasoning stands in for the report, as it does for a
       // reply that answered only in its thoughts (see NO_ANSWER in
-      // ../harness/index.ts). Its progress line goes with it: that is a
-      // status for the window wherever the model wrote it (see PROGRESS).
+      // ../harness/index.ts).
       if (!answer && reasoned.trim()) {
-        const reported = takeProgress(reasoned);
-        if (reported.percent !== undefined) says({ type: 'progress', percent: reported.percent });
-        answer = reported.text.trim();
+        answer = reasoned.trim();
         // Reasoning runs long, and what it settled on is at its end. Left over
         // the room it would be sent to be shortened, which a model that
         // reasons answers by reasoning again: three tries of three minutes

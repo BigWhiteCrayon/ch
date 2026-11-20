@@ -19,8 +19,8 @@ const llm: LlmBridge = {
   feedback: (feedback) => ipcRenderer.send('llm:feedback', feedback),
   cancel: (requestId) => ipcRenderer.send('llm:cancel', requestId),
   nudge: (requestId, text) => ipcRenderer.send('llm:nudge', requestId, text),
-  allowFileAccess: (id, answer) => ipcRenderer.send('llm:allow-file-access', id, answer),
-  allowCommand: (id, allowed) => ipcRenderer.send('llm:allow-command', id, allowed),
+  allowFileAccess: (id, answer, reason) => ipcRenderer.send('llm:allow-file-access', id, answer, reason),
+  allowCommand: (id, allowed, reason) => ipcRenderer.send('llm:allow-command', id, allowed, reason),
   approve: (requestId, approved) => ipcRenderer.send('llm:approve', requestId, approved),
   answer: (requestId, answer) => ipcRenderer.send('llm:answer', requestId, answer),
   onEvent: (callback) => {
@@ -29,6 +29,12 @@ const llm: LlmBridge = {
   retrySubagent: (request) => ipcRenderer.invoke('llm:retry-subagent', request),
   onSubagentEvent: (callback) => {
     ipcRenderer.on('llm:subagent-event', (_event, threadId, id, event) => callback(threadId, id, event));
+  },
+  onJobEvent: (handler) => {
+    const listener = (_event: any, threadId: string, id: string, event: string, data?: unknown) =>
+      handler(threadId, id, event, data);
+    ipcRenderer.on('job:event', listener);
+    return () => ipcRenderer.off('job:event', listener);
   },
 };
 
@@ -79,6 +85,10 @@ const threads: ThreadsBridge = {
   searchNotes: (workspace, query) => ipcRenderer.invoke('workspace:search-notes', workspace, query),
   forgetNote: (workspace, subject, threadId) =>
     ipcRenderer.invoke('workspace:forget-note', workspace, subject, threadId),
+  roster: (entries) => ipcRenderer.send('threads:roster', entries),
+  onInject: (callback) => {
+    ipcRenderer.on('threads:inject', (_event, threadId, text) => callback(threadId, text));
+  },
 };
 
 const ollama: OllamaBridge = {
