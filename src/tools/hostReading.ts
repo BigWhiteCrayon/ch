@@ -6,7 +6,7 @@ import * as log from '../log';
 import * as seatbelt from '../sandbox/seatbelt';
 import * as worktree from '../sandbox/worktree';
 import type { Tool, ToolContext } from '../types';
-import { MERGE_TOOL } from './branches';
+import { CREATE_TOOL, MERGE_TOOL } from './branches';
 import { GIT_READS, gitSubcommand, READING, refuse, stages } from './reading';
 import { copyHint } from './sandbox';
 
@@ -197,6 +197,44 @@ async function takesTheMainBranch(argv: string[], context: ToolContext): Promise
   );
 }
 
+// Whether this git command moves the folder it runs in onto another branch, or off its branch: a switch, a checkout
+// that names something other than a path, or a symbolic-ref that points HEAD somewhere. A checkout after "--" is a
+// path, and one with nothing to name or only "." is a restore, which is asked about as it always was (see sensitive).
+function movesTheBranch(argv: string[]): boolean {
+  if (argv[0] !== 'git') return false;
+  const sub = gitSubcommand(argv);
+  if (!sub) return false;
+  const args = named(argv).slice(named(argv).indexOf(sub) + 1);
+  // A bare "-" is a ref (the previous branch, for checkout), not a flag.
+  const words = args.filter((arg) => arg === '-' || !arg.startsWith('-'));
+  if (sub === 'switch') return true;
+  if (sub === 'symbolic-ref') return words[0] === 'HEAD' && words.length > 1;
+  if (sub !== 'checkout' || args.includes('--')) return false;
+  return (
+    args.some((arg) => /^-[A-Za-z]*[bB]$/.test(arg) || arg === '--orphan' || arg === '--detach') ||
+    words.some((word) => word !== '.')
+  );
+}
+
+// Why this command may not run in this folder, or null. The user's own checkout — the repository's main worktree —
+// is never moved to another branch from here: a lot of what the app does assumes the user's checkout stays where
+// they left it (a thread's branch is made from it, and the merge tool moves main without checking it out), so
+// a switch there goes wrong somewhere else, later, and not where it was made. Like checking main out in a thread's own
+// folder (see takesTheMainBranch), it is refused rather than asked about, whichever thread asks, because the answer
+// the user would give is not one that changes what the assumptions break on. The user switches branches there
+// themselves; a thread that wants a branch of its own makes one (see CREATE_TOOL).
+async function movesTheMainWorktree(argv: string[], target: string): Promise<string | null> {
+  if (!movesTheBranch(argv)) return null;
+  if (!(await worktree.isMainWorktree(target))) return null;
+  return (
+    `${target} is in the user's own checkout of this repository, and this app does not change which branch that is ` +
+    `on. To work on another branch, make a branch of its own for this thread with ${CREATE_TOOL}, which gets a ` +
+    `folder that is not the user's checkout. To read another branch, name it rather than check it out — ` +
+    `"git log <branch>", "git show <branch>:<file>". To restore a file, "git checkout -- <file>" does not move ` +
+    `the branch.`
+  );
+}
+
 // Whether two paths are the same folder, asked of the filesystem rather than of the strings
 function samePlace(a: string, b: string): boolean {
   try {
@@ -344,7 +382,8 @@ throw work away or reach a repository elsewhere — anything forcing (-f, --forc
 rebase, stash, gc, reflog, push — is put to the user first, in their own words, and does not run until they say yes;
 so run one of those only when that is what was asked for, and say why in the same reply. Nothing else of git is
 asked about. Git is run with no editor and no password prompt, so give a commit its message with -m and expect a
-push that needs typing to fail rather than wait.
+push that needs typing to fail rather than wait. The user's own checkout is never moved to another branch from here —
+git switch, or git checkout of a branch, there is refused: make a branch of the thread's own with ${CREATE_TOOL}.
 
 It runs these programs and no others: ${PROGRAMS}, git, and "--version" from a language or package manager. Git that
 runs a program of its own is refused: no config, submodule, bisect, filter-branch, difftool, mergetool, hook, help,
@@ -448,6 +487,8 @@ from a command means it tried to do something else.`,
     // Refused outright, before the questions below: there is no answer to this one that is better than not asking
     const taken = await takesTheMainBranch(pipeline[0], context);
     if (taken) throw new Error(taken);
+    const moved = await movesTheMainWorktree(pipeline[0], target);
+    if (moved) throw new Error(moved);
     const risk = sensitive(pipeline[0]);
     if (risk) {
       // With the opt-in command review on, a second agent judges whether this

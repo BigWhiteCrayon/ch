@@ -19,6 +19,7 @@ vi.mock('../../src/harness/access', () => ({
 vi.mock('../../src/sandbox/worktree', () => ({
   mainWorktree: vi.fn(),
   defaultBranch: vi.fn(),
+  isMainWorktree: vi.fn(),
 }));
 
 // The command reviewer (see ../../src/harness/commandReview.ts) is mocked here so the gate can be asked about its
@@ -27,6 +28,7 @@ vi.mock('../../src/harness/commandReview', () => ({ review: vi.fn() }));
 
 const mainWorktree = vi.mocked(worktree.mainWorktree);
 const defaultBranch = vi.mocked(worktree.defaultBranch);
+const isMainWorktree = vi.mocked(worktree.isMainWorktree);
 const permitted = vi.mocked(access.permitted);
 const confirmed = vi.mocked(access.confirmed);
 const inside = vi.mocked(access.relativeToWorkspace);
@@ -42,6 +44,7 @@ beforeEach(() => {
   review.mockResolvedValue(null);
   mainWorktree.mockResolvedValue('/repo');
   defaultBranch.mockResolvedValue('main');
+  isMainWorktree.mockResolvedValue(false);
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'host-command-'));
 });
 
@@ -362,6 +365,60 @@ describe('run_host_command', () => {
 
     it('leaves other branches alone', async () => {
       await run({ path: dir, command: 'git checkout feature' });
+      expect(permitted).toHaveBeenCalled();
+    });
+  });
+
+  // The user's own checkout stays on the branch they left it on: a lot of the app assumes so (a thread's branch is made
+  // from it, and merge_to_main moves main without checking it out). Refused outright, from any thread.
+  describe("the user's own checkout", () => {
+    beforeEach(() => isMainWorktree.mockResolvedValue(true));
+
+    it.each([
+      'git checkout feature',
+      'git checkout -b feature',
+      'git checkout -B feature HEAD~1',
+      'git checkout --detach',
+      'git checkout --orphan fresh',
+      'git checkout origin/feature',
+      'git checkout -',
+      'git checkout -q -',
+      'git switch feature',
+      'git switch -c feature',
+      'git switch --detach HEAD~1',
+      'git symbolic-ref HEAD refs/heads/feature',
+    ])('refuses %s without asking', async (command) => {
+      await expect(run({ path: dir, command })).rejects.toThrow(/user's own checkout.*create_branch/);
+      expect(confirmed).not.toHaveBeenCalled();
+      expect(permitted).not.toHaveBeenCalled();
+    });
+
+    it('refuses it from a thread working in the checkout itself', async () => {
+      mainWorktree.mockResolvedValue('/w');
+      await expect(run({ path: dir, command: 'git switch feature' })).rejects.toThrow(/user's own checkout/);
+    });
+
+    it.each([
+      'git checkout -- file.txt',
+      'git checkout .',
+      'git checkout',
+      'git checkout feature -- file.txt',
+      'git symbolic-ref HEAD',
+      'git symbolic-ref --short HEAD',
+      'git log feature',
+      'git branch feature',
+      'git status',
+    ])('leaves %s alone', async (command) => {
+      // Asked about or run as they always were: what matters is that this refusal is not the one that stops them
+      await run({ path: dir, command }).catch((error: Error) => {
+        expect(error.message).not.toMatch(/user's own checkout/);
+      });
+      expect(isMainWorktree).not.toHaveBeenCalled();
+    });
+
+    it('leaves a thread own folder alone', async () => {
+      isMainWorktree.mockResolvedValue(false);
+      await run({ path: dir, command: 'git switch feature' });
       expect(permitted).toHaveBeenCalled();
     });
   });

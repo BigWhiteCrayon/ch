@@ -6,6 +6,7 @@
 
 import { spawn } from 'child_process';
 import crypto from 'crypto';
+import { realpathSync } from 'fs';
 import { join } from 'path';
 import { toolEnv } from './env';
 import type { BranchStatus } from '../types';
@@ -58,6 +59,24 @@ export async function mainWorktree(dir: string): Promise<string | null> {
   if (listed.code !== 0) return null;
   const first = listed.output.split(/\r?\n/).find((line) => line.startsWith('worktree '));
   return first ? first.slice('worktree '.length).trim() || null : null;
+}
+
+// Whether `dir` is in the repository's main worktree — the user's own checkout — rather than in a linked worktree of
+// it, such as the folder a thread works in. Any folder inside the checkout counts, not only its root. False for a
+// folder that is not in a repository, and for a bare one, which has no checkout to be in.
+export async function isMainWorktree(dir: string): Promise<boolean> {
+  const main = await mainWorktree(dir);
+  if (!main) return false;
+  const top = await git(dir, ['rev-parse', '--show-toplevel']);
+  if (top.code !== 0 || !top.output.trim()) return false;
+  const same = (a: string, b: string) => {
+    try {
+      return realpathSync(a) === realpathSync(b);
+    } catch {
+      return a === b;
+    }
+  };
+  return same(main, top.output.trim());
 }
 
 // The remote branch the worktree's branch tracks, like "origin/feature"; null if it tracks none
