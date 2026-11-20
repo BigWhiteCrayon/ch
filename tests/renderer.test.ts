@@ -6160,6 +6160,20 @@ describe('threads', () => {
         expect(host.badge).toHaveBeenLastCalledWith(0);
         expect(sidebar()).toEqual(['[General chat]', 'question']);
       });
+
+      // A box put back on screen after the window was away could be painted
+      // narrow until something reflowed it, so coming back reflows it. It must
+      // not be hidden to do so, or what is being typed would lose the focus.
+      it('reflows the message box when the user comes back, without leaving it styled', async () => {
+        const box = document.getElementById('composer') as HTMLFormElement;
+        const reads = vi.spyOn(box, 'offsetWidth', 'get');
+        document.getElementById('input')?.focus();
+        window.dispatchEvent(new Event('focus'));
+        expect(reads).toHaveBeenCalled();
+        expect(box.hidden).toBe(false);
+        expect(box.style.transform).toBe('');
+        expect(document.activeElement?.id).toBe('input');
+      });
     });
 
     it('still shows the unread mark after a restart', async () => {

@@ -450,6 +450,18 @@ export function drawMessages(
   return streaming;
 }
 
+// The box is drawn at the width of the window less the sidebar, and after the
+// window has been away (or the box has been hidden for a subagent's tab) it can
+// be put back on screen at a stale, narrower width that stays until something
+// forces a reflow. Reading its width and giving it a layer for a moment does
+// that without hiding it, which would take the focus off what is being typed.
+export function repaintComposer(): void {
+  if (composer.hidden) return;
+  composer.style.transform = 'translateZ(0)';
+  void composer.offsetWidth;
+  composer.style.transform = '';
+}
+
 export function render(): void {
   const active = activeThread();
   // The bubble a reply is streaming into, if one is on screen
@@ -578,7 +590,9 @@ export function render(): void {
   // whoever handed it over, not to the window. A thread the app started for
   // itself is the same — it is doing a job it was given. A box that takes
   // what is typed and has nowhere to send it is worse than no box.
+  const composerWasHidden = composer.hidden;
   composer.hidden = Boolean(agent) || Boolean(active.automatic);
+  if (composerWasHidden && !composer.hidden) repaintComposer();
   showSuggestion();
   if (agent) {
     drawMessages(

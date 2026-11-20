@@ -11,7 +11,7 @@ import {
 } from './shared.js';
 import { activate, save, saveSoon, state } from './threads.js';
 import { branchKey } from './sidebar.js';
-import { drawText, render } from './thread-view.js';
+import { drawText, render, repaintComposer } from './thread-view.js';
 import { about, clock, mergeUsage, recordUsage, tokenCount, usedLine } from './usage.js';
 import {
   CATEGORY_NAMES,
@@ -137,6 +137,7 @@ export function showBadge(): void {
 // else would take that mark off again: opening a thread clears it, and this
 // one is open already.
 window.addEventListener('focus', () => {
+  repaintComposer();
   const active = state.threads.find((thread) => thread.id === state.activeId);
   if (!active?.unread) return;
   delete active.unread;
