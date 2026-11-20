@@ -45,6 +45,9 @@ const GAP = 28;
 // The most a diagram is drawn bigger than its laid-out size in the chat. Only the svg's width and height
 // use it; the viewBox keeps the geometry, so nodes, arrows and text all grow together.
 const DIAGRAM_SCALE = 1.4;
+// A chart whose laid-out width is under this many px is a small graph (a step or two): it is drawn at its natural
+// size instead, since scaling it up only makes a few boxes fill space they do not need
+const SMALL_CHART_WIDTH = 300;
 // The width in px a diagram should fit without scrolling sideways where the thread cannot be measured (a
 // column that is not on screen yet): a tuned guess. A left-to-right chart wider than the target turns to run
 // top-down, and a narrower one is only scaled up as far as it.
@@ -389,7 +392,7 @@ export function renderDiagram(source: string): HTMLElement | null {
   // instead of running past it: the same packing as above, on the other axis, and it leaves the
   // neighbours where they were, so a flipped chain packed above keeps its columns
   if (size.x > widthTarget) size = packWide(chart, widthTarget);
-  const scale = Math.min(DIAGRAM_SCALE, Math.max(1, widthTarget / size.x));
+  const scale = size.x < SMALL_CHART_WIDTH ? 1 : Math.min(DIAGRAM_SCALE, Math.max(1, widthTarget / size.x));
   const root = svg('svg', {
     viewBox: `0 0 ${round(size.x)} ${round(size.y)}`,
     width: round(size.x * scale),

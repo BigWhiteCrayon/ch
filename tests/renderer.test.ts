@@ -4172,6 +4172,13 @@ describe('commenting on a reply', () => {
     expect(width).toBeGreaterThan(height);
   });
 
+  it('draws a small graph at its natural size instead of scaling it up', async () => {
+    await answered('```mermaid\nflowchart TD\nA[One] --> B[Two]\n```');
+    const svg = $('#messages .message.assistant .diagram svg');
+    const { width } = diagramBox();
+    expect(Number(svg.getAttribute('width'))).toBe(width);
+  });
+
   it('turns a long right-to-left diagram bottom-up, then packs it into a grid of columns', async () => {
     await answered(chain('RL'));
     const svg = $('#messages .message.assistant .diagram svg');
