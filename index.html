@@ -14,6 +14,7 @@
     <header id="titlebar">
       <span id="cost-30d" title="What the models have cost over the last 30 days"></span>
       <button id="open-usage" type="button" title="Tokens used and what they cost, day by day">Token Usage</button>
+      <button id="open-review" type="button" title="Pending items">Review<span id="review-count"></span></button>
       <label id="fast">
         <input id="fast-toggle" type="checkbox" />
         <span>Fast Mode</span>
@@ -380,6 +381,12 @@
         <button type="button" id="changes-revert">Revert changes</button>
         <button type="button" id="changes-apply" class="primary">Write to workspace</button>
       </div>
+    </dialog>
+    <dialog id="review-queue-dialog">
+      <h2>Review</h2>
+      <p class="hint" id="review-queue-hint">Replies to check, and questions to answer.</p>
+      <div id="review-queue-body"></div>
+      <button type="button" id="review-close" class="dialog-close" aria-label="Close">&times;</button>
     </dialog>
     <dialog id="workspace-dialog">
       <h2 id="workspace-dialog-name"></h2>

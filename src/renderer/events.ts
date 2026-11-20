@@ -120,13 +120,27 @@ export function notify(thread: Thread, body: string): void {
 // a reload stayed on the icon with nothing left to clear it.
 let badged: number | null = null;
 
+// The threads that need the user: a question waiting or a reply not yet read.
+// What the icon counts, and what the Review queue lists, so that the two never
+// disagree. Not the app's own threads, whose work is none of the user's asking.
+export const needingUser = (): Thread[] =>
+  state.threads.filter((t) => (t.unread || approvalOf(t) !== undefined || questionOf(t) !== undefined) && !t.automatic);
+
+// Who else is told when showBadge runs, which is whenever the threads have been
+// redrawn: the Review button carries the same number as the icon, and has to
+// follow it without waiting to be opened.
+const badgeListeners: Array<() => void> = [];
+
+export function onBadge(listener: () => void): void {
+  badgeListeners.push(listener);
+}
+
 // The app's icon carries the number of threads that need the user: a question
 // waiting or a reply not yet read, which is what a notification is about. Not
 // the app's own threads, whose work is none of the user's asking (see notify).
 export function showBadge(): void {
-  const count = state.threads.filter(
-    (t) => (t.unread || approvalOf(t) !== undefined || questionOf(t) !== undefined) && !t.automatic
-  ).length;
+  badgeListeners.forEach((listener) => listener());
+  const count = needingUser().length;
   if (count === badged) return;
   badged = count;
   window.host.badge(count);

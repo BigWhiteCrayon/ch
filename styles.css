@@ -585,9 +585,9 @@ main > header {
 /* What the models have got through, beside the offline switch: both are about
    the app rather than about a thread, so both live up here. Drawn as the same
    pill, since they are the same kind of thing. */
-#open-usage {
+#open-usage,
+#open-review {
   flex: none;
-  margin-left: auto;
   padding: 3px 10px;
   font: inherit;
   font-size: 12px;
@@ -597,9 +597,38 @@ main > header {
   border-radius: 999px;
 }
 
-#open-usage:hover {
+#open-usage {
+  margin-left: auto;
+}
+
+#open-usage:hover,
+#open-review:hover {
   color: var(--text);
   border-color: var(--accent);
+}
+
+/* The Review button, with how many threads are waiting on the user after its
+   name: the same number the app's icon carries, so it is the one coloured thing
+   on the button, and gone when there is nothing to review. */
+#open-review {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#review-count {
+  min-width: 16px;
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+#review-count[hidden] {
+  display: none;
 }
 
 /* Keeping to this computer. On, it is the one coloured thing in the bar: which
@@ -1846,6 +1875,195 @@ main > header {
   width: min(760px, 90vw);
 }
 
+/* The Review queue: what is waiting on the user, in two lists — the questions a
+   reply is blocked on, which are answered here on the same cards the thread draws,
+   and the replies that finished while the user was away. Its body scrolls under
+   the heading, and the x sits over the top right corner, as it does on Settings. */
+#review-queue-dialog {
+  width: min(680px, 94vw);
+  max-height: 88vh;
+  padding: 16px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+#review-queue-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#review-queue-dialog h2,
+#review-queue-dialog .hint {
+  flex: none;
+  padding-right: 32px;
+}
+
+#review-queue-dialog .dialog-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+#review-queue-body {
+  flex: 1;
+  min-height: 0;
+  margin-top: 8px;
+  overflow-y: auto;
+}
+
+.review-section + .review-section {
+  margin-top: 20px;
+}
+
+.review-heading {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.review-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+/* One thread's questions, in a box of their own under its name */
+.review-group {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.review-group-label {
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.review-group-id {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.review-group .message {
+  max-width: none;
+  margin: 8px 0 0;
+}
+
+/* A reply that has finished: what it said, a button to open its thread, and under
+   them both the diff it left */
+.review-completed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.review-summary {
+  flex: 1;
+  min-width: 0;
+  max-height: 8em;
+  margin: 0;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#review-queue-body .re-open {
+  flex: none;
+  padding: 4px 10px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#review-queue-body .re-open:hover {
+  border-color: var(--accent);
+}
+
+.review-diff {
+  flex-basis: 100%;
+}
+
+.review-diff > summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.review-file {
+  margin-top: 8px;
+}
+
+.review-file-path {
+  margin: 0;
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  overflow-wrap: anywhere;
+}
+
+.review-file-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* A file's diff, a line to a row, laid out as the Changes dialog lays it out but
+   with nothing to click: it is read here, and commented on in the dialog */
+#review-queue-body .diff {
+  margin: 4px 0;
+  padding: 6px 0;
+  max-height: 320px;
+  overflow: auto;
+  font-size: 12px;
+  background: var(--bubble);
+  border-radius: 6px;
+}
+
+#review-queue-body .diff .row {
+  display: flex;
+  gap: 8px;
+  padding: 0 8px;
+  white-space: pre;
+}
+
+#review-queue-body .diff .row .number {
+  flex: none;
+  width: 36px;
+  text-align: right;
+  color: var(--muted);
+  user-select: none;
+}
+
+#review-queue-body .diff .row.add code {
+  color: var(--diff-add);
+}
+
+#review-queue-body .diff .row.del code {
+  color: var(--diff-del);
+}
+
+#review-queue-body .diff .row.hunk code {
+  color: var(--diff-hunk);
+}
+
 /* What a workspace and a thread are keeping, on a right-click in the sidebar.
    Laid out like the dropdowns in a thread, since it is the same material. */
 :is(#workspace-dialog, #thread-dialog) .hint {
@@ -2231,6 +2449,7 @@ main > header {
   #new-thread-dialog,
   #rename-workspace-dialog,
   #changes-dialog,
+  #review-queue-dialog,
   #workspace-dialog,
   #thread-dialog,
   #setup-dialog,
@@ -2245,6 +2464,7 @@ main > header {
     #new-thread-dialog,
     #rename-workspace-dialog,
     #changes-dialog,
+    #review-queue-dialog,
     #workspace-dialog,
     #thread-dialog,
     #setup-dialog,
@@ -2255,7 +2475,16 @@ main > header {
   font-size: 16px;
 }
 
-:is(#settings, #usage, #new-thread-dialog, #rename-workspace-dialog, #changes-dialog, #setup-dialog, #notice-dialog)
+:is(
+    #settings,
+    #usage,
+    #new-thread-dialog,
+    #rename-workspace-dialog,
+    #changes-dialog,
+    #review-queue-dialog,
+    #setup-dialog,
+    #notice-dialog
+  )
   .hint {
   margin: 4px 0 0;
   color: var(--muted);
@@ -2290,7 +2519,7 @@ main > header {
 
 /* The x in the top right of Settings and the token usage page. Named with the
    dialog, to beat the dialogs' own rule for a button. */
-:is(#settings, #usage, #zoom-dialog) .dialog-close {
+:is(#settings, #usage, #zoom-dialog, #review-queue-dialog) .dialog-close {
   flex: none;
   width: 28px;
   height: 28px;
@@ -2302,7 +2531,7 @@ main > header {
   border: none;
 }
 
-:is(#settings, #usage, #zoom-dialog) .dialog-close:hover {
+:is(#settings, #usage, #zoom-dialog, #review-queue-dialog) .dialog-close:hover {
   color: var(--text);
   background: var(--bubble);
 }

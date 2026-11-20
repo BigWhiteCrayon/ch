@@ -10295,6 +10295,85 @@ describe('the model asking the user a question', () => {
   });
 });
 
+describe('the review queue', () => {
+  // The queue re-draws on the next frame after an answer, which jsdom never
+  // fires, so the frame is made to run at once. It is an accessor on the global,
+  // so vi.stubGlobal leaves it alone and the override is saved and taken off by
+  // hand, the same way the timers are in start.
+  const realRaf = globalThis.requestAnimationFrame;
+  beforeAll(() => {
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    }) as FrameRequestCallback;
+  });
+  afterAll(() => {
+    globalThis.requestAnimationFrame = realRaf;
+  });
+
+  it('gathers a question a reply is waiting on, and answers it from the queue', async () => {
+    await newThread('/projects/demo');
+    await type('hi');
+    emit(sentId(), { type: 'question', question: 'Which database?', options: ['Postgres', 'SQLite'] });
+    await flush();
+    $('#open-review').click();
+    await flush();
+    expect($('#review-count').textContent).toBe('1');
+    const q = document.querySelector<HTMLElement>('#review-queue-dialog .message.question');
+    expect(q?.querySelector('p')?.textContent).toBe('Which database?');
+    expect([...(q?.querySelectorAll('button.option') ?? [])].map((b) => b.textContent)).toEqual(['Postgres', 'SQLite']);
+    q!.querySelectorAll('button.option')[1].click();
+    expect(llm.answer).toHaveBeenCalledWith(sentId(), 'SQLite');
+    expect(document.querySelector('#review-queue-dialog .message.question')).toBeNull();
+    expect($('#review-count').textContent).toBe('');
+  });
+
+  it('keeps the count on its button up to date without being opened, and an open queue with it', async () => {
+    await newThread('/projects/demo');
+    await type('hi');
+    expect($('#review-count').textContent).toBe('');
+    emit(sentId(), { type: 'question', question: 'Which database?', options: ['Postgres', 'SQLite'] });
+    await flush();
+    // Nobody has opened the queue, and the button already says so
+    expect($('#review-count').textContent).toBe('1');
+    expect($('#review-count').hidden).toBe(false);
+    // A queue left open follows the thread it is showing
+    $('#open-review').click();
+    await flush();
+    expect(document.querySelector('#review-queue-dialog .message.question')).not.toBeNull();
+    const id = sentId();
+    await newThread();
+    await type('second');
+    emit(sentId(), { type: 'question', question: 'Which colour?', options: ['Red'] });
+    await flush();
+    expect($('#review-count').textContent).toBe('2');
+    expect(document.querySelectorAll('#review-queue-dialog .message.question')).toHaveLength(2);
+    expect(id).not.toBe(sentId());
+  });
+
+  it('lists a reply that finished out of sight, and opens the thread it was in', async () => {
+    await newThread();
+    await type('first');
+    const id = sentId();
+    await newThread();
+    emit(id, { type: 'text', delta: 'Done.' });
+    emit(id, { type: 'done', stopReason: 'end_turn', usage: { input: 0, output: 0 }, steps: 1 });
+    await flush();
+    $('#open-review').click();
+    await flush();
+    expect($('#review-count').textContent).toBe('1');
+    const item = document.querySelector<HTMLElement>('#review-queue-dialog .review-completed');
+    expect(item?.textContent).toContain('Done.');
+    item?.querySelector<HTMLButtonElement>('.re-open')?.click();
+    await flush();
+    expect($('#thread-title').textContent).toBe('first');
+    $('#open-review').click();
+    await flush();
+    expect(document.querySelector('#review-queue-dialog .review-completed')).toBeNull();
+    expect(document.querySelector('#review-queue-dialog')?.textContent).toContain('Nothing to review');
+  });
+});
+
 describe("having a reply's changes checked by a model", () => {
   const card = () => document.querySelector<HTMLElement>('#messages .message.review');
   const check = () => card()?.querySelector<HTMLButtonElement>('button.check');
