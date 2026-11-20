@@ -244,6 +244,42 @@ function pack(chart: Flowchart, heightTarget: number): Point {
   return { x: columns * columnWidth, y: height };
 }
 
+// A layer wider than the target (a fan-out of many parallel nodes) is split into rows of as many as fit
+// across the width, and those rows are stacked along the chart, so the width of the whole chart stays
+// under the target. A layer that fits is laid out in one row exactly as layout() would, and parent to
+// child arrows stay short because the children sit in the layer just below the parent.
+function packWide(chart: Flowchart, widthTarget: number): Point {
+  const { layers, along, across, gap } = layered(chart);
+  const horizontal = chart.direction === 'LR' || chart.direction === 'RL';
+  const thick = layers.map((layer) => Math.max(...layer.map(along)));
+  // How many of a layer's nodes sit side by side across the target at once; a wider layer is split
+  // into rows of that many, stacked along the direction of the chart
+  const nodeCross = Math.max(...layers.flatMap((layer) => layer.map(across)));
+  const slot = nodeCross + GAP;
+  const perRow = Math.max(1, Math.floor((widthTarget - 2 * PAD) / slot));
+  const rows = layers.map((layer) => Math.ceil(layer.length / perRow));
+  if (rows.every((r) => r === 1)) return layout(chart); // no layer is wider than the target: this is layout() again
+  // A layer's depth along the chart is its rows times its nodes' thickness
+  const depth = layers.reduce((sum, _layer, i) => sum + thick[i] * rows[i] + (i < layers.length - 1 ? gap : 0), 0);
+  let offset = PAD;
+  layers.forEach((layer, i) => {
+    const layerThick = thick[i];
+    layer.forEach((n, k) => {
+      const row = Math.floor(k / perRow); // which row of the layer
+      const slotInRow = k % perRow; // which slot across that row
+      const main = offset + (row + 0.5) * layerThick;
+      const cross = PAD + slotInRow * slot + across(n) / 2;
+      const reversed = chart.direction === 'BT' || chart.direction === 'RL' ? 2 * PAD + depth - main : main;
+      [n.x, n.y] = horizontal ? [reversed, cross] : [cross, reversed];
+    });
+    offset += layerThick * rows[i] + gap;
+  });
+  const crossExtent = perRow * slot - GAP;
+  return horizontal
+    ? { x: depth + 2 * PAD, y: crossExtent + 2 * PAD }
+    : { x: crossExtent + 2 * PAD, y: depth + 2 * PAD };
+}
+
 // Where a line from the middle of n towards another point leaves n's outline
 function leaves(n: DiagramNode, towards: Point): Point {
   const dx = towards.x - n.x;
@@ -334,6 +370,10 @@ export function renderDiagram(source: string): HTMLElement | null {
   // A flipped column that runs past half the window is packed into a grid of columns instead of one tall strip
   const heightTarget = Math.round(window.innerHeight * 0.5);
   if (flipped && size.y > heightTarget) size = pack(chart, heightTarget);
+  // A layer wider than the target (a fan-out of many parallel nodes) wraps into rows that fit the width
+  // instead of running past it: the same packing as above, on the other axis, and it leaves the
+  // neighbours where they were, so a flipped chain packed above keeps its columns
+  if (size.x > TARGET_WIDTH) size = packWide(chart, TARGET_WIDTH);
   const scale = Math.min(DIAGRAM_SCALE, Math.max(1, TARGET_WIDTH / size.x));
   const root = svg('svg', {
     viewBox: `0 0 ${round(size.x)} ${round(size.y)}`,

@@ -4171,6 +4171,28 @@ describe('commenting on a reply', () => {
     expect(height).toBeLessThan(712);
   });
 
+  it('wraps a wide fan-out of parallel nodes into sub-columns instead of running past the width', async () => {
+    const fan =
+      '```mermaid\nflowchart TD\nA[Root] --> B[Branch 0]\n' +
+      Array.from({ length: 9 }, (_, i) => 'A --> C' + i + '[Branch ' + i + ']').join('\n') +
+      '\n```';
+    await answered(fan);
+    const svg = $('#messages .message.assistant .diagram svg');
+    const { width, height } = diagramBox();
+    // the children sit in sub-columns, not one wide row
+    const childX = new Set(
+      [...svg.querySelectorAll('[data-node="B"], [data-node^="C"] rect')].map((r) => Number(r.getAttribute('x')))
+    );
+    expect(childX.size).toBeGreaterThan(1);
+    // the wrap keeps the chart within the target width, and the children stay on a short list of rows
+    expect(width).toBeLessThan(960);
+    const childY = new Set(
+      [...svg.querySelectorAll('[data-node="B"], [data-node^="C"] rect')].map((r) => Number(r.getAttribute('y')))
+    );
+    expect(childY.size).toBeLessThanOrEqual(3);
+    expect(height).toBeLessThan(712);
+  });
+
   // Clicking a picture or a diagram opens it larger in #zoom-dialog (see src/renderer/zoom.ts)
   it('opens a screenshot in the dialog when it is clicked', async () => {
     await answered('Here is the page.');
