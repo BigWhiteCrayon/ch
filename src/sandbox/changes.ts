@@ -19,6 +19,7 @@ import type { AppliedChanges, FileChange, ThreadChanges } from '../types';
 import * as docker from './docker';
 import { toolEnv } from './env';
 import { withFileLock } from './lock';
+import { commitPaths, withWorktreeLock } from './worktree';
 
 const MAX_FILES = 500; // changed files handled at once
 const MAX_DIFF_LENGTH = 20000; // characters of any one file's diff shown
@@ -715,7 +716,18 @@ export function describeChanges({ files, more, unavailable }: ThreadChanges): st
 
 // Writes the thread's changes back to its workspace. If any file conflicts with
 // what is in the workspace now, nothing is written and the conflicts are named.
-export async function apply(threadId: string, workspace: string): Promise<AppliedChanges> {
+// With `commit`, what was written is then committed in the workspace (a Git worktree) under that message. Planning,
+// writing and committing happen in one turn of the workspace's lock, so that threads writing back to the same
+// worktree take their turns instead of having their files, or their commits, mixed together.
+export async function apply(
+  threadId: string,
+  workspace: string,
+  options: { commit?: string } = {}
+): Promise<AppliedChanges> {
+  return withWorktreeLock(workspace, () => applyLocked(threadId, workspace, options.commit));
+}
+
+async function applyLocked(threadId: string, workspace: string, commit?: string): Promise<AppliedChanges> {
   const started = performance.now();
   try {
     const raw = await changed(threadId);
@@ -749,14 +761,25 @@ export async function apply(threadId: string, workspace: string): Promise<Applie
     }
     // What was applied is where the next changes are told from
     await git(threadId, 'commit -q --allow-empty -m applied');
+    const result: AppliedChanges = { applied, conflicts: [], skipped };
+    if (commit !== undefined && applied.length > 0) {
+      // The files are written by now, so a commit that fails is reported beside them rather than as nothing written
+      try {
+        const made = await commitPaths(workspace, applied, commit);
+        if (made) result.commit = made;
+      } catch (err) {
+        result.commitError = (err as Error).message;
+      }
+    }
     log.info('changes.apply', {
       thread: threadId,
       ok: true,
       ms: log.since(started),
       applied: applied.length,
       skipped: skipped.length,
+      committed: Boolean(result.commit),
     });
-    return { applied, conflicts: [], skipped };
+    return result;
   } catch (err) {
     log.warn('changes.apply', { thread: threadId, ok: false, error: (err as Error).message });
     return { applied: [], conflicts: [], skipped: [], error: (err as Error).message };

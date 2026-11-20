@@ -15,6 +15,7 @@ export const changesRevert = element<HTMLButtonElement>('changes-revert');
 export const changesBranch = element('changes-branch');
 export const changesBranchStatus = element('changes-branch-status');
 export const changesCommitMessage = element<HTMLInputElement>('changes-commit-message');
+export const changesApplyCommit = element<HTMLInputElement>('changes-apply-commit');
 export const changesCommit = element<HTMLButtonElement>('changes-commit');
 export const changesPush = element<HTMLButtonElement>('changes-push');
 export const changesPull = element<HTMLButtonElement>('changes-pull');
@@ -479,10 +480,16 @@ threadChanges.addEventListener('click', () => openChanges(activeThread()));
 changesApply.addEventListener('click', async () => {
   const thread = changesThread;
   if (!thread?.workspace) return;
+  // Only a thread on a branch has a worktree to commit in
+  const commitMessage = thread.branch && changesApplyCommit.checked ? changesCommitMessage.value.trim() : undefined;
+  if (commitMessage === '') {
+    changesStatus.textContent = 'Nothing was written: a commit needs a message.';
+    return;
+  }
   changesApply.disabled = true;
-  changesStatus.textContent = 'Writing to the workspace…';
+  changesStatus.textContent = commitMessage ? 'Writing to the workspace and committing…' : 'Writing to the workspace…';
   const result = await window.threads
-    .applyChanges(thread.id, sourceOf(thread) as string)
+    .applyChanges(thread.id, sourceOf(thread) as string, commitMessage)
     .catch((err: Error) => ({ applied: [], conflicts: [], skipped: [], error: err.message }));
   // A successful write-back leaves nothing pending, whether or not the dialog is still looking at the thread
   if (!result.error && result.conflicts.length === 0) {
@@ -509,6 +516,9 @@ changesApply.addEventListener('click', async () => {
         ? 'The workspace already had these changes.'
         : `Wrote ${n} ${n === 1 ? 'file' : 'files'} to ${sourceOf(thread)}.`
     );
+    if (result.commit) lines.push(`Committed as ${result.commit.slice(0, 7)}.`);
+    else if (result.commitError) lines.push(`The files are written but not committed: ${result.commitError}`);
+    else if (commitMessage && n > 0) lines.push('Nothing to commit: the branch already had these files as written.');
   }
   if (result.skipped.length > 0) {
     lines.push('Left out:', ...result.skipped.map((s) => `• ${s.path}: ${s.reason}`));

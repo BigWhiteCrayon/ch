@@ -170,6 +170,14 @@ vi.mock('../../src/sandbox/docker', () => {
   };
 });
 
+// Committing in the workspace is Git on the host, which worktree.test.ts covers; here it is only told what to
+// commit. Taking turns on the workspace is the real thing.
+const committing = vi.hoisted(() => ({ commitPaths: vi.fn() }));
+vi.mock('../../src/sandbox/worktree', async (importActual) => ({
+  ...(await importActual<typeof import('../../src/sandbox/worktree')>()),
+  commitPaths: committing.commitPaths,
+}));
+
 import {
   WORKSPACE_COPIES,
   apply,
@@ -194,6 +202,8 @@ const lines = (...rows: string[]) => `${rows.join('\n')}\n`;
 
 beforeEach(() => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-changes-'));
+  committing.commitPaths.mockReset();
+  committing.commitPaths.mockResolvedValue('abc1234');
   Object.assign(container, {
     exists: true,
     hasRecord: true,
@@ -366,6 +376,100 @@ describe('apply', () => {
       expect(fs.statSync(path.join(workspace, 'deep/er/run.sh')).mode & 0o111).not.toBe(0);
     expect(exists('gone.txt')).toBe(false);
     expect(container.ran.at(-1)).toBe('GIT commit -q --allow-empty -m applied');
+  });
+
+  describe('as a commit', () => {
+    const change = () => {
+      put('a.txt', 'one\n');
+      container.changes = ['M a.txt a1 a2', 'A new.txt 0 n1'];
+      container.blobs = { a1: 'one\n', a2: 'two\n', n1: 'new\n' };
+    };
+
+    it('does not commit unless asked to', async () => {
+      change();
+      await expect(apply(THREAD, workspace)).resolves.toEqual({
+        applied: ['a.txt', 'new.txt'],
+        conflicts: [],
+        skipped: [],
+      });
+      expect(committing.commitPaths).not.toHaveBeenCalled();
+    });
+
+    it('commits just the files it wrote, under the message, and gives the commit', async () => {
+      change();
+      committing.commitPaths.mockImplementation(async () => {
+        // The files are already in the workspace, and the record has already moved on
+        expect(read('a.txt')).toBe('two\n');
+        expect(container.ran.at(-1)).toBe('GIT commit -q --allow-empty -m applied');
+        return 'abc1234';
+      });
+
+      await expect(apply(THREAD, workspace, { commit: 'Add things' })).resolves.toEqual({
+        applied: ['a.txt', 'new.txt'],
+        conflicts: [],
+        skipped: [],
+        commit: 'abc1234',
+      });
+      expect(committing.commitPaths).toHaveBeenCalledWith(workspace, ['a.txt', 'new.txt'], 'Add things');
+    });
+
+    it('gives no commit when the files were already as the branch had them', async () => {
+      change();
+      committing.commitPaths.mockResolvedValue(null);
+      const result = await apply(THREAD, workspace, { commit: 'Add things' });
+      expect(result.applied).toEqual(['a.txt', 'new.txt']);
+      expect(result).not.toHaveProperty('commit');
+      expect(result).not.toHaveProperty('commitError');
+    });
+
+    it('reports a commit that failed beside the files that were written', async () => {
+      change();
+      committing.commitPaths.mockRejectedValue(new Error('Author identity unknown'));
+      await expect(apply(THREAD, workspace, { commit: 'Add things' })).resolves.toEqual({
+        applied: ['a.txt', 'new.txt'],
+        conflicts: [],
+        skipped: [],
+        commitError: 'Author identity unknown',
+      });
+      expect(read('new.txt')).toBe('new\n');
+    });
+
+    it('commits nothing when a file clashes, or when there is nothing to write', async () => {
+      put('clash.txt', lines('user', 'same'));
+      container.changes = ['M clash.txt c1 c2'];
+      container.blobs = { c1: lines('same', 'same'), c2: lines('thread', 'same') };
+      await expect(apply(THREAD, workspace, { commit: 'Add things' })).resolves.toMatchObject({ applied: [] });
+
+      container.changes = [];
+      await expect(apply(THREAD, workspace, { commit: 'Add things' })).resolves.toEqual({
+        applied: [],
+        conflicts: [],
+        skipped: [],
+      });
+      expect(committing.commitPaths).not.toHaveBeenCalled();
+    });
+
+    it('lets a second thread write back to the same workspace only once the first has committed', async () => {
+      change();
+      let release!: () => void;
+      committing.commitPaths.mockImplementationOnce(async () => {
+        container.ran.push('commit start');
+        await new Promise<void>((resolve) => (release = resolve));
+        container.ran.push('commit end');
+        return 'first';
+      });
+      const first = apply(THREAD, workspace, { commit: 'First' });
+      const second = apply('another-thread', workspace, { commit: 'Second' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      // The second has not so much as looked at its files while the first is part way
+      expect(container.ran.at(-1)).toBe('commit start');
+      release();
+      const [one, two] = await Promise.all([first, second]);
+      expect(one.commit).toBe('first');
+      // What the first wrote is already in the workspace by then, so there is nothing left for the second to write
+      expect(two.applied).toEqual([]);
+      expect(container.ran.indexOf('commit end')).toBeLessThan(container.ran.lastIndexOf('GIT add -A'));
+    });
   });
 
   it("keeps the user's own edits to a file the thread also changed, when they don't overlap", async () => {

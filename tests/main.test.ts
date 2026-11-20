@@ -989,11 +989,17 @@ describe('thread channels', () => {
     await expect(electron.handlers['thread:apply-changes']({}, 'thread-1', '/projects/demo')).resolves.toMatchObject({
       applied: ['a.txt'],
     });
-    expect(mocks.sandbox.changes.apply).toHaveBeenCalledWith('thread-1', '/projects/demo');
+    expect(mocks.sandbox.changes.apply).toHaveBeenCalledWith('thread-1', '/projects/demo', undefined);
     // What it learned about the project goes back with its files: the note
     // every message carries, and the notes behind it
     expect(mocks.harness.project.promote).toHaveBeenCalledWith('/projects/demo', 'thread-1');
     expect(mocks.harness.notes.promote).toHaveBeenCalledWith('/projects/demo', 'thread-1');
+  });
+
+  it('has the files committed in the same step when given a commit message', async () => {
+    mocks.sandbox.changes.apply.mockReset().mockResolvedValue({ applied: ['a.txt'], conflicts: [], skipped: [] });
+    await electron.handlers['thread:apply-changes']({}, 'thread-1', '/worktrees/feature', 'Add a');
+    expect(mocks.sandbox.changes.apply).toHaveBeenCalledWith('thread-1', '/worktrees/feature', { commit: 'Add a' });
   });
 
   it('leaves what a thread learned where it was when none of its changes were applied', async () => {

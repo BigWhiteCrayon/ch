@@ -42,6 +42,7 @@ import {
   branches,
   checkedOutAt,
   commit,
+  commitPaths,
   defaultBranch,
   ensureWorktree,
   mainWorktree,
@@ -50,6 +51,7 @@ import {
   push,
   remove,
   status,
+  withWorktreeLock,
 } from '../../src/sandbox/worktree';
 
 const REPO = '/home/me/project';
@@ -216,6 +218,99 @@ describe('commit', () => {
     proc.respond = (args) =>
       args[2] === 'commit' ? { code: 1, stderr: 'Author identity unknown\n' } : { code: 0, stdout: 'M  a.ts\n' };
     await expect(commit(WT, 'Add a')).rejects.toThrow('Author identity unknown');
+  });
+});
+
+describe('commitPaths', () => {
+  // Every command carries --literal-pathspecs, so the verb is the fourth argument as seen by `ran`
+  const verbs = () => ran().map((args) => args.slice(1));
+  const respondTo = (diffCode: number) => (args: string[]) => {
+    if (args[3] === 'diff') return { code: diffCode };
+    if (args[3] === 'rev-parse') return { stdout: 'abc123\n' };
+    return { code: 0 };
+  };
+
+  it('commits only the named files, and gives the new commit', async () => {
+    proc.respond = respondTo(1);
+    expect(await commitPaths(WT, ['a.ts', 'dir/b.ts'], '  Add a  ')).toBe('abc123');
+    expect(verbs()).toEqual([
+      ['add', '-A', '--', 'a.ts', 'dir/b.ts'],
+      ['diff', '--cached', '--quiet', '--', 'a.ts', 'dir/b.ts'],
+      ['commit', '-m', 'Add a', '--', 'a.ts', 'dir/b.ts'],
+      ['rev-parse', 'HEAD'],
+    ]);
+    expect(ran().every((args) => args[0] === '--literal-pathspecs')).toBe(true);
+  });
+
+  it('does nothing, and says so, when the files are as the branch has them', async () => {
+    proc.respond = respondTo(0);
+    expect(await commitPaths(WT, ['a.ts'], 'Add a')).toBeNull();
+    expect(verbs().some((args) => args[0] === 'commit')).toBe(false);
+  });
+
+  it('does nothing for no files', async () => {
+    expect(await commitPaths(WT, [], 'Add a')).toBeNull();
+    expect(proc.spawn).not.toHaveBeenCalled();
+  });
+
+  it('turns away a blank message before touching anything', async () => {
+    await expect(commitPaths(WT, ['a.ts'], '  ')).rejects.toThrow('needs a message');
+    expect(proc.spawn).not.toHaveBeenCalled();
+  });
+
+  it("reports git's reason when staging fails", async () => {
+    proc.respond = (args) => (args[3] === 'add' ? { code: 128, stderr: 'fatal: bad index\n' } : { code: 0 });
+    await expect(commitPaths(WT, ['a.ts'], 'Add a')).rejects.toThrow('fatal: bad index');
+  });
+
+  it("reports git's reason when the diff cannot be made", async () => {
+    proc.respond = (args) => (args[3] === 'diff' ? { code: 128, stderr: 'fatal: oops\n' } : { code: 0 });
+    await expect(commitPaths(WT, ['a.ts'], 'Add a')).rejects.toThrow('fatal: oops');
+  });
+
+  it("reports git's reason when the commit fails", async () => {
+    proc.respond = (args) => {
+      if (args[3] === 'commit') return { code: 1, stderr: 'Author identity unknown\n' };
+      return respondTo(1)(args);
+    };
+    await expect(commitPaths(WT, ['a.ts'], 'Add a')).rejects.toThrow('Author identity unknown');
+  });
+});
+
+describe('withWorktreeLock', () => {
+  it('runs work on one folder one after another, in the order asked', async () => {
+    const events: string[] = [];
+    let release!: () => void;
+    const first = withWorktreeLock(WT, async () => {
+      events.push('first start');
+      await new Promise<void>((resolve) => (release = resolve));
+      events.push('first end');
+    });
+    const second = withWorktreeLock(`${WT}/`, async () => {
+      events.push('second start');
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(events).toEqual(['first start']);
+    release();
+    await Promise.all([first, second]);
+    expect(events).toEqual(['first start', 'first end', 'second start']);
+  });
+
+  it('lets work on different folders run side by side', async () => {
+    let release!: () => void;
+    const slow = withWorktreeLock('/data/one', () => new Promise<void>((resolve) => (release = resolve)));
+    await expect(withWorktreeLock('/data/two', async () => 'done')).resolves.toBe('done');
+    release();
+    await slow;
+  });
+
+  it('gives what the work gave, and carries on after work that fails', async () => {
+    const failed = withWorktreeLock(WT, async () => {
+      throw new Error('boom');
+    });
+    const after = withWorktreeLock(WT, async () => 'next');
+    await expect(failed).rejects.toThrow('boom');
+    await expect(after).resolves.toBe('next');
   });
 });
 

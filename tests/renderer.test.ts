@@ -5497,7 +5497,7 @@ describe('threads', () => {
       await flush();
       $('#changes-apply').click();
       await flush();
-      expect(threads.applyChanges).toHaveBeenCalledWith(saved().activeId, '/worktrees/feature');
+      expect(threads.applyChanges).toHaveBeenCalledWith(saved().activeId, '/worktrees/feature', undefined);
     });
 
     it('makes a new branch from the current one, and says why it could not', async () => {
@@ -5608,6 +5608,70 @@ describe('threads', () => {
         await openChanges();
         await click('#changes-commit');
         expect($('#changes-status').textContent).toBe('Nothing to commit.');
+      });
+
+      describe('writing back as a commit', () => {
+        const changed = {
+          files: [{ path: 'a.ts', status: 'modified', binary: false, diff: '@@ -1 +1 @@\n-a\n+b' }],
+        };
+        const writeBack = async (checked: boolean) => {
+          standing();
+          threads.changes.mockResolvedValue(changed);
+          await onFeature('hello');
+          await openChanges();
+          $<HTMLInputElement>('#changes-apply-commit').checked = checked;
+          await click('#changes-apply');
+        };
+
+        it('writes without a commit unless the box is ticked', async () => {
+          threads.applyChanges.mockResolvedValue({ applied: ['a.ts'], conflicts: [], skipped: [] });
+          await writeBack(false);
+          expect(threads.applyChanges).toHaveBeenCalledWith(saved().activeId, '/worktrees/feature', undefined);
+        });
+
+        it('asks for the files to be committed under the message, and says which commit', async () => {
+          threads.applyChanges.mockResolvedValue({
+            applied: ['a.ts'],
+            conflicts: [],
+            skipped: [],
+            commit: 'abcdef1234567890',
+          });
+          await writeBack(true);
+          expect(threads.applyChanges).toHaveBeenCalledWith(saved().activeId, '/worktrees/feature', 'hello');
+          expect($('#changes-status').textContent).toContain('Committed as abcdef1.');
+        });
+
+        it('says when the files were written but the commit failed', async () => {
+          threads.applyChanges.mockResolvedValue({
+            applied: ['a.ts'],
+            conflicts: [],
+            skipped: [],
+            commitError: 'Author identity unknown',
+          });
+          await writeBack(true);
+          expect($('#changes-status').textContent).toContain(
+            'The files are written but not committed: Author identity unknown'
+          );
+        });
+
+        it('says when there was nothing to commit', async () => {
+          threads.applyChanges.mockResolvedValue({ applied: ['a.ts'], conflicts: [], skipped: [] });
+          await writeBack(true);
+          expect($('#changes-status').textContent).toContain('Nothing to commit');
+        });
+
+        it('writes nothing when the box is ticked and the message is empty', async () => {
+          standing();
+          threads.changes.mockResolvedValue(changed);
+          await onFeature('hello');
+          await openChanges();
+          $<HTMLInputElement>('#changes-apply-commit').checked = true;
+          $<HTMLInputElement>('#changes-commit-message').value = ' ';
+          threads.applyChanges.mockClear();
+          await click('#changes-apply');
+          expect(threads.applyChanges).not.toHaveBeenCalled();
+          expect($('#changes-status').textContent).toBe('Nothing was written: a commit needs a message.');
+        });
       });
 
       it('pushes the branch and records where it went', async () => {
@@ -9058,7 +9122,7 @@ describe("a thread's changes to its workspace", () => {
     apply().click();
     await flush();
 
-    expect(threads.applyChanges).toHaveBeenCalledWith(saved().activeId, FOLDER);
+    expect(threads.applyChanges).toHaveBeenCalledWith(saved().activeId, FOLDER, undefined);
     expect(status()).toBe(`Wrote 3 files to ${FOLDER}.`);
     expect(files()).toEqual([]);
     expect(apply().disabled).toBe(true);

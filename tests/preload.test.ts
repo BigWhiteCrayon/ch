@@ -91,7 +91,9 @@ describe('preload', () => {
     await expect(threads().changes('t1')).resolves.toEqual({ files: [] });
     expect(electron.invoke).toHaveBeenCalledWith('thread:changes', 't1');
     await threads().applyChanges('t1', '/projects/demo');
-    expect(electron.invoke).toHaveBeenLastCalledWith('thread:apply-changes', 't1', '/projects/demo');
+    expect(electron.invoke).toHaveBeenLastCalledWith('thread:apply-changes', 't1', '/projects/demo', undefined);
+    await threads().applyChanges('t1', '/projects/demo', 'Add hello');
+    expect(electron.invoke).toHaveBeenLastCalledWith('thread:apply-changes', 't1', '/projects/demo', 'Add hello');
   });
 
   it("asks for a workspace's branches, and for a worktree on one of them", async () => {

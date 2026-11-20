@@ -6,7 +6,7 @@
 
 import { spawn } from 'child_process';
 import crypto from 'crypto';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { toolEnv } from './env';
 import type { BranchStatus } from '../types';
 
@@ -94,6 +94,44 @@ export async function commit(worktree: string, message: string): Promise<boolean
   const made = await git(worktree, ['commit', '-m', message.trim()]);
   if (made.code !== 0) throw new Error(made.output.trim());
   return true;
+}
+
+// Work on one worktree waiting its turn. Threads on the same branch share the worktree's folder, so what one writes
+// and commits there must not be interleaved with another's. Keyed by the folder, in this process only.
+const turns = new Map<string, Promise<unknown>>();
+export function withWorktreeLock<T>(worktree: string, work: () => Promise<T>): Promise<T> {
+  const key = resolve(worktree);
+  const run = (turns.get(key) ?? Promise.resolve()).then(work, work);
+  const settled = run.then(
+    () => undefined,
+    () => undefined
+  );
+  turns.set(key, settled);
+  // Nothing is left behind once the last one in line is done
+  void settled.then(() => {
+    if (turns.get(key) === settled) turns.delete(key);
+  });
+  return run;
+}
+
+// Commits just these files, as they are in the worktree now, so that what else is loose or staged there (another
+// thread's work) stays out of it. Resolves with the new commit's hash, or null, with nothing done, if the files are
+// already as the branch has them.
+export async function commitPaths(worktree: string, paths: string[], message: string): Promise<string | null> {
+  if (!message.trim()) throw new Error('A commit needs a message.');
+  if (paths.length === 0) return null;
+  const run = (...args: string[]) => git(worktree, ['--literal-pathspecs', ...args]);
+  const added = await run('add', '-A', '--', ...paths);
+  if (added.code !== 0) throw new Error(added.output.trim());
+  const staged = await run('diff', '--cached', '--quiet', '--', ...paths);
+  if (staged.code === 0) return null;
+  if (staged.code !== 1) throw new Error(staged.output.trim());
+  // Naming the paths again makes the commit take only them, whatever else is staged
+  const made = await run('commit', '-m', message.trim(), '--', ...paths);
+  if (made.code !== 0) throw new Error(made.output.trim());
+  const head = await run('rev-parse', 'HEAD');
+  if (head.code !== 0) throw new Error(head.output.trim());
+  return head.stdout.trim();
 }
 
 // Pushes the worktree's branch to origin. The first time it also makes origin's the branch's upstream, so that

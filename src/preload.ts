@@ -50,7 +50,8 @@ const threads: ThreadsBridge = {
   removeWorktree: (workspace, worktree) => ipcRenderer.invoke('thread:remove-worktree', workspace, worktree),
   remove: (threadId) => ipcRenderer.send('thread:delete', threadId),
   changes: (threadId) => ipcRenderer.invoke('thread:changes', threadId),
-  applyChanges: (threadId, workspace) => ipcRenderer.invoke('thread:apply-changes', threadId, workspace),
+  applyChanges: (threadId, workspace, commitMessage) =>
+    ipcRenderer.invoke('thread:apply-changes', threadId, workspace, commitMessage),
   revert: (threadId, request, options) => ipcRenderer.invoke('thread:revert', threadId, request, options),
   discardChanges: (threadId) => ipcRenderer.invoke('thread:discard-changes', threadId),
   load: () => ipcRenderer.sendSync('threads:load'),

@@ -522,8 +522,9 @@ ipcMain.handle('thread:details', async (_event, threadId: string, workspace?: st
 // What a thread has changed in its copy of its workspace, and writing that back
 // to the workspace: only ever at the user's own request
 ipcMain.handle('thread:changes', (_event, threadId: string) => sandbox.changes.list(threadId));
-ipcMain.handle('thread:apply-changes', async (_event, threadId: string, workspace: string) => {
-  const applied = await sandbox.changes.apply(threadId, workspace);
+ipcMain.handle('thread:apply-changes', async (_event, threadId: string, workspace: string, commitMessage?: string) => {
+  const options = commitMessage ? { commit: commitMessage } : undefined;
+  const applied = await sandbox.changes.apply(threadId, workspace, options);
   // What the thread learned about the project goes back with its files: the
   // note is as much a part of the work as the code is
   if (applied.applied.length > 0) {

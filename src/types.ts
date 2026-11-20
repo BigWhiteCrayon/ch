@@ -1125,8 +1125,9 @@ export interface ThreadsBridge {
   remove(threadId: string): void;
   // What the thread has changed in its copy of the workspace
   changes(threadId: string): Promise<ThreadChanges>;
-  // Writes those changes back to the workspace itself
-  applyChanges(threadId: string, workspace: string): Promise<AppliedChanges>;
+  // Writes those changes back to the workspace itself. With a commit message, they are committed there too, as one
+  // step that no other thread's write-back to the same worktree can come between.
+  applyChanges(threadId: string, workspace: string, commitMessage?: string): Promise<AppliedChanges>;
   // Puts the thread back as it was before the attempt named by `request`, for
   // an attempt whose messages have been thrown away. The context note it wrote
   // always goes; its files go with it unless `files` is false, which is for an
@@ -1284,6 +1285,10 @@ export interface AppliedChanges {
   skipped: { path: string; reason: string }[];
   // What went wrong, if applying failed outright
   error?: string;
+  // The commit the written files went into, when one was asked for and there was something to commit
+  commit?: string;
+  // Why the files were written but not committed, if a commit was asked for and failed
+  commitError?: string;
 }
 
 // What a file in a workspace is, read by the name a reply gave it (see
