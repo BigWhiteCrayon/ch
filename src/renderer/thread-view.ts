@@ -475,6 +475,39 @@ export function renderSidebar(): void {
   );
 }
 
+// The box a card is answered in: a question's own answer, or a denial's reason
+const CARD_BOX = '.message.question input.other, .message.approval input.deny-reason';
+
+type TypedInCard = { request: string; value: string; focused: boolean; at: [number, number] | null };
+
+// What the user has typed into a card's box, with the request the card is for and whether the box had the focus.
+// A card is built afresh on every redraw, so without this a render while the user types wipes the text.
+function typedInCard(into: HTMLElement): TypedInCard | undefined {
+  const box = into.querySelector<HTMLInputElement>(CARD_BOX);
+  const request = box?.closest<HTMLElement>('[data-request]')?.dataset.request;
+  if (!box || !request || !box.value) return undefined;
+  return {
+    request,
+    value: box.value,
+    focused: document.activeElement === box,
+    at: box.selectionStart === null ? null : [box.selectionStart, box.selectionEnd ?? box.selectionStart],
+  };
+}
+
+// Puts back what typed-in-card read, into the box of the card drawn for the same request
+function restoreTypedInCard(into: HTMLElement, typed: TypedInCard | undefined): void {
+  if (!typed) return;
+  const box = into.querySelector<HTMLInputElement>(CARD_BOX);
+  if (!box || box.closest<HTMLElement>('[data-request]')?.dataset.request !== typed.request) return;
+  box.value = typed.value;
+  // The question's Send button is enabled by the box's input event, which a plain value does not fire
+  box.dispatchEvent(new Event('input'));
+  if (typed.focused) {
+    box.focus();
+    if (typed.at) box.setSelectionRange(typed.at[0], typed.at[1]);
+  }
+}
+
 export function render(): void {
   const active = activeThread();
   // The bubble a reply is streaming into, if one is on screen
@@ -602,6 +635,8 @@ export function render(): void {
     if (following) agentView.scrollTop = agentView.scrollHeight;
   } else {
     holdSelection();
+    // What is typed into a card's own box is read before the card is redrawn, and given back to the new one below
+    const typed = typedInCard(messagesEl);
     streaming = drawMessages(messagesEl, active, active.messages, 'Send a message to start the conversation.');
     // The question waits at the end, where the user's eye is, with the reply it holds up above it
     const asking = approvalOf(active);
@@ -614,6 +649,7 @@ export function render(): void {
       messagesEl.querySelector(':scope > .empty')?.remove();
       streaming = messagesEl.appendChild(questionCard(inflight.get(active.id) as string, questioned));
     }
+    restoreTypedInCard(messagesEl, typed);
     // The offer to check what the last reply changed
     const toReview = reviewable(active);
     if (toReview) messagesEl.appendChild(reviewCard(active, toReview));
