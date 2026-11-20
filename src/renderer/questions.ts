@@ -50,6 +50,7 @@ export function dropQuestion(requestId: string): void {
 export function questionCard(requestId: string, event: QuestionEvent): HTMLElement {
   const card = document.createElement('div');
   card.className = 'message question';
+  card.dataset.request = requestId;
   card.setAttribute('role', 'group');
   const text = document.createElement('p');
   text.textContent = event.question;

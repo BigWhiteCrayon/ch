@@ -145,6 +145,7 @@ export function approvalCard(requestId: string, event: Asked): HTMLElement {
 export function fileAccessCard(requestId: string, event: FileAccessEvent): HTMLElement {
   const card = document.createElement('div');
   card.className = 'message approval file-access';
+  card.dataset.request = requestId;
   card.setAttribute('role', 'group');
   const text = document.createElement('p');
   text.textContent = `The model wants to read ${event.isFolder ? 'the folder ' : ''}${event.path} on your computer.`;
@@ -189,6 +190,7 @@ export function fileAccessCard(requestId: string, event: FileAccessEvent): HTMLE
 export function commandAccessCard(requestId: string, event: CommandAccessEvent): HTMLElement {
   const card = document.createElement('div');
   card.className = 'message approval command-access';
+  card.dataset.request = requestId;
   card.setAttribute('role', 'group');
   const text = document.createElement('p');
   text.textContent = `The model wants to run a command in ${event.path} on your computer: ${event.why}.`;

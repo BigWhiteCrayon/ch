@@ -10260,6 +10260,21 @@ describe("asking before the model reads a file on the user's computer", () => {
     expect(card()).toBeNull();
   });
 
+  it('keeps the reason being typed when the model’s justification arrives and redraws the card', async () => {
+    emit(sentId(), asked('a1', '/home/me/.npmrc'));
+    await flush();
+    card()?.querySelector<HTMLInputElement>('.deny-reason')?.focus();
+    const denyReason = () => card()?.querySelector<HTMLInputElement>('.deny-reason') as HTMLInputElement;
+    denyReason().value = 'it is a private file';
+    emit(sentId(), { type: 'access_justification', id: 'a1', justification: 'to read the npm config.' });
+    await flush();
+    expect(card()?.querySelector('p.justification')?.textContent).toBe('to read the npm config.');
+    expect(denyReason().value).toBe('it is a private file');
+    expect(document.activeElement).toBe(denyReason());
+    press('Deny');
+    expect(llm.allowFileAccess).toHaveBeenCalledWith('a1', 'deny', 'it is a private file');
+  });
+
   it('offers only the folder where it is a folder that is asked for', async () => {
     emit(sentId(), asked('a1', '/home/me/notes', true));
     await flush();
@@ -10623,6 +10638,22 @@ describe('the model asking the user a question', () => {
     sendButton().click();
     expect(llm.answer).not.toHaveBeenCalled();
     expect(card()).not.toBeNull();
+  });
+
+  it('keeps what is being typed when the thread is redrawn while the question waits', async () => {
+    emit(sentId(), question);
+    await flush();
+    other().focus();
+    other().value = 'my own words';
+    other().dispatchEvent(new Event('input', { bubbles: true }));
+    other().setSelectionRange(2, 2);
+    emit(sentId(), { type: 'phase', phase: 'execute' });
+    await flush();
+    expect(card()).not.toBeNull();
+    expect(other().value).toBe('my own words');
+    expect(sendButton().disabled).toBe(false);
+    expect(document.activeElement).toBe(other());
+    expect(other().selectionStart).toBe(2);
   });
 
   it('flags the thread in the sidebar with a dot that says it needs an answer', async () => {
