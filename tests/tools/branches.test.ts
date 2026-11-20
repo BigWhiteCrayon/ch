@@ -12,6 +12,7 @@ const worktree = vi.hoisted(() => ({
   isClean: vi.fn(),
   commit: vi.fn(),
   push: vi.fn(),
+  mergeToDefault: vi.fn(),
 }));
 vi.mock('../../src/sandbox/worktree', () => worktree);
 
@@ -24,7 +25,7 @@ vi.mock('../../src/sandbox/docker', async () => {
 const changes = vi.hoisted(() => ({ apply: vi.fn() }));
 vi.mock('../../src/sandbox/changes', () => changes);
 
-const fs = vi.hoisted(() => ({ existsSync: vi.fn() }));
+const fs = vi.hoisted(() => ({ existsSync: vi.fn(), realpathSync: vi.fn((path: string) => path) }));
 vi.mock('fs', () => fs);
 
 import { init, tools } from '../../src/tools/branches';
@@ -33,6 +34,7 @@ const signal = new AbortController().signal;
 const createBranch = tools.find((tool) => tool.name === 'create_branch') as Tool;
 const enterBranch = tools.find((tool) => tool.name === 'enter_branch') as Tool;
 const publish = tools.find((tool) => tool.name === 'publish_to_branch') as Tool;
+const mergeToMain = tools.find((tool) => tool.name === 'merge_to_main') as Tool;
 
 // The tools remember the branches they made for as long as the process lives, so each test uses a thread of its own
 let count = 0;
@@ -67,12 +69,13 @@ beforeEach(() => {
 });
 
 describe('what the model is told about them', () => {
-  it('offers all three to a reply or a subagent in a workspace, and not to a step that only reads', () => {
+  it('offers all four to a reply or a subagent in a workspace, and not to a step that only reads', () => {
     const shown = tools.map(({ name, needsWorkspace, phases }) => [name, needsWorkspace, phases]);
     expect(shown).toEqual([
       ['create_branch', true, ['execute']],
       ['enter_branch', true, ['execute']],
       ['publish_to_branch', true, ['execute']],
+      ['merge_to_main', true, ['execute']],
     ]);
   });
 
@@ -353,5 +356,68 @@ describe('publish_to_branch', () => {
 
   it('refuses a message with no thread', async () => {
     await expect(publish.run({ branch: 'x' }, contextFor({ threadId: undefined }))).rejects.toThrow('no thread');
+  });
+});
+
+// Putting the branch's work into main, which is the step that used to be improvised with a worktree of main (see
+// mergeToDefault in ../../src/sandbox/worktree.ts). The tool's own part is deciding whether there is a branch to
+// merge at all and saying what happened; the git is tested where it lives.
+describe('merge_to_main', () => {
+  const WORK = '/data/worktrees/abc/fix-upload-retry';
+
+  beforeEach(() => {
+    worktree.mergeToDefault.mockResolvedValue({
+      branch: 'fix-upload-retry',
+      target: 'main',
+      sha: 'abcdef1234567890',
+      brought: false,
+      already: false,
+    });
+  });
+
+  it('belongs to the step that changes things, as the other two do', () => {
+    expect(mergeToMain.phases).toEqual(['execute']);
+  });
+
+  it("merges the thread's own folder into the repository's main branch", async () => {
+    const said = await mergeToMain.run({}, contextFor({ workspace: WORK }));
+    expect(worktree.mergeToDefault).toHaveBeenCalledWith(REPO, WORK);
+    expect(said).toContain('Merged fix-upload-retry into main');
+    expect(said).toContain('abcdef1');
+    // The model is told it stopped short of the remote, so that it says so rather than assuming either way
+    expect(said).toContain('not been pushed');
+  });
+
+  it('says when main had moved on and was brought in first', async () => {
+    worktree.mergeToDefault.mockResolvedValue({
+      branch: 'fix-upload-retry',
+      target: 'main',
+      sha: 'abcdef1234567890',
+      brought: true,
+      already: false,
+    });
+    expect(await mergeToMain.run({}, contextFor({ workspace: WORK }))).toContain('had moved on');
+  });
+
+  it('says when there was nothing to merge', async () => {
+    worktree.mergeToDefault.mockResolvedValue({
+      branch: 'fix-upload-retry',
+      target: 'main',
+      sha: 'abcdef1234567890',
+      brought: false,
+      already: true,
+    });
+    expect(await mergeToMain.run({}, contextFor({ workspace: WORK }))).toContain('nothing to merge');
+  });
+
+  // The thread works in the folder the user has checked out, so what is in it is theirs and not the thread's
+  it('refuses a thread that is not on a branch of its own, and says how to get one', async () => {
+    await expect(mergeToMain.run({}, contextFor({ workspace: REPO }))).rejects.toThrow('create_branch');
+    expect(worktree.mergeToDefault).not.toHaveBeenCalled();
+  });
+
+  it('carries the reason git gave for refusing back to the model', async () => {
+    worktree.mergeToDefault.mockRejectedValue(new Error('There is work in /w that is not committed'));
+    await expect(mergeToMain.run({}, contextFor({ workspace: WORK }))).rejects.toThrow('not committed');
   });
 });

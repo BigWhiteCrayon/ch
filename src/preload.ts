@@ -29,6 +29,12 @@ const llm: LlmBridge = {
   onSubagentEvent: (callback) => {
     ipcRenderer.on('llm:subagent-event', (_event, threadId, id, event) => callback(threadId, id, event));
   },
+  onJobEvent: (handler) => {
+    const listener = (_event: any, threadId: string, id: string, event: string, data?: unknown) =>
+      handler(threadId, id, event, data);
+    ipcRenderer.on('job:event', listener);
+    return () => ipcRenderer.off('job:event', listener);
+  },
 };
 
 const threads: ThreadsBridge = {

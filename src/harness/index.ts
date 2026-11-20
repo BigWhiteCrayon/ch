@@ -1979,6 +1979,10 @@ export async function* run(
       // for a model whose level is unknown, which is one the user picked by
       // hand (see route).
       sophistication: chosen.sophistication ?? (classification.failed ? undefined : classification.sophistication),
+      // The user's request, so a tool that judges against it — the command
+      // reviewer — has it; set here, where the reply's context is built, from the
+      // last message the user sent (see the `asking` computed above).
+      intention: asked.messages.at(-1)?.content ?? '',
     };
     const running = Promise.all(calls.map((call) => tools.execute(call, context, { ...where, step }))).finally(
       reports.close

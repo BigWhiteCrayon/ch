@@ -85,6 +85,23 @@ export function archiveStale(): boolean {
   return archived;
 }
 
+// Brings an archived thread back into the sidebar once something is waiting on
+// the user in it. A thread is archived only while it has nothing to say for
+// itself (see archiveStale), but something can arrive for it afterwards: a
+// reply left alone on the way in is the one that happens, since the message
+// saying so is added as the window comes up (see resumeCutOff), by which time
+// the thread had already been archived and nothing looked at it again. Whether
+// any were brought back, for the caller to save.
+export function unarchiveNeedy(): boolean {
+  let brought = false;
+  for (const thread of state.threads) {
+    if (!thread.archived || !needsAttention(thread)) continue;
+    delete thread.archived;
+    brought = true;
+  }
+  return brought;
+}
+
 // Threads by workspace, general chats (no workspace) together, each ordered by
 // byRecency. A group sits where its first thread would, so a thread that has
 // an update brings its workspace to the top with it.
@@ -111,19 +128,24 @@ export function threadGroups(): { workspace: string | undefined; threads: Thread
 function collapsedMark(threads: Thread[]): HTMLSpanElement | null {
   const asking = threads.some((t) => approvalOf(t) || questionOf(t));
   const working = threads.some((t) => inflight.has(t.id));
+  // A reply the app has stopped on, left for the user to pick up again (see threadItem)
+  const stopped = threads.some((t) => leftAlone(t));
   const changed = threads.some((t) => t.changes);
-  if (!asking && !working && !changed && !threads.some((t) => t.unread)) return null;
+  if (!asking && !working && !stopped && !changed && !threads.some((t) => t.unread)) return null;
+  const kind = asking ? 'approval' : working ? 'working' : stopped ? 'failed' : changed ? 'changed' : 'unread';
   const status = document.createElement('span');
-  status.className = `status ${asking ? 'approval' : working ? 'working' : changed ? 'changed' : 'unread'}`;
+  status.className = `status ${kind}`;
   status.title = asking
     ? threads.some((t) => approvalOf(t))
       ? 'Needs your approval'
       : 'Needs your answer'
     : working
       ? 'Replying…'
-      : changed
-        ? 'Changes to write back'
-        : 'New reply';
+      : stopped
+        ? 'The app closed on this reply more than once'
+        : changed
+          ? 'Changes to write back'
+          : 'New reply';
   return status;
 }
 

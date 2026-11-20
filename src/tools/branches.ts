@@ -17,7 +17,7 @@
 // The reply and several subagents may work at once, and the thread has one place to live, so the first one to move
 // wins and the rest are told so rather than each moving the thread somewhere else.
 
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import { join } from 'path';
 import * as changes from '../sandbox/changes';
 import * as docker from '../sandbox/docker';
@@ -29,6 +29,7 @@ import type { Tool } from '../types';
 export const CREATE_TOOL = 'create_branch';
 export const ENTER_TOOL = 'enter_branch';
 export const PUBLISH_TOOL = 'publish_to_branch';
+export const MERGE_TOOL = 'merge_to_main';
 
 // Where worktrees are kept, which is the app's data directory. Set at startup from main.ts, as the other modules
 // that write under it are (see harness/project.ts and search/index.ts).
@@ -66,6 +67,16 @@ const recorded = (branch: Branch) =>
 
 // The repository a branch is made in: the folder the thread works from, resolved to the user's own checkout, so that
 // a thread already on a branch makes its next one in the same place a thread on the main checkout would.
+// Whether two paths are the same folder, asked of the filesystem so that a worktree reached by one name and the
+// checkout reached by another are not taken for two places (/tmp and /private/tmp on macOS, among others).
+function samePlace(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return a === b;
+  }
+}
+
 async function repoOf(workspace: string): Promise<string> {
   const main = await worktree.mainWorktree(workspace);
   if (!main) throw new Error(`${workspace} is not a Git repository, so it has no branches to work on.`);
@@ -242,6 +253,48 @@ commit. Use it to hand work off onto a branch that another thread or the user ca
       const upstream = await worktree.push(wt);
       return `Published ${r.applied.length} file${plural} to the branch ${branch} from ${current}, ` +
         `and pushed it${upstream ? ` to ${upstream}` : ''}.`;
+    },
+  },
+  {
+    name: MERGE_TOOL,
+    phases: ['execute'],
+    needsWorkspace: true,
+    description: `Merge this thread's branch into the repository's main branch. Use it when the work on the branch is
+done and the user has asked for it to go into main.
+
+The main branch is not checked out for this, here or anywhere: if main has moved on it is brought into this thread's
+branch first, in the thread's own folder, and main is then moved forward onto the branch. So a conflict is yours to
+settle, in the folder you work in, where you can try what you settled on; and main itself is only ever moved forward,
+never left holding a half-settled merge. Never check main out to merge it — you do not need it checked out, and it
+belongs to the user's own checkout.
+
+It merges commits, so commit the branch's work first; this is refused while anything in the branch's folder is
+uncommitted. It does not push: ask the user whether to, and say that main has moved locally.`,
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    async run(_input, { workspace, threadId }) {
+      if (!threadId) throw new Error('This message has no thread whose branch could be merged.');
+      if (!workspace) throw new Error('This thread has no workspace, so there is no branch to merge.');
+      const repo = await repoOf(workspace);
+      // A thread working in the user's own checkout has no branch of its own, and what is in that folder is the
+      // user's work rather than the thread's: there is nothing here to merge from.
+      if (samePlace(repo, workspace)) {
+        throw new Error(
+          `This thread works in ${repo}, the user's own checkout, rather than on a branch of its own, so it has ` +
+            `nothing to merge. Make a branch with ${CREATE_TOOL} and move onto it with ${ENTER_TOOL} first.`
+        );
+      }
+      const merged = await worktree.mergeToDefault(repo, workspace);
+      if (merged.already) {
+        return `${merged.target} already has everything on ${merged.branch}, so there was nothing to merge.`;
+      }
+      const brought = merged.brought
+        ? `${merged.target} had moved on and was brought into ${merged.branch} first, `
+        : '';
+      return (
+        `Merged ${merged.branch} into ${merged.target}. ${brought}${merged.target} is now at ` +
+        `${merged.sha.slice(0, 7)}. It was moved forward without being checked out anywhere, and has not been ` +
+        'pushed: the commits are on this computer only until the user asks for them to go to the remote.'
+      );
     },
   },
 ];
