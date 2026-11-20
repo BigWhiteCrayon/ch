@@ -133,6 +133,17 @@ export function closeThreadDialog(): void {
 }
 
 element('thread-dialog-close').addEventListener('click', closeThreadDialog);
+// Puts the dot back on a thread, whether or not it is the one open, for the user to come back to. The sidebar's
+// dot, the collapsed workspace's mark and the icon's badge all follow from the flag when the sidebar is drawn.
+element('thread-dialog-mark-unread').addEventListener('click', () => {
+  const thread = shownThread;
+  closeThreadDialog();
+  if (!thread) return;
+  thread.unread = true;
+  save();
+  render();
+});
+
 element('thread-dialog-changes').addEventListener('click', () => {
   const thread = shownThread;
   closeThreadDialog();

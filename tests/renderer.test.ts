@@ -6185,6 +6185,39 @@ describe('threads', () => {
       });
     });
 
+    it('lets the user mark a thread unread again from its dialog, in the thread that is open or another', async () => {
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+      await type('first');
+      finish(sentId());
+      await newThread(null);
+      await type('second');
+      finish(sentId());
+      expect(sidebar()).toEqual(['[General chat]', 'second', 'first']);
+      const dialogOf = (title: string) => {
+        $$('#thread-list li.thread')
+          .find((li) => li.querySelector('.name')!.textContent === title)!
+          .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+      };
+
+      // The one that is open, which opening it again would not mark
+      dialogOf('second');
+      $('#thread-dialog-mark-unread').click();
+      expect($<HTMLDialogElement>('#thread-dialog').open).toBe(false);
+      expect(sidebar()).toEqual(['[General chat]', '*second', 'first']);
+      expect(host.badge).toHaveBeenLastCalledWith(1);
+      expect(saved().threads.find((t: { title: string }) => t.title === 'second').unread).toBe(true);
+
+      // ...and one that is not, which is not opened by it
+      dialogOf('first');
+      $('#thread-dialog-mark-unread').click();
+      expect(sidebar()).toEqual(['[General chat]', '*second', '*first']);
+      expect(host.badge).toHaveBeenLastCalledWith(2);
+
+      // Opening a marked thread reads it, as it does any other
+      open('first');
+      expect(sidebar()).toEqual(['[General chat]', '*second', 'first']);
+    });
+
     it('still shows the unread mark after a restart', async () => {
       await type('background');
       const id = sentId();
