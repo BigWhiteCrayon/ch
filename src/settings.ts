@@ -49,6 +49,10 @@ function defaults(): Settings {
     // Whether a reply that changed files is reviewed by a model as soon as it
     // is over
     autoReview: false,
+    // Whether a second agent reviews a git command that could lose work and,
+    // if it is within the user's request or non-destructive, lets it run
+    // without the user being asked
+    commandReview: false,
     // Every model is used without asking until the user lowers the ceiling
     approvalCeiling: 5,
     theme: {},
@@ -137,6 +141,7 @@ export function load(): Settings {
       offline: saved.offline === undefined ? base.offline : saved.offline === true,
       fast: saved.fast === true,
       autoReview: saved.autoReview === true,
+      commandReview: saved.commandReview === true,
       approvalCeiling: isLevel(saved.approvalCeiling) ? saved.approvalCeiling : 5,
       theme: cleanTheme(saved.theme),
       readable: cleanReadable(saved.readable),
@@ -187,6 +192,7 @@ export function update(patch: SettingsPatch): Settings {
   if (patch.offline !== undefined) next.offline = patch.offline === true;
   if (patch.fast !== undefined) next.fast = patch.fast === true;
   if (patch.autoReview !== undefined) next.autoReview = patch.autoReview === true;
+  if (patch.commandReview !== undefined) next.commandReview = patch.commandReview === true;
   if (isLevel(patch.approvalCeiling)) next.approvalCeiling = patch.approvalCeiling;
   if (patch.sophistication) {
     next.sophistication = {};
@@ -254,6 +260,7 @@ export function publicView(): PublicSettings {
     offline: settings.offline,
     fast: settings.fast,
     autoReview: settings.autoReview,
+    commandReview: settings.commandReview,
     approvalCeiling: settings.approvalCeiling,
     theme: settings.theme,
     setup: settings.setup,

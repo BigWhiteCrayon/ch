@@ -1,6 +1,7 @@
 import * as child_process from 'child_process';
 import fs from 'fs';
 import * as access from '../harness/access';
+import * as commandReview from '../harness/commandReview';
 import * as log from '../log';
 import * as seatbelt from '../sandbox/seatbelt';
 import * as worktree from '../sandbox/worktree';
@@ -449,7 +450,18 @@ from a command means it tried to do something else.`,
     if (taken) throw new Error(taken);
     const risk = sensitive(pipeline[0]);
     if (risk) {
-      if (!(await access.confirmed(command, target, risk, context))) {
+      // With the opt-in command review on, a second agent judges whether this
+      // command may run without the user being asked (see ../harness/commandReview.ts).
+      const reviewed = await commandReview.review({
+        command,
+        path: target,
+        risk,
+        intention: context.intention ?? '',
+        context,
+      });
+      if (reviewed?.approved) {
+        context.emit?.({ type: 'command_reviewed', command, path: target, why: risk, reason: reviewed.reason });
+      } else if (!(await access.confirmed(command, target, risk, context))) {
         throw new Error(`The user did not allow "${command}" in ${target}.`);
       }
     } else if (!ownWorkspace && !(await access.permitted(target, isFolder, context))) {

@@ -106,6 +106,7 @@ describe('defaults', () => {
       offline: false,
       fast: false,
       autoReview: false,
+      commandReview: false,
       approvalCeiling: 5,
       theme: {},
       readable: { global: [], workspaces: {} },
@@ -157,6 +158,7 @@ describe('update', () => {
       offline: true,
       fast: true,
       autoReview: false,
+      commandReview: false,
       approvalCeiling: 5,
       theme: {},
       readable: { global: [], workspaces: {} },
@@ -325,6 +327,17 @@ describe('update', () => {
     expect(settings.get().autoReview).toBe(false);
   });
 
+  it('switches command review on and off, and starts with it off', () => {
+    expect(settings.get().commandReview).toBe(false);
+    settings.update({ commandReview: true });
+    expect(settings.get().commandReview).toBe(true);
+    expect(settings.publicView().commandReview).toBe(true);
+    settings.update({ fast: true });
+    expect(settings.get().commandReview).toBe(true);
+    settings.update({ commandReview: 'yes' as unknown as boolean });
+    expect(settings.get().commandReview).toBe(false);
+  });
+
   it('takes an approval ceiling from 1 to 5 and ignores anything else', () => {
     settings.update({ approvalCeiling: 3 });
     expect(settings.get().approvalCeiling).toBe(3);
@@ -429,6 +442,7 @@ describe('load', () => {
       offline: false,
       fast: false,
       autoReview: false,
+      commandReview: false,
       approvalCeiling: 5,
       theme: {},
       readable: { global: [], workspaces: {} },
@@ -468,6 +482,7 @@ describe('publicView', () => {
       offline: false,
       fast: false,
       autoReview: false,
+      commandReview: false,
       approvalCeiling: 5,
       theme: { '--bg': '#abcdef' },
       setup: { completed: false, version: 0, skipped: [] },

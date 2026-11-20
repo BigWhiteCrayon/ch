@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as access from '../../src/harness/access';
+import * as commandReview from '../../src/harness/commandReview';
 import * as worktree from '../../src/sandbox/worktree';
 import { tool } from '../../src/tools/hostReading';
 
@@ -20,11 +21,16 @@ vi.mock('../../src/sandbox/worktree', () => ({
   defaultBranch: vi.fn(),
 }));
 
+// The command reviewer (see ../../src/harness/commandReview.ts) is mocked here so the gate can be asked about its
+// verdict rather than run a subagent: the tests of the runner itself are in ../../tests/harness/commandReview.test.ts.
+vi.mock('../../src/harness/commandReview', () => ({ review: vi.fn() }));
+
 const mainWorktree = vi.mocked(worktree.mainWorktree);
 const defaultBranch = vi.mocked(worktree.defaultBranch);
 const permitted = vi.mocked(access.permitted);
 const confirmed = vi.mocked(access.confirmed);
 const inside = vi.mocked(access.relativeToWorkspace);
+const review = vi.mocked(commandReview.review);
 const context = { signal: new AbortController().signal, threadId: 't1', workspace: '/w', emit: vi.fn() } as any;
 const run = (input: Record<string, unknown>) => tool.run(input, context);
 let dir: string;
@@ -33,6 +39,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   permitted.mockResolvedValue(true);
   confirmed.mockResolvedValue(true);
+  review.mockResolvedValue(null);
   mainWorktree.mockResolvedValue('/repo');
   defaultBranch.mockResolvedValue('main');
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'host-command-'));
@@ -170,6 +177,49 @@ describe('run_host_command', () => {
     confirmed.mockResolvedValue(false);
     await expect(run({ path: dir, command: 'git reset --hard' })).rejects.toThrow('did not allow "git reset --hard"');
     expect(fs.existsSync(path.join(dir, '.git'))).toBe(false);
+  });
+
+  // With the opt-in command review on, a second agent stands in for the question (see
+  // ../../src/harness/commandReview.ts). The gate asks it, and an approval lets the command run without the user
+  // being asked, the review shown as a note rather than as a card; a hold, or a run that came back no verdict,
+  // falls through to the question as it always did.
+  describe('the opt-in command review', () => {
+    it('runs the command without asking when the reviewer approves it, and says so as a note', async () => {
+      review.mockResolvedValue({ approved: true, reason: 'within the request' });
+      const result = await run({ path: dir, command: 'git reset --hard HEAD~3' });
+      expect(result).toContain('exit code');
+      expect(review).toHaveBeenCalledTimes(1);
+      expect(confirmed).not.toHaveBeenCalled();
+      expect(permitted).not.toHaveBeenCalled();
+      // The note is emitted rather than the card, with the risk and the reason
+      expect(context.emit).toHaveBeenCalledWith({
+        type: 'command_reviewed',
+        command: 'git reset --hard HEAD~3',
+        path: dir,
+        why: expect.any(String),
+        reason: 'within the request',
+      });
+      // What it approved still ran through the confinement below, not past it
+      expect(review.mock.calls[0][0]).toMatchObject({
+        command: 'git reset --hard HEAD~3',
+        path: dir,
+        intention: context.intention ?? '',
+      });
+    });
+
+    it('asks the user when the reviewer holds, as it did before the review', async () => {
+      review.mockResolvedValue({ approved: false, reason: 'not within the request' });
+      await run({ path: dir, command: 'git push --force origin main' });
+      expect(confirmed).toHaveBeenCalledTimes(1);
+      expect(context.emit).not.toHaveBeenCalled();
+    });
+
+    it('asks the user when the review comes back no verdict, the review off or a run that did not decide', async () => {
+      review.mockResolvedValue(null);
+      await run({ path: dir, command: 'git clean -fd' });
+      expect(confirmed).toHaveBeenCalledTimes(1);
+      expect(context.emit).not.toHaveBeenCalled();
+    });
   });
 
   // The thread's own workspace is not asked about as a folder, the thread working on it already; what could lose
