@@ -13,6 +13,7 @@ import * as search from './search';
 import * as settings from './settings';
 import * as setup from './setup';
 import * as store from './store';
+import * as roster from './roster';
 import * as tools from './tools';
 import type {
   ClassificationFeedback,
@@ -27,6 +28,7 @@ import type {
   SetupProgress,
   SuggestionRequest,
   SummaryRequest,
+  RosterEntry,
   ThreadPiece,
   VerificationRequest,
   WorkspaceNote,
@@ -594,6 +596,14 @@ ipcMain.on('threads:load', (event) => {
 ipcMain.on('threads:save', (event, state: string) => {
   store.save(state);
   event.returnValue = true;
+});
+
+// The roster of threads the model can list and message, pushed from the renderer
+// on every save alongside the threads themselves (see renderer/roster.ts). It is
+// the main process's copy of what a thread is doing, for a model that is not the
+// renderer to read (see roster.ts).
+ipcMain.on('threads:roster', (_event, value: RosterEntry[]) => {
+  roster.set(value);
 });
 
 // The screenshots and clips a reply took, kept in a sidecar beside the threads

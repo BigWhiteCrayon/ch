@@ -31,6 +31,7 @@ import type {
   Phase,
   ToolImage,
   ToolVideo,
+  RosterEntry,
 } from '../types.js';
 
 export type {
@@ -62,6 +63,7 @@ export type {
   Phase,
   ToolImage,
   ToolVideo,
+  RosterEntry,
 };
 
 export interface Message {

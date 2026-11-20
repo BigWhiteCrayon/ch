@@ -9,6 +9,7 @@ import {
   INDEX_INTERVAL_MS,
   MAX_RECENT_WORKSPACES,
   MAX_RESTARTS,
+  onSave,
   SAVE_INTERVAL_MS,
   saveTimer,
   setIndexed,
@@ -211,6 +212,10 @@ export function save(): void {
   // its words, whichever way the app goes down.
   window.threads.saveMedia(collectMedia());
   window.threads.save(serialize());
+  // A copy the renderer keeps in step with the threads, such as the roster the
+  // main process holds for a model to read, is pushed from here (see onSave in
+  // shared.ts, registered by renderer/roster.ts)
+  for (const hook of onSave) hook();
   indexSoon();
 }
 

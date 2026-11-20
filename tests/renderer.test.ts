@@ -97,6 +97,9 @@ const threads = {
   onLookEvent: vi.fn(),
   // Kept so the push can be fired at the renderer in tests
   onSurveyed: vi.fn(),
+  // The roster the renderer pushes to main, and messages main pushes back
+  roster: vi.fn(),
+  onInject: vi.fn(),
   index: vi.fn(),
   search: vi.fn(),
 };
