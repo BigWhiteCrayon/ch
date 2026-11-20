@@ -195,7 +195,9 @@ block is shown as code. Where you point the user at a part of the code, name it 
 one file per line, its path relative to the top of the workspace and, for a part of it, the lines as :123 or :123-140,
 which the user opens to read. A user message that starts with > lines is quoting part of an earlier reply, or a diagram
 node or edge written as [diagram N, node "X"] or [diagram N, edge "A->B"], and the text after the quote is the user's
-comment on that part.`;
+comment on that part. When the reply is an in-depth explanation for the user, one that includes diagrams or
+screenshots, start it with the exact marker <large> as the very first text, and it is shown at the full width of the
+thread. Never use it for a short or ordinary reply.`;
 
 // What shapes the instructions the model is given: how the classifier sized
 // the message up, and the summary standing in for the thread's earlier messages

@@ -885,6 +885,7 @@ describe('what the model is told', () => {
     expect(system()).toContain('You are a coding agent');
     expect(system()).toContain('This is a question');
     expect(system()).toContain('Write what the user will read in Markdown');
+    expect(system()).toContain('start it with the exact marker <large>');
     expect(snapshots[0].tools).toEqual([]);
     // Everything that only means something to a model holding a tool is left out
     expect(system()).not.toContain('SANDBOX PROMPT');

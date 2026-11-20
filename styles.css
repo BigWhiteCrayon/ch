@@ -1126,6 +1126,13 @@ main > header {
   white-space: normal;
 }
 
+/* A reply that declared itself an in-depth explanation (see LARGE_MARKER in
+renderer/reply.ts): as wide as the plan, for its diagrams and screenshots */
+.message.markdown.large {
+  align-self: stretch;
+  max-width: none;
+}
+
 .message.markdown > :first-child {
   margin-top: 0;
 }

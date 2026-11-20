@@ -80,6 +80,10 @@ export interface Message {
   streaming?: boolean;
   // On an 'assistant' message: set when the reply that wrote it finished, and it is the answer rather than narration
   final?: boolean;
+  // On an 'assistant' message: set when the reply declared itself an in-depth
+  // explanation by starting with LARGE_MARKER, which is drawn at the plan's
+  // width (see 'text' in events.ts)
+  large?: boolean;
   // On a reply that has no text yet: what is happening in the meantime
   status?: string;
   // On a 'tool' note: the tool call it reports

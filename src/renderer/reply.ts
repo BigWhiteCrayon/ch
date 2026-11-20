@@ -21,6 +21,9 @@ import { dropSuggestion } from './suggestion.js';
 // Sending and receiving
 
 export const CLASSIFYING = 'Classifying complexity & routing…';
+// What a reply starts with to say it is an in-depth explanation, drawn at the
+// plan's width (see FORMAT_PROMPT in harness/index.ts, which tells the model)
+export const LARGE_MARKER = '<large>';
 // What a coding change is doing, step by step (see harness/phases.ts). Kept
 // here rather than taken from the harness because it is what the user reads,
 // and the window owns its own words.

@@ -288,6 +288,7 @@ export function drawMessages(
       div.textContent = m.status;
     } else if (m.role === 'assistant' && (m.text || m.images?.length || m.videos?.length)) {
       div.classList.add('markdown');
+      if (m.large) div.classList.add('large');
       fillReply(div, m);
       if (m.streaming) writing.set(m, div);
     } else if (m.streaming && !m.text) {
