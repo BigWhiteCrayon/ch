@@ -248,6 +248,11 @@ export interface Thread {
   // follow-ups. Absent is off, and it is kept only when the user turned it on.
   // It takes precedence over plan.
   investigate?: boolean;
+  // The thread's reply takes the lock on the local models ahead of the replies
+  // of other threads, so it is given the gaps between its steps rather than
+  // waiting its turn. Absent is off, and it is kept only when the user turned
+  // it on (see thread-dialog.ts and the queue in ../llm/index.ts).
+  priority?: boolean;
   // How many files the thread was last seen to have changed, which wait to be
   // written back. Kept so that the sidebar can mark the thread before the
   // container is asked; absent is none.

@@ -697,6 +697,15 @@ export function threadItem(thread: Thread): HTMLLIElement {
   name.className = 'name';
   name.textContent = thread.title;
 
+  // A thread the user marked for priority, so its replies take the local models
+  // ahead of the others' (see thread-dialog.ts). Shown next to its name
+  // whichever status the thread is in.
+  const mark = document.createElement('span');
+  mark.className = 'priority';
+  mark.textContent = '▲';
+  mark.title =
+    'Priority: this thread’s replies take the local models ahead of the other threads’';
+
   const del = document.createElement('button');
   del.className = 'delete';
   del.textContent = '×';
@@ -715,6 +724,7 @@ export function threadItem(thread: Thread): HTMLLIElement {
     render();
   });
 
+  if (thread.priority) li.append(mark);
   li.append(name, del);
   // ...and on a thread, what the thread itself is keeping
   li.addEventListener('contextmenu', (e) => {

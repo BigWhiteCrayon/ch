@@ -420,6 +420,16 @@ button {
   }
 }
 
+/* A thread the user marked for priority: a small mark by its name, so it is
+   seen from the list which threads are rushing through */
+#thread-list .priority {
+  flex: none;
+  margin-right: 2px;
+  color: var(--accent);
+  font-size: 9px;
+  line-height: 1;
+}
+
 #thread-list .name {
   flex: 1;
   overflow: hidden;
