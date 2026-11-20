@@ -101,6 +101,9 @@ export function configure(): void {
     // No suite is a reply that changed files, so there is nothing for a review
     // to run on
     autoReview: false,
+    // Nor is any of them a command put to the user, so there is nothing for a
+    // command review to stand in for
+    commandReview: false,
     // Nothing here asks before using a model, and the theme is only for the window
     approvalCeiling: 5,
     theme: {},

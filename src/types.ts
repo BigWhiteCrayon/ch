@@ -313,6 +313,10 @@ export interface Settings {
   // Whether a reply that changed files is reviewed by a model as soon as it
   // is over
   autoReview: boolean;
+  // Whether a second agent reviews a git command that could lose work and, if
+  // it is within the user's request or non-destructive, lets it run without
+  // the user being asked (see harness/commandReview.ts)
+  commandReview: boolean;
   // The highest model sophistication (1-5) used without asking the user for
   // approval first
   approvalCeiling: number;
@@ -367,6 +371,7 @@ export interface SettingsPatch {
   approvalCeiling?: number;
   theme?: Record<string, string>;
   autoReview?: boolean;
+  commandReview?: boolean;
   setup?: { completed?: boolean; version?: number; skipped?: string[] };
 }
 
@@ -382,6 +387,7 @@ export interface PublicSettings {
   approvalCeiling: number;
   theme: Record<string, string>;
   autoReview: boolean;
+  commandReview: boolean;
   setup: SetupSettings;
 }
 
@@ -417,6 +423,13 @@ export interface ToolContext {
   // (see harness/index.ts). A coder subagent is kept below it (see capped in
   // subagents/run.ts).
   sophistication?: number;
+  // The user's request, in their words, as it stands for this reply: the text
+  // that is set where the reply's context is built (see harness/index.ts). A tool
+  // that judges against it — the command reviewer — has it here, so that a
+  // command it may run without asking is judged against what the user asked for.
+  // Unset where a context is built without that in hand, as the one that runs
+  // reviewers over comments is.
+  intention?: string;
   // Lets a tool say what it is doing while it runs, for work that takes long
   // enough to be worth watching (see subagents/)
   emit?(event: HarnessEvent): void;
@@ -819,6 +832,13 @@ export type HarnessEvent =
   // about it, in words the card shows as they are. Nothing about it is
   // remembered: there is no answer here that holds for the next one.
   | { type: 'command_access'; id: string; command: string; path: string; why: string }
+  // A git command that could lose work was reviewed by a second agent and
+  // approved to run without the user being asked (see harness/commandReview.ts).
+  // why is the risk it was judged against (from sensitive in tools/hostReading.ts)
+  // and reason is what the reviewer said; the window shows both as a compact note,
+  // in the thread rather than as a question, so it is a note and not a thing the
+  // user is put to.
+  | { type: 'command_reviewed'; command: string; path: string; why: string; reason: string }
   // A model above the approval ceiling is wanted and the user is being asked
   // whether it may be used; fallbackName is the model used if they decline.
   // timeoutMs is how long the question stands before it is taken as a decline,

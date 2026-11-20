@@ -657,6 +657,25 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     return;
   }
 
+  if (event.type === 'command_reviewed') {
+    // A git command that could lose work was judged, by a second agent, to be
+    // within the request or non-destructive, and so ran without the user being
+    // asked (see harness/commandReview.ts). It is said in the thread as a compact
+    // note rather than asked as a question: the review is what stood in for the
+    // card, and the user is not put to it.
+    const reason = event.reason.trim();
+    interject(thread, request, {
+      role: 'note',
+      text: reason
+        ? `Command reviewed and run: ${event.why} — ${reason}`
+        : `Command reviewed and run without asking: ${event.why}`,
+      thoughtId: crypto.randomUUID(),
+    });
+    save();
+    if (thread.id === state.activeId) render();
+    return;
+  }
+
   // What the call in flight has used so far. It replaces whatever the last one
   // said rather than adding to it, and goes nowhere near the thread's totals
   // or the day's: a count that is still climbing is not a record of anything
