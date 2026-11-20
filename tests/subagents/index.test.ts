@@ -31,6 +31,11 @@ import * as discoveries from '../../src/harness/discoveries';
 import * as log from '../../src/log';
 import { grant } from '../../src/harness/allowance';
 import { tool as moreTool } from '../../src/tools/steps';
+// The one place the two decision loops agree on how much work they get (see
+// src/harness/budget.ts): the subagent's per-request cap and the effort the
+// rounds of both loops are scaled by.
+import { EFFORT_STEPS, PER_REQUEST_TIMEOUT_MS } from '../../src/harness/budget';
+import { maxSteps } from '../../src/harness';
 
 const THREAD = '0ad34c48-11d6-466f-8567-79d2df9819bc';
 const small = model({ id: 'llama:3b', sophistication: 1 });
@@ -1728,5 +1733,38 @@ describe('a subagent that asks for more rounds', () => {
     // its own words rather than being cut off there
     expect(look.mock.calls.length).toBeGreaterThan(bought);
     expect(report).toContain('Done.');
+  });
+});
+
+// The two decision loops — a reply's flow (see harness/index.ts) and a
+// subagent's (see run.ts) — are deliberately different, but the two that used
+// to size them apart are one now, held in ../harness/budget.ts and read by both
+// so that a value kept in both is a value that cannot drift.
+describe('the two loops share one budget', () => {
+  // The subagent's per-request cap is the one the reply's flow agrees on with,
+  // held in the shared module and passed as ChatRequest.timeoutMs at every call
+  // the loop makes — the main step and the one that shortens a report.
+  it('gives each of its calls the shared per-request cap', async () => {
+    answers({ 'do a': [[text('Done.'), done()]] });
+    await run([{ ...task('a', 'do a'), effort: 'low' }]);
+    for (const request of requests()) expect(request.timeoutMs).toBe(PER_REQUEST_TIMEOUT_MS);
+  });
+
+  // The rounds each loop buys for an effort are scaled by the same table the
+  // shared module holds: a subagent's are its kind's steps times EFFORT_STEPS,
+  // and a reply's are maxSteps, which scales from the same table. So the effort
+  // that halves a piece's rounds halves a reply's, and so on.
+  it('scales both loops’ rounds by the same effort table', () => {
+    expect(EFFORT_STEPS.low).toBe(0.5);
+    expect(EFFORT_STEPS.medium).toBe(1);
+    expect(EFFORT_STEPS.high).toBe(2);
+    // A piece of low effort gets half its kind's rounds, high gets twice
+    expect(stepsFor({ ...task('a', 'do a'), kind: WORKER, effort: 'low' })).toBe(
+      Math.round(WORKER.steps * EFFORT_STEPS.low)
+    );
+    expect(stepsFor({ ...task('a', 'do a'), kind: WORKER, effort: 'high' })).toBe(WORKER.steps * EFFORT_STEPS.high);
+    // ...and the same multipliers run the reply's own rounds
+    expect(maxSteps('low', false)).toBe(maxSteps('medium', false) * EFFORT_STEPS.low);
+    expect(maxSteps('high', false)).toBe(maxSteps('medium', false) * EFFORT_STEPS.high);
   });
 });
