@@ -295,6 +295,7 @@ export interface Settings {
   anthropic: HostedSettings;
   openai: HostedSettings;
   local: LocalSettings;
+  github: { apiKey: string };
   // Manual sophistication levels (1-5), keyed by "provider/model"
   sophistication: Record<string, number>;
   sandbox: SandboxSettings;
@@ -364,6 +365,7 @@ export interface SettingsPatch {
   openai?: { apiKey?: string | null; disabledModels?: string[] };
   // A maxContext of null takes the limit away
   local?: { apiKey?: string | null; baseURL?: string; maxContext?: number | null };
+  github?: { apiKey?: string | null };
   sophistication?: Record<string, number>;
   sandbox?: { image?: string };
   offline?: boolean;
@@ -380,6 +382,7 @@ export interface PublicSettings {
   anthropic: { hasKey: boolean; disabledModels: string[] };
   openai: { hasKey: boolean; disabledModels: string[] };
   local: { baseURL: string; hasKey: boolean; maxContext?: number };
+  github: { hasKey: boolean };
   sophistication: Record<string, number>;
   sandbox: SandboxSettings;
   offline: boolean;
@@ -1074,6 +1077,9 @@ export interface LlmBridge {
   // time. Its work arrives meanwhile through onSubagentEvent.
   retrySubagent(request: RetryRequest): Promise<SubagentResult>;
   onSubagentEvent(callback: (threadId: string, id: string, event: AgentEvent) => void): void;
+  onJobEvent(
+    handler: (threadId: string, id: string, event: string, data?: unknown) => void
+  ): () => void;
 }
 
 // One request of a thread and the replies to it, as the window cuts a thread up

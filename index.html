@@ -132,6 +132,17 @@
             <button
               type="button"
               role="tab"
+              id="tab-github"
+              data-tab="github"
+              aria-controls="panel-github"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              GitHub
+            </button>
+            <button
+              type="button"
+              role="tab"
               id="tab-sandbox"
               data-tab="sandbox"
               aria-controls="panel-sandbox"
@@ -205,6 +216,17 @@
               />
               <button type="button" id="ollama-download">Download</button>
             </div>
+          </section>
+
+          <section role="tabpanel" id="panel-github" data-panel="github" aria-labelledby="tab-github" hidden>
+            <label for="github-key">API token</label>
+            <div class="row">
+              <input id="github-key" type="password" autocomplete="off" />
+              <button type="button" class="remove-key" data-provider="github">Remove</button>
+            </div>
+            <p class="hint">
+              A GitHub API token, read with pull-request status. It is not a model provider and has no model list.
+            </p>
           </section>
 
           <section role="tabpanel" id="panel-sandbox" data-panel="sandbox" aria-labelledby="tab-sandbox" hidden>

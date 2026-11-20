@@ -3,6 +3,8 @@ import path from 'path';
 import * as contextmenu from './contextmenu';
 import * as feedback from './feedback';
 import * as harness from './harness';
+import * as jobs from './jobs';
+import * as githubJobs from './jobs/github';
 import * as llm from './llm';
 import * as cachelock from './llm/cachelock';
 import * as ollama from './llm/ollama';
@@ -432,6 +434,14 @@ harness.project.onSurveyed((workspace, note) => {
   }
 });
 
+// A job starting, ticking, or settling, pushed so every window can show its
+// progress under the thread it is of — the same way a look is pushed
+jobs.onEvent((thread, id, event, data) => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('job:event', thread, id, event, data);
+  }
+});
+
 // Detailed notes listed in the workspace dialog at once. A workspace may keep
 // hundreds (see MAX_NOTES in harness/notes.ts); these are the newest, and the
 // rest are reached by searching them, which is what the models do with them
@@ -710,6 +720,10 @@ app.whenReady().then(() => {
   // Where the branches a subagent makes keep their worktrees (see tools/branches.ts)
   tools.branches.init(app.getPath('userData'));
   tools.registerAll(harness.tools);
+  // A job survives an app close: its cursor is persisted, so on open it is re-driven
+  // from where it left off (see jobs.ts). It uses the injected store, which defaults
+  // to loadJobs/saveJobs.
+  jobs.init();
   // Before the window, so the menu is never the default one, even briefly.
   // With the switches greyed out until the first check comes back, which is
   // the safe way round: a switch that becomes usable is better than one that
@@ -734,6 +748,9 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   // How each tool did this session: calls, failures and latency
   log.info('app.quit', { tools: harness.tools.stats() });
+  // Persist the running jobs before the containers go, so a job out at close is
+  // re-driven from its cursor on the next open.
+  jobs.flush();
   sandbox.stopAll();
 });
 

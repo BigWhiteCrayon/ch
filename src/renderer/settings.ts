@@ -37,6 +37,7 @@ export const keyInputs = {
   anthropic: element<HTMLInputElement>('anthropic-key'),
   openai: element<HTMLInputElement>('openai-key'),
   local: element<HTMLInputElement>('local-key'),
+  github: element<HTMLInputElement>('github-key'),
 };
 export type ProviderId = keyof typeof keyInputs;
 export const PROVIDER_IDS = Object.keys(keyInputs) as ProviderId[];
