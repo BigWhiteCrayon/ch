@@ -226,4 +226,4 @@ export const SUMMARY_MIN_MESSAGES = 4;
 export const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // A sidebar group holding more threads than this has the ones opened longest ago
 // archived (see archiveStale): out of the sidebar, but still searched
-export const MAX_OPEN_THREADS = 10;
+export const MAX_OPEN_THREADS = 20;

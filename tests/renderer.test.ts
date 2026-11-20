@@ -5769,6 +5769,28 @@ describe('threads', () => {
         expect($('#thread-list li.group.branch .status').classList.contains('working')).toBe(true);
       });
 
+      it('shows a red dot on a folded branch when one of its replies was left alone', async () => {
+        const quit = async () => {
+          window.dispatchEvent(new Event('beforeunload'));
+          await start();
+          await flush();
+        };
+        await onFeature('on feature');
+        // A reply that the app closes on it, then again: it is left alone, red in its row
+        await type('go on');
+        emit(sentId(), { type: 'text', delta: 'Half an ans' });
+        await quit();
+        await quit();
+        expect($$('#thread-list li.thread .status.failed')).toHaveLength(1);
+        expect($('#thread-list li.group.branch .status')).toBeNull();
+
+        // The branch is folded over the red thread, and its mark comes through
+        $('#thread-list li.group.branch').click();
+        const mark = $<HTMLElement>('#thread-list li.group.branch .status');
+        expect(mark.classList.contains('failed')).toBe(true);
+        expect(mark.title).toBe('The app closed on this reply more than once');
+      });
+
       it('opens a branch again when a new thread is started on it', async () => {
         await onFeature('one');
         $('#thread-list li.group.branch').click();
@@ -6210,22 +6232,26 @@ describe('threads', () => {
     });
 
     describe('archiving', () => {
-      // Eleven read threads in General chat, 'thread 0' opened longest ago and
-      // 'thread 10' on screen; replies are left running in those named in `running`
-      const eleven = async (running: string[] = []) => {
+      // One thread more than a group keeps, in General chat: 'thread 0' opened
+      // longest ago and the last one on screen; replies are left running in
+      // those named in `running`. Answers with how many a group keeps, so that
+      // a change to MAX_OPEN_THREADS is not a change to these tests.
+      const overfull = async (running: string[] = []) => {
+        const { MAX_OPEN_THREADS } = await import('../src/renderer/shared');
         vi.useFakeTimers({ toFake: ['Date'] });
-        for (let i = 0; i <= 10; i++) {
+        for (let i = 0; i <= MAX_OPEN_THREADS; i++) {
           vi.setSystemTime(Date.now() + 1000);
           if (i > 0) await newThread(null);
           await type(`thread ${i}`);
           if (!running.includes(`thread ${i}`)) finish(sentId());
         }
         vi.useRealTimers();
+        return MAX_OPEN_THREADS;
       };
 
-      it('archives the thread opened longest ago once a group has more than ten', async () => {
-        await eleven();
-        expect(threadTitles()).toHaveLength(10);
+      it('archives the thread opened longest ago once a group has more than it keeps', async () => {
+        const kept = await overfull();
+        expect(threadTitles()).toHaveLength(kept);
         expect(threadTitles()).not.toContain('thread 0');
         await vi.waitFor(() => expect(saved().threads.find((t: any) => t.title === 'thread 0').archived).toBe(true), {
           timeout: 3000,
@@ -6233,21 +6259,21 @@ describe('threads', () => {
       });
 
       it('keeps a thread that is working or has something to look at, and archives the next instead', async () => {
-        await eleven(['thread 0']);
+        const kept = await overfull(['thread 0']);
         expect(threadTitles()[0]).toBe('thread 0');
-        expect(threadTitles()).toHaveLength(10);
+        expect(threadTitles()).toHaveLength(kept);
         expect(threadTitles()).not.toContain('thread 1');
       });
 
       it('counts each workspace on its own', async () => {
-        await eleven();
+        const kept = await overfull();
         await newThread('/projects/alpha');
         expect(sidebar()).toContain('[alpha]');
-        expect(threadTitles()).toHaveLength(11);
+        expect(threadTitles()).toHaveLength(kept + 1);
       });
 
       it('tells the group that older threads are archived and can be searched for', async () => {
-        await eleven();
+        await overfull();
         expect($$('#thread-list li.archived').map((li) => li.textContent)).toEqual([
           'Older threads have been archived. You can still find them in search.',
         ]);
@@ -6258,6 +6284,34 @@ describe('threads', () => {
       it('says nothing when no thread has been archived', async () => {
         await type('hello');
         expect($$('#thread-list li.archived')).toHaveLength(0);
+      });
+
+      // Something can arrive for a thread after it was archived: the reply
+      // that finished while another was on screen, or the one left alone as
+      // the window came up. It comes back rather than waiting unseen.
+      it('brings an archived thread back once something in it needs the user', async () => {
+        await type('thread one');
+        finish(sentId());
+        await newThread(null);
+        await type('thread two');
+        finish(sentId());
+        await vi.waitFor(() => expect(saved().threads).toHaveLength(2));
+
+        const state = saved();
+        const stale = state.threads.find((t: any) => t.title === 'thread one');
+        stale.archived = true;
+        onDisk = JSON.stringify(state);
+        await start();
+        // Archived with nothing waiting in it, so it stays out of the sidebar
+        expect(threadTitles()).toEqual(['thread two']);
+
+        stale.unread = true;
+        onDisk = JSON.stringify(state);
+        await start();
+        expect(threadTitles()).toEqual(['thread one', 'thread two']);
+        await vi.waitFor(() =>
+          expect(saved().threads.find((t: any) => t.title === 'thread one').archived).toBeUndefined()
+        );
       });
     });
 
@@ -6666,7 +6720,7 @@ describe('searching the threads', () => {
 
   it('finds an archived thread, and opening it puts it back at the top of the sidebar', async () => {
     const found = await twoThreads();
-    // Archived as it would be in a workspace with more than ten threads (see archiveStale)
+    // Archived as it would be in a workspace with more than MAX_OPEN_THREADS threads (see archiveStale)
     emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 0, output: 0 }, steps: 1 });
     await vi.waitFor(() => expect(saved().threads).toHaveLength(2));
     const state = saved();
