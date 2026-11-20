@@ -1268,6 +1268,25 @@ describe('receiving a reply', () => {
       expect(messages()).toEqual(['user: hi', 'plan: PlanChange a.ts.']);
     });
 
+    // A reply that starts with <large> is an in-depth explanation: the marker is
+    // taken out and the bubble is drawn wide, even when it arrives in pieces
+    it('draws a reply that starts with the large marker wide, without the marker', () => {
+      emit(sentId(), { type: 'text', delta: '  <lar' });
+      expect($$('#messages .message.markdown').map((el) => el.textContent)).toEqual([]);
+      emit(sentId(), { type: 'text', delta: 'ge>\n\nThe long story.' });
+      emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 1, output: 1 }, steps: 1 });
+      expect(messages()).toEqual(['user: hi', 'assistant: The long story.']);
+      expect($$('#messages .message.markdown.large').length).toBe(1);
+    });
+
+    it('leaves a reply that does not start with the marker, or only mentions it, at the usual width', () => {
+      emit(sentId(), { type: 'text', delta: '<la' });
+      emit(sentId(), { type: 'text', delta: 'bel> then <large> later' });
+      emit(sentId(), { type: 'done', stopReason: 'end_turn', usage: { input: 1, output: 1 }, steps: 1 });
+      expect(messages()).toEqual(['user: hi', 'assistant: <label> then <large> later']);
+      expect($$('#messages .message.markdown.large').length).toBe(0);
+    });
+
     // The screenshots and clips taken while planning are shown under the plan,
     // as they are under the answer (see the 'plan' handler in events.ts)
     it('shows the screenshots and clips a plan carries under its text', () => {

@@ -19,6 +19,7 @@ import {
   CONDENSED,
   CONDENSING,
   describeThread,
+  LARGE_MARKER,
   markFinal,
   phaseName,
   SHORTENING,
@@ -439,6 +440,19 @@ export function handleEvent(requestId: string, event: HarnessEvent): void {
     if (!message.text) for (const old of request.thoughts) expanded.delete(old);
     message.text += event.delta;
     request.wrote = true;
+    // A reply declares itself in-depth by starting with the marker, which is
+    // taken out of what it says. Until it is clear whether the marker is
+    // there, a start that could still become it is not drawn.
+    if (!message.large) {
+      const start = message.text.trimStart();
+      if (start.startsWith(LARGE_MARKER)) {
+        message.text = start.slice(LARGE_MARKER.length).trimStart();
+        message.large = true;
+        if (thread.id === state.activeId) render();
+        return;
+      }
+      if (start && LARGE_MARKER.startsWith(start)) return;
+    }
     if (thread.id === state.activeId) drawText(message);
     return;
   }
